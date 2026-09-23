@@ -1,0 +1,10 @@
+# Application Architecture & Stack
+- Backend: Python 3.11+, FastAPI, Pydantic v2, SQLAlchemy, Pandas, DuckDB, scikit-learn, and the official `mcp` Python SDK.
+- LLM Provider: Groq Cloud API via the `openai` Python SDK (base_url="https://api.groq.com/openai/v1").
+- Frontend: React 18 (Vite), Tailwind CSS, Axios, and `react-plotly.js`.
+- Database: Hosted PostgreSQL (Neon.tech) for dataset metadata and lineage version history.
+
+# Coding & Tool-Calling Guardrails
+- NEVER allow LLMs to generate or execute raw Python code strings for data manipulation.
+- All dataset alterations, EDA explorations, and modeling tasks MUST be implemented as formal tools inside the MCP server module (`backend/mcp_server/`).
+- Every MCP transformation tool must accept `dataset_version_id`, load from `/data_storage/`, save a new `.parquet` version, log the parent-child lineage to Postgres, and return `(new_version_id, summary_message)`.

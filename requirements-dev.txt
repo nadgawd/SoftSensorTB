@@ -1,0 +1,7 @@
+# Development / test dependencies.
+#   pip install -r requirements.txt -r requirements-dev.txt
+#   pytest -q
+
+-r requirements.txt
+
+pytest==9.1.1

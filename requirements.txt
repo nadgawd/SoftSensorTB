@@ -1,0 +1,39 @@
+# Soft Sensor Toolbox — backend dependencies
+#
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r requirements.txt
+#   uvicorn backend.main:app --reload
+#
+# Versions are pinned to the set this project is known to run on (Python 3.14).
+
+# --- Web layer ---
+fastapi==0.141.1
+uvicorn==0.52.4
+python-multipart==0.0.32      # multipart parsing for /datasets/upload
+pydantic==2.13.5
+python-dotenv==1.2.3
+PyJWT==2.15.0                 # Supabase access-token verification
+cryptography==50.0.1          # ES256/RS256 keys for PyJWT
+httpx==0.28.1                 # Supabase Storage REST calls; local LLM timeouts
+
+# --- Database / lineage ---
+SQLAlchemy==2.0.52
+aiosqlite==0.22.1             # async driver for sqlite:/// DATABASE_URL
+asyncpg==0.31.0               # async driver for postgresql:// DATABASE_URL
+greenlet==3.5.5               # required by SQLAlchemy's async bridge
+
+# --- Data / storage ---
+pandas==3.0.5
+numpy==2.5.3
+scipy==1.18.1
+pyarrow==25.0.1               # parquet engine; every dataset version depends on it
+duckdb==1.5.5
+
+# --- Modeling / plotting ---
+scikit-learn==1.9.0
+joblib==1.6.0                 # model artifact serialization
+plotly==7.0.0
+
+# --- LLM providers (OpenAI-compatible clients) ---
+openai==3.11.0

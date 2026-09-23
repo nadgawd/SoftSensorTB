@@ -1,0 +1,55 @@
+#!/bin/bash
+#PBS -N lora_finetune
+#PBS -P ioe.che.omprakash.1
+#PBS -l select=1:ncpus=16:ngpus=1:mem=64gb
+#PBS -l walltime=08:00:00
+#PBS -o hpc/logs/lora_finetune.out
+#PBS -e hpc/logs/lora_finetune.err
+
+# QLoRA fine-tune for domain tool-calling.
+#
+# READ FIRST: you very likely do not need this yet. The router now decides most
+# intents in a regex layer with no model involved (see tests/test_router.py), so
+# fine-tuning to fix routing would be treating a symptom the rules already
+# handle. Come back here only when logged conversations show the *served* model
+# mishandling tool arguments on real turns, with those turns as training data.
+#
+# Serving and training want different checkpoints. If you scale the server up to
+# a quantized build, train against the unquantized base instead — PEFT cannot
+# cleanly adapt GPTQ/AWQ weights. With --use_4bit, bitsandbytes NF4 quantizes on
+# the fly, so a 7B base trains comfortably on a single card.
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME}"
+
+# shellcheck disable=SC1091
+source hpc/env.sh
+# Absolute interpreter path — see the ENV_PY note in env.sh.
+[[ -x "${ENV_PY}" ]] || { echo "ERROR: env missing; run hpc/setup_scratch.sh" >&2; exit 1; }
+mkdir -p hpc/logs
+
+BASE_MODEL="${BASE_MODEL:-${MODEL_PATH}}"
+DATA_PATH="${DATA_PATH:-hpc/data/soft_sensor_train.jsonl}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH_DIR}/models/${MODEL_NAME}-softsensor-lora}"
+
+export HF_HUB_OFFLINE=1
+
+echo "Running on node: $(hostname -f)"
+echo "Base:            ${BASE_MODEL}"
+echo "Data:            ${DATA_PATH}"
+echo "Output:          ${OUTPUT_DIR}"
+nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
+
+"${ENV_PY}" hpc/finetune_lora.py \
+    --model_name_or_path "${BASE_MODEL}" \
+    --data_path "${DATA_PATH}" \
+    --output_dir "${OUTPUT_DIR}" \
+    --use_4bit \
+    --learning_rate 2e-4 \
+    --num_train_epochs 3 \
+    --per_device_train_batch_size 1 \
+    --gradient_accumulation_steps 8 \
+    --max_seq_length 4096
+
+echo "LoRA adapter saved to ${OUTPUT_DIR}"
+echo "Merge with: python hpc/merge_lora.py --base ${BASE_MODEL} --adapter ${OUTPUT_DIR} --out ${SCRATCH_DIR}/models/${MODEL_NAME}-softsensor-merged"

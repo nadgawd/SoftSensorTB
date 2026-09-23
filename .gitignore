@@ -1,0 +1,32 @@
+# Python environments — matches .venv, .venv_run, and any other local variant
+.venv*/
+__pycache__/
+*.pyc
+
+# Secrets and local state
+.env
+.env.*
+!.env.example
+local_test.db
+ci_test.db
+
+# Scratch notes and pasted chat logs. These have contained plaintext
+# credentials before; keep them out of history entirely.
+random/
+
+# Generated data artifacts (uploaded datasets, versions, trained models)
+data_storage/
+
+# HPC: the vLLM API key and job logs never leave the cluster
+hpc/.llm_api_key
+hpc/logs/
+
+.DS_Store
+
+# run.sh process logs
+.run-logs/
+
+Project_Resume_Highlights.pdf
+Project_Resume_Highlights.md
+Technical_Architecture_Note_Faculty.md
+make_pitch_slide.py

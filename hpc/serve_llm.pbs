@@ -1,0 +1,189 @@
+#!/bin/bash
+#PBS -N vllm_qwen3527b
+#PBS -P ioe.che.omprakash.1
+#PBS -l select=1:ncpus=4:ngpus=1:mem=32gb:centos=icelake
+#PBS -l walltime=04:00:00
+#PBS -o hpc/logs/vllm_qwen3527b.out
+#PBS -e hpc/logs/vllm_qwen3527b.err
+
+# vLLM OpenAI-compatible server on a GPU compute node.
+#
+#   qsub hpc/serve_llm.pbs                              # default profile, qwen3.5-27b
+#   qsub -N vllm_qwen257b -o hpc/logs/vllm_qwen257b.out -e hpc/logs/vllm_qwen257b.err \
+#        -v MODEL_PROFILE=qwen2.5-7b hpc/serve_llm.pbs  # the 7B fallback
+#   grep "Running on node" hpc/logs/vllm_qwen3527b.out  # -> COMPUTE_NODE for tunnel.sh
+#
+# The directives above name the job and logs for the default profile; run.sh
+# passes -N/-o/-e itself so each profile gets its own job name and logs.
+#
+# centos=icelake is NOT cosmetic — it is the only way to avoid the K40m nodes.
+# PBS exposes no gpu_model resource here, but the CPU generation maps 1:1 onto
+# the GPU generation:
+#
+#   khas (74)  haswell   Tesla K40m 11GB   compute 3.5  -- vLLM needs 7.0+
+#   vsky (36)  skylake   V100-class
+#   aice (16)  icelake   A100-PCIE-40GB    driver 590 / CUDA 13.1   <- target
+#   scai (3)   amdepyc   8 GPU, 1TB RAM    (restricted queue)
+#
+# A bare ngpus=1 request lands on khas, where vLLM refuses to start.
+#
+# Keep the CPU and memory chunk small. The A100 nodes are heavily subscribed,
+# and asking for 8 CPUs / 64 GB queued indefinitely behind "Insufficient amount
+# of resource: ncpus" while GPUs sat idle. Inference is GPU-bound; 4 cores is
+# plenty for the tokenizer and HTTP layer.
+#
+# Serving needs NO internet. The weights are already on scratch, and
+# HF_HUB_OFFLINE stops vLLM stalling on a hub call the firewall would block.
+# That is what lets this be a batch job instead of a babysat interactive one.
+
+set -euo pipefail
+cd "${PBS_O_WORKDIR:-$HOME}"
+
+# shellcheck disable=SC1091
+source hpc/env.sh
+# Absolute interpreter path — see the ENV_PY note in env.sh.
+[[ -x "${ENV_PY}" ]] || { echo "ERROR: env missing; run hpc/setup_scratch.sh" >&2; exit 1; }
+mkdir -p hpc/logs
+
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+
+# Compile caches default under $HOME, which is quota'd. XDG_CACHE_HOME catches
+# the ones with no dedicated variable (flashinfer writes ~/.cache/flashinfer).
+export XDG_CACHE_HOME="${SCRATCH_DIR}/cache"
+export TRITON_CACHE_DIR="${SCRATCH_DIR}/cache/triton"
+export TORCHINDUCTOR_CACHE_DIR="${SCRATCH_DIR}/cache/inductor"
+export VLLM_CACHE_ROOT="${SCRATCH_DIR}/cache/vllm"
+mkdir -p "${TRITON_CACHE_DIR}" "${TORCHINDUCTOR_CACHE_DIR}" "${VLLM_CACHE_ROOT}"
+
+# flashinfer JIT-builds its sampling kernels at startup, and its bundled CCCL
+# headers reject the nvcc from the pip CUDA packages:
+#   "CUDA compiler and CUDA toolkit headers are incompatible"
+# vLLM's native sampler needs no compiler and is fine at this scale.
+export VLLM_USE_FLASHINFER_SAMPLER=0
+
+# We run $ENV_PY directly instead of `conda activate` (which leaks a bad
+# PYTHONPATH — see env.sh). The cost is that the env's bin/ is not on PATH, so
+# build tools pip installed there are invisible. vLLM torch.compiles the model
+# graph and shells out to ninja and nvcc, and a missing one of those surfaces
+# as `PermissionError: [Errno 13] Permission denied: 'ninja'` rather than
+# anything that mentions a compiler.
+export PATH="${CONDA_ENV_PREFIX}/bin:${PATH}"
+NVCC_PATH="$(find "${CONDA_ENV_PREFIX}/lib" -type f -name nvcc -perm -u+x 2>/dev/null | head -1)"
+if [[ -n "${NVCC_PATH}" ]]; then
+  export CUDA_HOME="$(dirname "$(dirname "${NVCC_PATH}")")"
+  export PATH="$(dirname "${NVCC_PATH}"):${PATH}"
+fi
+echo "ninja:           $(command -v ninja || echo MISSING)"
+echo "nvcc:            $(command -v nvcc || echo MISSING)"
+
+case "${MODEL_PROFILE}" in
+  qwen3.5-27b)
+    DEFAULT_EAGER=0
+    MODEL_ARGS=(
+      --quantization gptq_marlin
+      --language-model-only
+      --max-model-len "${MAX_MODEL_LEN:-65536}"
+      --max-num-seqs 8
+      --gpu-memory-utilization 0.92
+      --tool-call-parser qwen3_coder
+      --reasoning-parser qwen3
+      --default-chat-template-kwargs '{"enable_thinking": false}'
+    )
+    ;;
+  qwen2.5-7b)
+    DEFAULT_EAGER=1
+    MODEL_ARGS=(
+      --dtype bfloat16
+      --max-model-len "${MAX_MODEL_LEN:-32768}"
+      --gpu-memory-utilization 0.90
+      --tool-call-parser hermes
+    )
+    ;;
+esac
+
+# Eager mode skips torch.compile and CUDA graphs. The 27B decodes ~42 tok/s
+# compiled against ~12 tok/s eager on the A100, so it compiles by default
+# (~50 s, cached on scratch for later starts). The 7B is fast either way and
+# keeps the eager path it was verified on. VLLM_EAGER=1/0 overrides either.
+EXTRA_ARGS=()
+if [[ "${VLLM_EAGER:-${DEFAULT_EAGER}}" == "1" ]]; then
+  EXTRA_ARGS+=(--enforce-eager)
+  echo "mode:            eager (set VLLM_EAGER=0 for torch.compile)"
+else
+  echo "mode:            compiled (set VLLM_EAGER=1 for eager)"
+fi
+
+# Every request must carry this key: run.sh --serve-llm makes the server public
+# through Tailscale Funnel, and --host 0.0.0.0 already exposes it to the whole
+# cluster network. vLLM reads VLLM_API_KEY from the environment, which keeps the
+# key out of the command line (and so out of `ps` on this shared node).
+LLM_KEY_FILE="${LLM_KEY_FILE:-hpc/.llm_api_key}"
+if [[ -s "${LLM_KEY_FILE}" ]]; then
+  VLLM_API_KEY="$(<"${LLM_KEY_FILE}")"
+  export VLLM_API_KEY
+  echo "API key:         required (${LLM_KEY_FILE})"
+else
+  echo "API key:         NONE. Create one with: bash hpc/make_llm_key.sh" >&2
+fi
+
+echo "Running on node: $(hostname -f)"
+echo "Profile:         ${MODEL_PROFILE}"
+echo "Model:           ${MODEL_PATH}"
+echo "Served as:       ${SERVED_NAME}"
+echo "Port:            ${SERVE_PORT}"
+nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv
+
+if [[ ! -d "${MODEL_PATH}" ]]; then
+  echo "ERROR: ${MODEL_PATH} missing. Run on a login node first:" >&2
+  echo "  MODEL_PROFILE=${MODEL_PROFILE} bash hpc/fetch_model.sh" >&2
+  exit 1
+fi
+
+"${ENV_PY}" -m vllm.entrypoints.openai.api_server \
+    --model "${MODEL_PATH}" \
+    --served-model-name "${SERVED_NAME}" \
+    --host 0.0.0.0 \
+    --port "${SERVE_PORT}" \
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    "${MODEL_ARGS[@]}" \
+    "${EXTRA_ARGS[@]}"
+
+# Shared flags:
+#
+#   prefix-caching     the agent resends ~25 tool schemas (~6k tokens) every
+#                      round, byte-identical, so this skips re-prefilling them.
+#
+# qwen3.5-27b (flags follow the Qwen3.5-27B-GPTQ-Int4 model card):
+#
+#   quantization       gptq_marlin: Ampere's fast kernel for dense GPTQ int4.
+#                      NOT the model card's moe_wna16 — that only quantizes MoE
+#                      experts, so on this dense model it loads the MLPs as
+#                      bf16 (~54 GB) and OOMs a 40 GB card. Attention layers
+#                      stay bf16 by design of the checkpoint.
+#   language-model-only  the checkpoint is multimodal; this skips loading the
+#                      vision encoder we never use and frees its memory.
+#   max-model-len      64k. Only 16 of the 64 layers use full attention (the
+#                      rest are linear-attention with fixed-size state), so the
+#                      KV cache is ~64 KB/token and 64k fits beside the weights.
+#   max-num-seqs       one user; a small batch limit keeps start-up memory
+#                      profiling from reserving room for 256 parallel sequences.
+#   tool-call-parser   qwen3_coder. Qwen3.5 emits Qwen3-Coder-style XML tool
+#                      calls; hermes would leave them as plain text.
+#   reasoning-parser   qwen3: moves <think> content into the separate
+#                      `reasoning` field instead of the answer.
+#   default-chat-template-kwargs  thinking is ON by default in Qwen3.5. Off by
+#                      default here; the backend turns it on per request when
+#                      the user asks for it (enable_thinking: true).
+#
+#   Deliberately absent: --kv-cache-dtype fp8 (the KV cache is already small,
+#   and fp8 KV on an A100 pushes vLLM onto attention backends that JIT-compile
+#   with nvcc, which this cluster's toolchain breaks — see VLLM_USE_FLASHINFER_SAMPLER).
+#
+# qwen2.5-7b:
+#
+#   dtype bfloat16     Qwen2.5's training dtype; safe on an A100 (sm_80).
+#   tool-call-parser   hermes is the correct parser for Qwen2.5.
+#
+# If the 27B OOMs at load: MAX_MODEL_LEN=32768 qsub -v MODEL_PROFILE,MAX_MODEL_LEN ...
