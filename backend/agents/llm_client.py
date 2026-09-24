@@ -119,27 +119,32 @@ def _openrouter_model(env: str, default: str) -> str:
     return os.getenv(env, "").strip() or default
 
 
+# Gemini uses the "-latest" aliases: pinned versions get retired for new keys
+# (gemini-2.5-* returned 404 in Sep 2026). Cerebras' free tier now answers 402.
 def _cloud_cascades(agent_type: str) -> list[dict[str, str]]:
     if agent_type == "execution":
         return [
+            {"provider": "groq", "model": "qwen/qwen3.8-27b"},
             {"provider": "openrouter", "model": _openrouter_model("OPENROUTER_EXECUTION_MODEL", "qwen/qwen3.8-27b:free")},
             {"provider": "openrouter", "model": "nvidia/nemotron-3-super-120b-a12b:free"},
-            {"provider": "google", "model": "gemini-2.5-pro"},
-            {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+            {"provider": "google", "model": "gemini-flash-latest"},
+            {"provider": "google", "model": "gemini-flash-lite-latest"},
+            {"provider": "groq", "model": "openai/gpt-oss-20b"},
         ]
     if agent_type == "knowledge":
         return [
-            {"provider": "google", "model": "gemini-2.5-flash"},
+            {"provider": "groq", "model": "qwen/qwen3.8-27b"},
+            {"provider": "google", "model": "gemini-flash-latest"},
+            {"provider": "google", "model": "gemini-flash-lite-latest"},
             {"provider": "openrouter", "model": _openrouter_model("OPENROUTER_KNOWLEDGE_MODEL", "google/gemma-4-31b-it:free")},
-            {"provider": "groq", "model": "llama-3.3-70b-versatile"},
+            {"provider": "groq", "model": "openai/gpt-oss-120b"},
         ]
     if agent_type == "router":
         return [
-            {"provider": "cerebras", "model": "llama3.1-8b"},
-            {"provider": "groq", "model": "llama-3.1-8b-instant"},
-            {"provider": "google", "model": "gemini-2.5-flash"},
+            {"provider": "groq", "model": "qwen/qwen3.8-27b"},
+            {"provider": "google", "model": "gemini-flash-lite-latest"},
         ]
-    return [{"provider": "groq", "model": "llama-3.1-8b-instant"}]
+    return [{"provider": "groq", "model": "qwen/qwen3.8-27b"}]
 
 
 def _build_cascades(agent_type: str) -> list[dict[str, str]]:
