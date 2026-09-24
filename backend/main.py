@@ -139,7 +139,13 @@ class ChatResponse(BaseModel):
     )
 
 
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+async def root() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+# HEAD is accepted because uptime monitors (e.g. UptimeRobot) probe with it by default.
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health(deep: bool = False) -> dict[str, str]:
     """``?deep=true`` also checks the database and file storage (for deploy checks)."""
     if not deep:
