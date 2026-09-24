@@ -1,11 +1,14 @@
 /**
  * Light / dark theme with localStorage persistence.
  * Applies `data-theme` on <html> so CSS variables switch.
+ * Visitors start in light mode; only a theme picked with the toggle is saved.
  */
 import { useCallback, useEffect, useState } from 'react'
 
-const STORAGE_KEY = 'sst_theme'
-const DEFAULT = 'dark'
+// A new key: the old `sst_theme` was written on every visit, so it records the
+// previous dark default rather than anyone's choice. Keep in sync with index.html.
+const STORAGE_KEY = 'sst_theme_choice'
+const DEFAULT = 'light'
 
 function readTheme() {
   try {
@@ -31,20 +34,23 @@ export function useTheme() {
 
   useEffect(() => {
     applyTheme(theme)
-    try {
-      localStorage.setItem(STORAGE_KEY, theme)
-    } catch {
-      /* ignore */
-    }
   }, [theme])
 
   const setTheme = useCallback((next) => {
-    setThemeState((prev) => (typeof next === 'function' ? next(prev) : next))
+    setThemeState((prev) => {
+      const value = typeof next === 'function' ? next(prev) : next
+      try {
+        localStorage.setItem(STORAGE_KEY, value)
+      } catch {
+        /* ignore */
+      }
+      return value
+    })
   }, [])
 
   const toggleTheme = useCallback(() => {
-    setThemeState((prev) => (prev === 'dark' ? 'light' : 'dark'))
-  }, [])
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'))
+  }, [setTheme])
 
   return { theme, setTheme, toggleTheme, isLight: theme === 'light' }
 }
