@@ -31,11 +31,25 @@ _ACTION_CLAIM = re.compile(
     r"now (?:shown|visible|available)|has been (?:shown|added|removed))\b",
     re.IGNORECASE,
 )
+# The claim check only applies when the user asked for something to be done.
+# Summaries and advice ("summarize the pipeline", "what are the next steps?")
+# legitimately recount earlier work as "trained" / "generated".
+_ACTION_REQUEST = re.compile(
+    r"\b(plot|chart|graph|draw|visuali[sz]e|show|display|generate|create|make|"
+    r"train|retrain|fit|build|run|apply|remove|drop|delete|fill|impute|clean|"
+    r"normali[sz]e|scale|standardi[sz]e|transform|select|filter|split|detect|"
+    r"add|compute|calculate|export|set|use|redo|rerun)\b",
+    re.IGNORECASE,
+)
+# The user never sees this message, and the retried reply replaces the retracted
+# one on screen, so it must read as a fresh answer rather than a reply to the check.
 _NO_TOOL_NUDGE = (
-    "[Automatic check] Your last reply called no tool, so nothing was generated, "
-    "plotted, trained or changed, and the user sees nothing new. If the user asked "
-    "for an action, call the right tool now. If they only asked something the "
-    "context already answers, answer again without claiming any action."
+    "[Automatic check — hidden from the user] Your last reply called no tool, so "
+    "nothing was generated, plotted, trained or changed this turn, and that reply "
+    "has been removed from the user's screen. If the user asked for an action, call "
+    "the right tool now. Otherwise write your full answer to the user's message "
+    "again, without claiming any new action. Do not mention this check, your "
+    "previous reply, or that no tool was called."
 )
 _ALL_TOOL_SCHEMAS = [*LLM_TOOL_SCHEMAS, *UI_TOOL_SCHEMAS]
 _MAX_ARGS_CHARS = 400
@@ -457,7 +471,12 @@ async def run_execution_agent(
         messages.append(assistant_msg)
 
         if not tool_calls:
-            if not tool_calls_made and not claim_checked and _ACTION_CLAIM.search(current_content):
+            if (
+                not tool_calls_made
+                and not claim_checked
+                and _ACTION_REQUEST.search(user_input)
+                and _ACTION_CLAIM.search(current_content)
+            ):
                 claim_checked = True
                 yield {"event": "retract", "data": ""}
                 messages.append({"role": "user", "content": _NO_TOOL_NUDGE})

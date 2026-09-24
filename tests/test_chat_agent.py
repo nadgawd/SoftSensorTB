@@ -316,7 +316,7 @@ def test_claimed_plot_without_a_tool_call_is_retracted_and_redone(monkeypatch):
 
     assert dispatched == ["generate_importance_plot"]
     assert kinds.index("retract") < kinds.index("tool_start")
-    assert "[Automatic check]" in client.prompts[1][-1]["content"]
+    assert "[Automatic check" in client.prompts[1][-1]["content"]
     final = events[-1]["data"]
     assert final["plot_data"] is not None and final["ui_update_required"] is True
     answer = "".join(e["data"] for e in events[kinds.index("tool_end"):] if e["event"] == "token")
@@ -329,6 +329,19 @@ def test_plain_answer_without_tools_is_not_second_guessed(monkeypatch):
     assert dispatched == []
     assert "retract" not in [e["event"] for e in events]
     assert len(client.prompts) == 1
+
+
+@pytest.mark.parametrize(
+    "question", ["Summarize the entire pipeline and results", "What are the next steps for deployment?"]
+)
+def test_summary_of_earlier_work_is_not_retracted(monkeypatch, question):
+    summary = "Pipeline: missing values filled, OLS model trained (R² = 0.887), importance plot generated."
+    client = ScriptedClient([[_chunk(summary)]])
+    events, dispatched = _run_agent(monkeypatch, client, question)
+    assert dispatched == []
+    assert "retract" not in [e["event"] for e in events]
+    assert len(client.prompts) == 1
+    assert "".join(e["data"] for e in events if e["event"] == "token") == summary
 
 
 def test_claim_check_runs_once_so_a_stubborn_model_cannot_loop(monkeypatch):
