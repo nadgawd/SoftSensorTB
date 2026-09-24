@@ -1,0 +1,49 @@
+# Render Blueprint: the backend API as a free Docker web service (see DEPLOY.md).
+# Values marked sync: false are secrets; Render asks for them once, when the
+# Blueprint is first applied, and they never live in this file.
+services:
+  - type: web
+    name: soft-sensor-api
+    runtime: docker
+    plan: free
+    # Closest region to India and to the Supabase project (ap-southeast-2).
+    region: singapore
+    branch: main
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    # Deploy only commits whose GitHub checks (the backend test suite) passed.
+    autoDeployTrigger: checksPass
+    buildFilter:
+      paths:
+        - backend/**
+        - requirements.txt
+        - render.yaml
+        - .dockerignore
+    envVars:
+      - key: CORS_ALLOW_ORIGINS
+        value: https://nadgawd.github.io
+      - key: SUPABASE_URL
+        value: https://qqawziocwyecgzozbmll.supabase.co
+      # The free instance has 512 MB of RAM; a parsed upload takes several
+      # times its file size.
+      - key: MAX_UPLOAD_MB
+        value: "10"
+      - key: STORAGE_CACHE_MB
+        value: "256"
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: LOCAL_LLM_BASE_URL
+        sync: false
+      - key: LOCAL_LLM_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: CEREBRAS_API_KEY
+        sync: false

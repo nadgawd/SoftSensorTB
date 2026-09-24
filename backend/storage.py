@@ -6,7 +6,7 @@ once and never changed, so a downloaded copy can be cached indefinitely.
 
 ``STORAGE_BACKEND=local`` (default) keeps files under ``data_storage/``.
 ``STORAGE_BACKEND=supabase`` stores them in a private Supabase Storage bucket
-and caches reads under ``/tmp``, because the Space's disk is wiped on restart.
+and caches reads under ``/tmp``, because the host's disk is wiped on restart.
 """
 
 from __future__ import annotations

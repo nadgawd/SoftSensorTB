@@ -7,16 +7,25 @@ import { bootstrapProject } from './lib/projectSync'
 
 const root = createRoot(document.getElementById('root'))
 
-root.render(
-  <div className="boot-screen">
-    <span className="boot-dot" />
-    Loading your project…
-  </div>,
+function showBootScreen(message) {
+  root.render(
+    <div className="boot-screen">
+      <span className="boot-dot" />
+      {message}
+    </div>,
+  )
+}
+
+showBootScreen('Loading your project…')
+const slowBoot = setTimeout(
+  () => showBootScreen('Waking the server, this can take up to a minute…'),
+  4_000,
 )
 
 // The state hooks read localStorage on first render, so the saved project is
 // loaded into it before the app mounts.
 bootstrapProject().finally(() => {
+  clearTimeout(slowBoot)
   root.render(
     <StrictMode>
       <App />

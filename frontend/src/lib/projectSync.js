@@ -99,13 +99,10 @@ export function notifyProjectChange() {
   scheduleSave()
 }
 
-/**
- * Adopt the server copy unless this browser holds a newer one of the same user.
- * Returns true when localStorage was replaced.
- */
 /** The server's `{ user_id, state }`; anything else (e.g. an HTML fallback page) throws. */
 async function loadServerProject() {
-  const data = await fetchProjectState()
+  // The free API host sleeps when idle and takes up to a minute to wake.
+  const data = await fetchProjectState({ timeout: 75_000 })
   const userId = data?.user_id
   const state = data?.state
   if (typeof userId !== 'string' || !userId || (state !== null && typeof state !== 'object')) {
@@ -114,6 +111,10 @@ async function loadServerProject() {
   return { userId, state }
 }
 
+/**
+ * Adopt the server copy unless this browser holds a newer one of the same user.
+ * Returns true when localStorage was replaced.
+ */
 function reconcile(userId, serverState) {
   enabled = true
   const previousOwner = localStorage.getItem(OWNER_KEY)
