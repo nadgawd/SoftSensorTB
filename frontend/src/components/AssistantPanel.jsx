@@ -22,13 +22,14 @@ function toHistory(messages) {
     }))
 }
 
+// The routing label (EXECUTE / RAG) stays internal; only errors and canvas updates are shown.
 function IntentBadge({ intent, uiUpdate }) {
-  const cls = intent === 'EXECUTE' ? 'badge-ember' : intent === 'ERROR' ? 'badge-alert' : 'badge-signal'
+  const isError = intent === 'ERROR'
+  if (!isError && !uiUpdate) return null
   return (
     <div style={{ paddingLeft: '4px' }}>
-      <span className={`badge ${cls}`}>
-        {intent}
-        {uiUpdate ? ' · canvas updated' : ''}
+      <span className={`badge ${isError ? 'badge-alert' : 'badge-ember'}`}>
+        {isError ? 'ERROR' : 'canvas updated'}
       </span>
     </div>
   )
