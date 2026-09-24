@@ -1,0 +1,7 @@
+# The backend image needs only requirements.txt and backend/.
+*
+!requirements.txt
+!backend/
+backend/**/__pycache__
+backend/append_*.py
+backend/fix_*.py

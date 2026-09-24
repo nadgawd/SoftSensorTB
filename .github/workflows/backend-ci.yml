@@ -1,0 +1,56 @@
+name: Backend CI
+
+# Render (render.yaml, autoDeployTrigger: checksPass) deploys a commit to main
+# only after these checks pass on it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "tests/**"
+      - "requirements*.txt"
+      - "pytest.ini"
+      - "render.yaml"
+      - ".dockerignore"
+      - ".github/workflows/backend-ci.yml"
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: backend-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+        env:
+          DATABASE_URL: sqlite:///./ci_test.db
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the image Render builds
+        run: docker build -f backend/Dockerfile -t sst-backend .
+      - name: Start it and wait for /health
+        run: |
+          docker run -d --name api -p 10000:10000 \
+            -e AUTH_REQUIRED=false -e STORAGE_BACKEND=local \
+            -e DATABASE_URL=sqlite:////tmp/smoke.db sst-backend
+          for i in $(seq 1 30); do
+            curl -fsS http://localhost:10000/health && exit 0
+            sleep 2
+          done
+          docker logs api
+          exit 1
