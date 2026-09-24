@@ -7,10 +7,10 @@
     <title>Soft Sensor Toolbox</title>
     <script>
       try {
-        var t = localStorage.getItem('sst_theme');
-        document.documentElement.setAttribute('data-theme', t === 'light' ? 'light' : 'dark');
+        var t = localStorage.getItem('sst_theme_choice');
+        document.documentElement.setAttribute('data-theme', t === 'dark' ? 'dark' : 'light');
       } catch (e) {
-        document.documentElement.setAttribute('data-theme', 'dark');
+        document.documentElement.setAttribute('data-theme', 'light');
       }
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
