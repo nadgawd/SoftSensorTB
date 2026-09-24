@@ -53,12 +53,22 @@ _TEST_SIZE = 0.2
 
 
 class SoftSensorAlgorithm(str, Enum):
-    OLS = "OLS"
+    OLS = "OLS"  # plain linear regression (ordinary least squares)
     PLS = "PLS"
     RIDGE = "RIDGE"
     LASSO = "LASSO"
     PCR = "PCR"
     KNN = "KNN"
+
+
+_ALGORITHM_ALIASES = {
+    "LINEAR": "OLS",
+    "LINEAR_REGRESSION": "OLS",
+    "LINEARREGRESSION": "OLS",
+    "LR": "OLS",
+    "MLR": "OLS",
+    "K_NN": "KNN",
+}
 
 
 class TrainSoftSensorArgs(BaseModel):
@@ -72,7 +82,10 @@ class TrainSoftSensorArgs(BaseModel):
     )
     algorithm: SoftSensorAlgorithm = Field(
         ...,
-        description="Regression algorithm: OLS, PLS, RIDGE, LASSO, PCR, or KNN.",
+        description=(
+            "Regression algorithm: OLS (plain linear regression), PLS, RIDGE, "
+            "LASSO, PCR, or KNN."
+        ),
     )
     target_column: str = Field(
         ...,
@@ -112,6 +125,14 @@ class TrainSoftSensorArgs(BaseModel):
     @classmethod
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
+
+    @field_validator("algorithm", mode="before")
+    @classmethod
+    def _algorithm_alias(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            key = v.strip().upper().replace("-", "_").replace(" ", "_")
+            return _ALGORITHM_ALIASES.get(key, key)
+        return v
 
     @field_validator("split_strategy")
     @classmethod
@@ -770,8 +791,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="train_soft_sensor",
         description=(
-            "Train a soft-sensor regression model (OLS, PLS, Ridge, Lasso, PCR or "
-            "k-NN) on a dataset version with an 80/20 train/test split. "
+            "Train a soft-sensor regression model (linear regression / OLS, PLS, "
+            "Ridge, Lasso, PCR or k-NN) on a dataset version with an 80/20 train/test split. "
             "Reports test-set R² and RMSE, saves a .pkl artifact under "
             "data_storage/models/, and returns model_id, metrics, and feature "
             "coefficients/importances."
