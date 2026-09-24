@@ -239,7 +239,11 @@ export default function AssistantPanel({
         {
           role: 'assistant',
           intent,
-          content: draft.trim() || 'Done.',
+          content:
+            draft.trim() ||
+            (steps.some((s) => s.type === 'tool')
+              ? 'Done.'
+              : '*No answer came back from the model. Please ask again.*'),
           uiUpdate: Boolean(finalResponse.ui_update_required),
           toolCalls: finalResponse.tool_calls_made || steps.filter((s) => s.type === 'tool').map((s) => s.name),
           activity: steps,
@@ -497,7 +501,7 @@ export default function AssistantPanel({
               color: 'var(--color-mist)',
             }}
           >
-            Upload a dataset to enable EXECUTE tools. Conceptual questions work without a dataset.
+            Upload a dataset to enable the data tools. Conceptual questions work without a dataset.
           </p>
         )}
         {thinkingAvailable && (

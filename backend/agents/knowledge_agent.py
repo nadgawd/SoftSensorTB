@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncGenerator, Iterable, Optional
 
 from backend.agents.context import (
@@ -11,6 +12,19 @@ from backend.agents.context import (
     render_tool_history,
 )
 from backend.agents.llm_client import get_llm_client
+
+logger = logging.getLogger(__name__)
+
+_EMPTY_ANSWER = "*The model returned an empty answer. Please ask again.*"
+
+
+def _failure_message(err: Exception, partial: bool) -> str:
+    if partial:
+        return "\n\n*The answer was cut off because the model connection dropped. Please ask again.*"
+    return (
+        "*I couldn't reach any AI model just now (all providers failed or are busy). "
+        f"Please try again in a minute.*\n\n`{type(err).__name__}: {str(err)[:200]}`"
+    )
 
 _BASE_SYSTEM_PROMPT = """You are a senior chemical engineering and soft-sensor expert embedded \
 in the Soft Sensor Toolbox workbench.
@@ -71,32 +85,41 @@ async def run_knowledge_agent(
     tool_history = render_tool_history(history)
 
     yield {"event": "status", "data": "Writing an explanation"}
-    response = await client.chat.completions.create(
-        temperature=0.3,
-        max_tokens=2048,
-        messages=[
-            {
-                "role": "system",
-                "content": _system_prompt(
-                    step_hint, ui_context, render_dataset_context(ctx) if ctx else None
-                ) + (f"\n\n{tool_history}" if tool_history else ""),
-            },
-            *history_messages(history),
-            {"role": "user", "content": user_input},
-        ],
-        stream=True,
-        think=think,
-    )
+    answered = False
+    try:
+        response = await client.chat.completions.create(
+            temperature=0.3,
+            max_tokens=2048,
+            messages=[
+                {
+                    "role": "system",
+                    "content": _system_prompt(
+                        step_hint, ui_context, render_dataset_context(ctx) if ctx else None
+                    ) + (f"\n\n{tool_history}" if tool_history else ""),
+                },
+                *history_messages(history),
+                {"role": "user", "content": user_input},
+            ],
+            stream=True,
+            think=think,
+        )
 
-    async for chunk in response:
-        if not chunk.choices:
-            continue
-        delta = chunk.choices[0].delta
-        reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
-        if reasoning:
-            yield {"event": "reasoning", "data": reasoning}
-        if delta.content:
-            yield {"event": "token", "data": delta.content}
+        async for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            reasoning = getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
+            if reasoning:
+                yield {"event": "reasoning", "data": reasoning}
+            if delta.content:
+                answered = True
+                yield {"event": "token", "data": delta.content}
+    except Exception as err:  # noqa: BLE001
+        logger.exception("Knowledge agent failed")
+        yield {"event": "token", "data": _failure_message(err, answered)}
+    else:
+        if not answered:
+            yield {"event": "token", "data": _EMPTY_ANSWER}
 
     yield {
         "event": "final_state",
