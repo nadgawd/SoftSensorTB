@@ -27,7 +27,7 @@ export default function DocumentationModal({ onClose }) {
         left: 0,
         width: '100vw',
         height: '100vh',
-        background: 'rgba(0, 0, 0, 0.6)',
+        background: 'var(--modal-backdrop)',
         backdropFilter: 'blur(4px)',
         zIndex: 9999,
         display: 'flex',
@@ -38,7 +38,7 @@ export default function DocumentationModal({ onClose }) {
     >
       <div
         style={{
-          background: 'var(--color-bg)',
+          background: 'var(--color-depth)',
           border: '1px solid var(--color-line-2)',
           borderRadius: '12px',
           width: '80%',
@@ -46,7 +46,7 @@ export default function DocumentationModal({ onClose }) {
           maxHeight: '85vh',
           display: 'flex',
           flexDirection: 'column',
-          boxShadow: '0 20px 40px rgba(0,0,0,0.4)',
+          boxShadow: 'var(--modal-shadow)',
         }}
         onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside
       >
@@ -84,7 +84,7 @@ export default function DocumentationModal({ onClose }) {
               Loading documentation...
             </div>
           ) : error ? (
-            <div style={{ color: 'var(--color-error)', textAlign: 'center', padding: '40px' }}>
+            <div style={{ color: 'var(--color-alert)', textAlign: 'center', padding: '40px' }}>
               Error: {error}
             </div>
           ) : (
@@ -97,7 +97,7 @@ export default function DocumentationModal({ onClose }) {
                 <div
                   key={idx}
                   style={{
-                    background: 'rgba(255,255,255,0.02)',
+                    background: 'var(--color-panel)',
                     border: '1px solid var(--color-line)',
                     borderRadius: '8px',
                     padding: '16px',
@@ -106,8 +106,8 @@ export default function DocumentationModal({ onClose }) {
                   <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '8px' }}>
                     <code
                       style={{
-                        color: 'var(--color-ember)',
-                        background: 'rgba(212,165,53,0.1)',
+                        color: 'var(--chip-ember-fg)',
+                        background: 'var(--chip-ember-bg)',
                         padding: '2px 6px',
                         borderRadius: '4px',
                         fontSize: '0.9rem',
@@ -117,7 +117,7 @@ export default function DocumentationModal({ onClose }) {
                       {tool.function?.name}
                     </code>
                   </div>
-                  <p style={{ color: 'var(--color-text)', margin: '0 0 12px 0', fontSize: '0.9rem', lineHeight: '1.5' }}>
+                  <p style={{ color: 'var(--color-foam-2)', margin: '0 0 12px 0', fontSize: '0.9rem', lineHeight: '1.5' }}>
                     {tool.function?.description}
                   </p>
                   
@@ -136,7 +136,7 @@ export default function DocumentationModal({ onClose }) {
                               {tool.function.parameters.required?.includes(argName) ? ' (required)' : ' (optional)'}
                             </span>
                             {argData.description && (
-                              <span style={{ color: 'var(--color-text)', marginLeft: '10px' }}>- {argData.description}</span>
+                              <span style={{ color: 'var(--color-foam-2)', marginLeft: '10px' }}>- {argData.description}</span>
                             )}
                           </div>
                         ))}

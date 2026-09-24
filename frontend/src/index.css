@@ -25,6 +25,7 @@
 /* Font variables */
 :root {
   --font-display: "Sora", ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-display);
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
   /* Dark-mode surfaces (default) */
@@ -59,6 +60,10 @@
   --plot-font: #e7f2f4;
   --plot-grid: rgba(36,53,69,0.6);
   --plot-zero: rgba(46,196,182,0.3);
+  --modal-backdrop: rgba(0, 0, 0, 0.6);
+  --modal-shadow: 0 20px 40px rgba(0, 0, 0, 0.4);
+  --chip-ember-bg: rgba(212, 165, 53, 0.1);
+  --chip-ember-fg: var(--color-ember);
 }
 
 /* ─── Light mode (matches product screenshots) ───────────── */
@@ -110,6 +115,10 @@
   --plot-font: #1a2433;
   --plot-grid: rgba(148, 163, 184, 0.45);
   --plot-zero: rgba(37, 99, 235, 0.35);
+  --modal-backdrop: rgba(15, 23, 42, 0.35);
+  --modal-shadow: 0 20px 40px rgba(15, 23, 42, 0.15);
+  --chip-ember-bg: #fef3c7;
+  --chip-ember-fg: #b45309;
 }
 
 [data-theme="light"] .step-item.active {
