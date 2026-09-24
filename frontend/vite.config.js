@@ -13,18 +13,21 @@ const backend = {
   proxyTimeout: 0,
 }
 
+const proxy = {
+  '/chat': backend,
+  '/datasets': backend,
+  '/project': backend,
+  '/health': backend,
+  '/api': backend,
+}
+
+// Tailscale Funnel/Serve forward requests with the machine's *.ts.net name as Host.
+const allowedHosts = ['.ts.net']
+
 export default defineConfig({
   // GitHub Pages serves a project site under /<repo>/; the deploy workflow sets it.
   base: process.env.VITE_BASE || '/',
   plugins: [react(), tailwindcss()],
-  server: {
-    port: 5173,
-    proxy: {
-      '/chat': backend,
-      '/datasets': backend,
-      '/project': backend,
-      '/health': backend,
-      '/api': backend,
-    },
-  },
+  server: { port: 5173, proxy, allowedHosts },
+  preview: { port: 4173, proxy, allowedHosts },
 })
