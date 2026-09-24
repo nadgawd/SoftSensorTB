@@ -1,5 +1,7 @@
 import ActionChips from '../ActionChips'
 
+const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
+
 /**
  * Step 5 — Modeling
  */
@@ -35,7 +37,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, actions, 
                 fontWeight: 500,
               }}
             >
-              {alg}
+              {ALGORITHM_LABELS[alg] ?? alg}
             </div>
           ))}
         </div>
@@ -53,7 +55,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, actions, 
             <MetricCard label="R²" value={formatMetric(modelMetrics.r2_score)} accent="signal" sub="Coefficient of determination" />
             <MetricCard label="RMSE" value={formatMetric(modelMetrics.rmse)} accent="ember" sub="Root mean squared error" />
             {modelMetrics.algorithm && (
-              <MetricCard label="Algorithm" value={modelMetrics.algorithm} accent="mist" sub={`${modelMetrics.n_train ?? '?'} train · ${modelMetrics.n_test ?? '?'} test`} />
+              <MetricCard label="Algorithm" value={ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm} accent="mist" sub={`${modelMetrics.n_train ?? '?'} train · ${modelMetrics.n_test ?? '?'} test`} />
             )}
           </div>
 

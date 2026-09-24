@@ -67,7 +67,7 @@ export default function AssistantPanel({
       role: 'assistant',
       intent: null,
       content:
-        'Hello! I\'m your soft-sensor assistant. Upload a dataset to get started, or ask me a conceptual question about process analytics, PLS, OLS, Ridge, Lasso, PCR, k-NN, or EDA.',
+        'Hello! I\'m your soft-sensor assistant. Upload a dataset to get started, or ask me a conceptual question about process analytics, PLS, linear regression (OLS), Ridge, Lasso, PCR, k-NN, or EDA.',
       toolCalls: [],
     },
   ], { maxAge: SESSION_MAX_AGE })

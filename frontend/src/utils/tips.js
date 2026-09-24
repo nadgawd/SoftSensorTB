@@ -143,7 +143,11 @@ export function getDynamicContext(step, ctx = {}) {
                 : 'Train a Ridge regression model',
               hasModel ? 'Retrain using Lasso to force sparsity' : 'What is the difference between PLS and PCR?',
               hasModel ? 'Show the feature coefficients plot' : 'Train a k-NN model with 5 neighbors',
-              hasModel ? 'Show the variable importance plot (VIP)' : 'Explain the OLS algorithm',
+              hasModel
+                ? 'Show the variable importance plot (VIP)'
+                : numFeatures > 0 && hasTarget
+                  ? `Train a linear regression (OLS) model to predict ${targetVariable}`
+                  : 'Train a linear regression (OLS) model',
             ]
           : ['What are the different regression algorithms available?'],
         tips: hasModel

@@ -333,7 +333,10 @@ class SelectFeaturesRFEArgs(BaseModel):
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
     target_column: str = Field(..., description="Name of the target/response column.")
     n_features_to_select: int = Field(5, description="Number of top features to keep.", ge=1)
-    estimator: str = Field("ridge", description="Base estimator for RFE: 'ridge' or 'lasso'.")
+    estimator: str = Field(
+        "ridge",
+        description="Base estimator for RFE: 'linear' (plain linear regression), 'ridge' or 'lasso'.",
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -342,8 +345,11 @@ class SelectFeaturesRFEArgs(BaseModel):
     @field_validator("estimator")
     @classmethod
     def _valid_estimator(cls, v: str) -> str:
-        if v not in {"ridge", "lasso"}:
-            raise ValueError("estimator must be 'ridge' or 'lasso'")
+        v = v.strip().lower()
+        if v in {"ols", "linear_regression", "linear regression"}:
+            v = "linear"
+        if v not in {"linear", "ridge", "lasso"}:
+            raise ValueError("estimator must be 'linear', 'ridge' or 'lasso'")
         return v
 
 
@@ -965,7 +971,7 @@ async def select_features_rfe(
         (new_version_id, summary_message)
     """
     from sklearn.feature_selection import RFE
-    from sklearn.linear_model import Ridge, Lasso
+    from sklearn.linear_model import LinearRegression, Ridge, Lasso
 
     args = SelectFeaturesRFEArgs(
         dataset_version_id=dataset_version_id,
@@ -992,7 +998,11 @@ async def select_features_rfe(
         X = df[feature_cols].fillna(0)
         y = df[args.target_column].fillna(0)
 
-        base_est = Ridge(alpha=1.0) if args.estimator == "ridge" else Lasso(alpha=1.0)
+        base_est = {
+            "linear": LinearRegression,
+            "ridge": lambda: Ridge(alpha=1.0),
+            "lasso": lambda: Lasso(alpha=1.0),
+        }[args.estimator]()
         rfe = RFE(estimator=base_est, n_features_to_select=args.n_features_to_select)
         rfe.fit(X, y)
 
@@ -2203,7 +2213,7 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="select_features_rfe",
         description=(
-            "Use Recursive Feature Elimination (RFE) with Ridge or Lasso to automatically "
+            "Use Recursive Feature Elimination (RFE) with linear regression, Ridge or Lasso to automatically "
             "select the most important features and drop the rest. "
             "Saves a new dataset version and logs lineage."
         ),
