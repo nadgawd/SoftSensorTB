@@ -11,7 +11,7 @@ export default function ValidationStep({ modelMetrics, plotHistory, actions, tip
   }
 
   return (
-    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%' }}>
+    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
       {/* Dynamic tips + actions */}
       <ActionChips actions={actions} tips={tips} onAction={onAction} />
 

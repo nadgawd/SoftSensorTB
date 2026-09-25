@@ -29,7 +29,7 @@ export default function PlotCanvas({ label, plotHistory, emptyState }) {
   return (
     <div
       className="panel"
-      style={{ borderRadius: '14px', flex: '1 1 450px', minHeight: '450px', display: 'flex', flexDirection: 'column' }}
+      style={{ borderRadius: '14px', flex: '1 0 auto', minHeight: '450px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
     >
       <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: 0 }}>
