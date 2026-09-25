@@ -8,7 +8,7 @@ export default function PreprocessingStep({ tablePreview, plotHistory, datasetVe
   const hasData = tablePreview?.length > 0
 
   return (
-    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: '100%' }}>
+    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
       {/* Dynamic tips + clickable actions */}
       <ActionChips actions={actions} tips={tips} onAction={onAction} />
 
