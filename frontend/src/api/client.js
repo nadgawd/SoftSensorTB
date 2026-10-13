@@ -117,6 +117,27 @@ export async function fetchTools() {
   return data
 }
 
+/** `{ steps, tools }`: every tool's form, generated from the schemas the assistant uses. */
+export async function fetchManualTools() {
+  const { data } = await api.get('/api/tools/manual', { timeout: 20_000 })
+  return data
+}
+
+/** Run one tool by hand; resolves to the same UI payload as a chat turn's final state. */
+export async function runManualTool(toolName, datasetVersionId, args) {
+  const { data } = await api.post(`/api/tools/${encodeURIComponent(toolName)}/run`, {
+    dataset_version_id: datasetVersionId,
+    arguments: args,
+  })
+  return data
+}
+
+/** `{ columns: [{ name, dtype, numeric }], row_count, models }` of a dataset version. */
+export async function fetchVersionSchema(datasetVersionId) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/schema`, { timeout: 30_000 })
+  return data
+}
+
 /** `{ user_id, state }`; state is null until the first save. */
 export async function fetchProjectState({ timeout = 20_000 } = {}) {
   const { data } = await api.get('/project/state', { timeout })

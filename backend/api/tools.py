@@ -1,0 +1,442 @@
+"""Manual mode: the tool forms of each pipeline step and running a tool by hand.
+
+The forms are generated from the same JSON schemas the assistant is given, so
+every parameter the assistant can set is a control in the UI, with the same
+defaults, limits and validation. ``MANUAL_TOOLS`` only adds what a schema
+cannot say: which step a tool belongs to, which fields pick columns, and
+which fields matter for the option currently chosen.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
+from backend.agents.execution_agent import (
+    _METRIC_TOOLS,
+    _MUTATING_TOOLS,
+    _PLOT_TOOLS,
+    _TABLE_TOOLS,
+    run_tool_manually,
+)
+from backend.auth import User, get_current_user
+from backend.database import AsyncSessionLocal
+from backend.limits import manual_limit_per_hour, manual_limiter
+from backend.mcp_server import LLM_TOOL_SCHEMAS, TOOL_FUNCTIONS
+from backend.mcp_server.eda_tools import _validate_uuid_str
+from backend.services.projects import owned_version
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["tools"])
+
+STEPS = ("ingestion", "quality", "preprocessing", "feature-selection", "modeling", "validation", "export")
+
+MULTI_COLUMN_FIELDS = frozenset({"columns", "y_columns", "feature_columns"})
+SINGLE_COLUMN_FIELDS = frozenset({"x_column", "z_column", "color_column", "target_column"})
+CODE_FIELDS = frozenset({"sql_query", "formula"})
+
+_LABELS = {
+    "sql_query": "SQL query",
+    "n_neighbors": "Neighbours (k)",
+    "max_iter": "Max iterations",
+    "random_state": "Random seed",
+    "flag_missing": "Add missing-value flag columns",
+    "n_features_to_select": "Features to keep",
+    "n_estimators": "Trees",
+    "drop_anomalies": "Drop anomalous rows",
+    "n_components": "Components",
+    "keep_original": "Keep original columns",
+    "n_bins": "Bins",
+    "drop_first": "Drop first category",
+    "interaction_only": "Interaction terms only",
+    "k_neighbors": "Neighbours (k)",
+    "x_column": "X column",
+    "y_columns": "Y columns",
+    "z_column": "Z column",
+    "max_points": "Max points",
+    "test_size": "Test fraction",
+    "split_strategy": "Train/test split",
+    "fit_intercept": "Fit intercept",
+    "pls_scale": "Scale inside PLS",
+    "knn_weights": "Neighbour weights",
+    "model_id": "Model",
+    "agg_func": "Aggregation",
+    "min_periods": "Min periods",
+    "center": "Centre the window",
+    "lag_periods": "Lag periods",
+    "new_column_name": "New column name",
+    "column_mapping": "Rename columns",
+    "feature_min": "Range min",
+    "feature_max": "Range max",
+    "quantile_low": "Lower percentile",
+    "quantile_high": "Upper percentile",
+}
+
+_TRAIN_SHOW_WHEN = {
+    "n_components": {"algorithm": ["PLS", "PCR"]},
+    "pls_scale": {"algorithm": ["PLS"]},
+    "alpha": {"algorithm": ["RIDGE", "LASSO"]},
+    "max_iter": {"algorithm": ["LASSO"]},
+    "fit_intercept": {"algorithm": ["OLS", "RIDGE", "LASSO"]},
+    "n_neighbors": {"algorithm": ["KNN"]},
+    "knn_weights": {"algorithm": ["KNN"]},
+    "random_state": {"split_strategy": ["random"]},
+}
+
+_PLOT_X_TYPES = ["scatter", "time_series", "histogram", "box_plot", "violin_plot", "scatter_3d"]
+
+_DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
+
+# label, steps, and optional: numeric (column pickers limited to numeric
+# columns), show_when ({field: {other_field: [values]}}), defaults (form
+# defaults for required fields), app_defaults (fill from the workbench:
+# "target" or "features"), advanced (fields folded under "Advanced").
+MANUAL_TOOLS: dict[str, dict[str, Any]] = {
+    "get_column_statistics": {
+        "label": "Column statistics",
+        "steps": ("ingestion", "quality", "feature-selection"),
+    },
+    "run_duckdb_query": {
+        "label": "SQL query",
+        "steps": ("ingestion", "quality", "export"),
+        "defaults": {"sql_query": "SELECT * FROM dataset LIMIT 10"},
+    },
+    "remove_missing_data": {
+        "label": "Missing values",
+        "steps": ("quality",),
+        "defaults": {"strategy": "drop_rows"},
+        "show_when": {
+            "n_neighbors": {"strategy": ["knn"]},
+            "max_iter": {"strategy": ["iterative"]},
+            "random_state": {"strategy": ["iterative"]},
+        },
+        "advanced": ("max_iter", "random_state"),
+    },
+    "remove_outliers": {
+        "label": "Outliers",
+        "steps": ("quality",),
+        "numeric": ("columns",),
+        "defaults": {"method": "iqr"},
+    },
+    "detect_anomalies": {
+        "label": "Anomaly detection (Isolation Forest)",
+        "steps": ("quality",),
+        "numeric": ("columns",),
+        "advanced": ("n_estimators", "random_state"),
+    },
+    "drop_columns": {
+        "label": "Drop columns",
+        "steps": ("quality", "preprocessing", "feature-selection"),
+    },
+    "rename_columns": {
+        "label": "Rename columns",
+        "steps": ("ingestion", "preprocessing"),
+    },
+    "normalize_data": {
+        "label": "Normalize / scale",
+        "steps": ("preprocessing",),
+        "numeric": ("columns",),
+        "defaults": {"strategy": "standard"},
+        "show_when": {
+            "feature_min": {"strategy": ["min_max"]},
+            "feature_max": {"strategy": ["min_max"]},
+            "quantile_low": {"strategy": ["robust"]},
+            "quantile_high": {"strategy": ["robust"]},
+        },
+    },
+    "transform_features": {
+        "label": "Transform (log, Box-Cox, bins…)",
+        "steps": ("preprocessing",),
+        "numeric": ("columns",),
+        "defaults": {"strategy": "log"},
+        "show_when": {
+            "n_bins": {"strategy": ["bin_equal_width", "bin_equal_freq"]},
+            "threshold": {"strategy": ["binarize"]},
+        },
+    },
+    "encode_categorical": {
+        "label": "Encode categorical",
+        "steps": ("preprocessing",),
+        "numeric": ("target_column",),
+        "defaults": {"strategy": "one_hot"},
+        "app_defaults": {"target_column": "target"},
+        "show_when": {
+            "target_column": {"strategy": ["target"]},
+            "smoothing": {"strategy": ["target"]},
+            "drop_first": {"strategy": ["one_hot"]},
+        },
+    },
+    "rolling_aggregate": {
+        "label": "Rolling window",
+        "steps": ("preprocessing",),
+        "numeric": ("columns",),
+        "defaults": {"window": 5},
+        "advanced": ("min_periods", "center"),
+    },
+    "create_lag_features": {
+        "label": "Lag features",
+        "steps": ("preprocessing",),
+        "defaults": {"lag_periods": [1, 2, 3]},
+    },
+    "feature_engineer": {
+        "label": "Feature engineering",
+        "steps": ("preprocessing",),
+        "defaults": {"strategy": "polynomial"},
+        "show_when": {
+            "degree": {"strategy": ["polynomial"]},
+            "interaction_only": {"strategy": ["polynomial"]},
+            "period": {"strategy": ["cyclical"]},
+        },
+    },
+    "execute_formula": {
+        "label": "Formula column",
+        "steps": ("preprocessing",),
+    },
+    "balance_data": {
+        "label": "Balance classes",
+        "steps": ("preprocessing",),
+        "defaults": {"strategy": "smote"},
+        "show_when": {"k_neighbors": {"strategy": ["smote"]}},
+        "advanced": ("random_state",),
+    },
+    "generate_custom_plot": {
+        "label": "Plot",
+        "steps": ("preprocessing",),
+        "defaults": {"plot_type": "correlation_heatmap"},
+        "show_when": {
+            "x_column": {"plot_type": _PLOT_X_TYPES},
+            "trendline": {"plot_type": ["scatter"]},
+            "z_column": {"plot_type": ["scatter_3d"]},
+            "color_column": {"plot_type": [*_PLOT_X_TYPES, "pair_plot"]},
+        },
+        "advanced": ("max_points",),
+    },
+    "select_features_rfe": {
+        "label": "Recursive feature elimination",
+        "steps": ("feature-selection",),
+        "numeric": ("target_column", "feature_columns"),
+        "app_defaults": {"target_column": "target"},
+        "show_when": {"alpha": {"estimator": ["ridge", "lasso"]}},
+        "advanced": ("step",),
+    },
+    "drop_collinear_features": {
+        "label": "Drop collinear features",
+        "steps": ("feature-selection",),
+        "numeric": ("target_column",),
+        "app_defaults": {"target_column": "target"},
+    },
+    "reduce_dimensions": {
+        "label": "Dimensionality reduction",
+        "steps": ("feature-selection",),
+        "numeric": ("columns",),
+        "defaults": {"strategy": "pca"},
+        "show_when": {
+            "n_components": {"strategy": ["pca"]},
+            "keep_original": {"strategy": ["pca"]},
+            "threshold": {"strategy": ["variance_threshold"]},
+        },
+    },
+    "train_soft_sensor": {
+        "label": "Train soft sensor",
+        "steps": ("modeling",),
+        "numeric": ("target_column", "feature_columns"),
+        "defaults": {"algorithm": "PLS"},
+        "app_defaults": {"target_column": "target", "feature_columns": "features"},
+        "show_when": _TRAIN_SHOW_WHEN,
+        "advanced": ("random_state", "fit_intercept", "pls_scale", "max_iter"),
+    },
+    "list_trained_models": {
+        "label": "Trained models",
+        "steps": ("modeling", "validation", "export"),
+    },
+    "generate_parity_plot": {"label": "Parity plot", **_DIAGNOSTIC},
+    "generate_residuals_plot": {"label": "Residuals plot", **_DIAGNOSTIC},
+    "generate_importance_plot": {"label": "Feature importance", **_DIAGNOSTIC},
+    "generate_coefficients_plot": {"label": "Coefficients plot", **_DIAGNOSTIC},
+}
+
+
+def _kind(name: str) -> str:
+    if name in _METRIC_TOOLS:
+        return "train"
+    if name in _MUTATING_TOOLS:
+        return "transform"
+    if name in _PLOT_TOOLS:
+        return "plot"
+    if name in _TABLE_TOOLS:
+        return "table"
+    return "run"
+
+
+def _deref(node: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
+    if "$ref" in node:
+        target = defs[node["$ref"].rsplit("/", 1)[-1]]
+        return {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+    if "allOf" in node and len(node["allOf"]) == 1:
+        merged = {**_deref(node["allOf"][0], defs), **{k: v for k, v in node.items() if k != "allOf"}}
+        return merged
+    return node
+
+
+def _unwrap_nullable(node: dict[str, Any], defs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """``anyOf: [X, null]`` → (X with the outer default/description, True)."""
+    options = node.get("anyOf")
+    if not options:
+        return _deref(node, defs), False
+    concrete = [o for o in options if o.get("type") != "null"]
+    nullable = len(concrete) < len(options)
+    if len(concrete) != 1:
+        raise ValueError(f"Unsupported schema union: {node}")
+    outer = {k: v for k, v in node.items() if k != "anyOf"}
+    return {**_deref(concrete[0], defs), **outer}, nullable
+
+
+def _label(name: str) -> str:
+    return _LABELS.get(name) or name.replace("_", " ").capitalize()
+
+
+def _widget(name: str, node: dict[str, Any]) -> str:
+    if "enum" in node:
+        return "select"
+    kind = node.get("type")
+    if kind == "boolean":
+        return "checkbox"
+    if kind in ("integer", "number"):
+        return kind
+    if kind == "array":
+        items = node.get("items") or {}
+        if items.get("type") == "integer":
+            return "int_list"
+        return "columns" if name in MULTI_COLUMN_FIELDS else "text_list"
+    if kind == "object":
+        return "mapping"
+    if name in SINGLE_COLUMN_FIELDS:
+        return "column"
+    if name == "model_id":
+        return "model"
+    return "code" if name in CODE_FIELDS else "text"
+
+
+def _clean_description(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip()
+
+
+def _field_spec(tool: str, name: str, raw: dict[str, Any], required: bool, defs: dict[str, Any]) -> dict[str, Any]:
+    ui = MANUAL_TOOLS[tool]
+    node, nullable = _unwrap_nullable(raw, defs)
+    spec: dict[str, Any] = {
+        "name": name,
+        "label": _label(name),
+        "widget": _widget(name, node),
+        "description": _clean_description(node.get("description", "")),
+        "required": required,
+        "nullable": nullable,
+        "advanced": name in ui.get("advanced", ()),
+    }
+    if "enum" in node:
+        spec["options"] = list(node["enum"])
+    for key, out in (
+        ("minimum", "min"), ("maximum", "max"),
+        ("exclusiveMinimum", "exclusive_min"), ("exclusiveMaximum", "exclusive_max"),
+        ("minItems", "min_items"),
+    ):
+        if key in node:
+            spec[out] = node[key]
+    if "default" in node:
+        spec["default"] = node["default"]
+    if name in ui.get("defaults", {}):
+        spec["default"] = ui["defaults"][name]
+    if name in ui.get("numeric", ()):
+        spec["numeric_only"] = True
+    if name in ui.get("app_defaults", {}):
+        spec["app_default"] = ui["app_defaults"][name]
+    if name in ui.get("show_when", {}):
+        spec["show_when"] = ui["show_when"][name]
+    return spec
+
+
+def _schemas_by_name() -> dict[str, dict[str, Any]]:
+    return {s["function"]["name"]: s["function"] for s in LLM_TOOL_SCHEMAS}
+
+
+def manual_tool_specs() -> list[dict[str, Any]]:
+    schemas = _schemas_by_name()
+    out = []
+    for name, ui in MANUAL_TOOLS.items():
+        fn = schemas[name]
+        params = fn["parameters"]
+        defs = params.get("$defs", {})
+        required = set(params.get("required", []))
+        out.append({
+            "name": name,
+            "label": ui["label"],
+            "description": _clean_description(fn["description"]),
+            "steps": list(ui["steps"]),
+            "kind": _kind(name),
+            "fields": [
+                _field_spec(name, field, raw, field in required, defs)
+                for field, raw in params.get("properties", {}).items()
+            ],
+        })
+    return out
+
+
+@router.get("/api/tools/manual")
+async def get_manual_tools() -> dict[str, Any]:
+    return {"steps": list(STEPS), "tools": manual_tool_specs()}
+
+
+class ManualRunRequest(BaseModel):
+    dataset_version_id: str = Field(..., description="Active dataset version UUID.")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="Tool arguments, as in the tool schema.")
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+
+def _validation_message(exc: ValidationError) -> str:
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc", ()) if p != "dataset_version_id")
+        msg = str(err.get("msg", "invalid value")).removeprefix("Value error, ")
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    return "; ".join(parts) or "Invalid arguments."
+
+
+@router.post("/api/tools/{tool_name}/run")
+async def run_manual_tool(
+    tool_name: str,
+    request: ManualRunRequest,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Run one tool with the arguments the user set in the step's form."""
+    if tool_name not in MANUAL_TOOLS or tool_name not in TOOL_FUNCTIONS:
+        raise HTTPException(status_code=404, detail=f"Unknown tool: {tool_name}")
+    manual_limiter.check(user.id, manual_limit_per_hour(), "Manual run limit reached ({limit} runs per hour)")
+    async with AsyncSessionLocal() as session:
+        await owned_version(session, request.dataset_version_id, user)
+    arguments: dict[str, Any] = {k: v for k, v in request.arguments.items() if v is not None}
+    try:
+        return await run_tool_manually(tool_name, arguments, request.dataset_version_id)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=_validation_message(exc)) from exc
+    except TypeError as exc:
+        # An argument the tool does not take.
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 — tool errors (bad column, singular fit…) go back to the form
+        logger.info("Manual %s failed: %s", tool_name, exc)
+        raise HTTPException(status_code=400, detail=str(exc)[:500] or type(exc).__name__) from exc
+
+
+def tools_for_step(step: str) -> list[str]:
+    return [name for name, ui in MANUAL_TOOLS.items() if step in ui["steps"]]
+
+
+__all__ = ["MANUAL_TOOLS", "STEPS", "manual_tool_specs", "router", "tools_for_step"]

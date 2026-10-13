@@ -7,12 +7,19 @@ import ModelingStep from './steps/ModelingStep'
 import ValidationStep from './steps/ValidationStep'
 import ExportStep from './steps/ExportStep'
 import VersionHistory from './VersionHistory'
+import ManualTools from './manual/ManualTools'
+import ResultTable from './manual/ResultTable'
 import { getDynamicContext } from '../utils/tips'
 import { usePersisted } from '../hooks/usePersisted'
 
 const HISTORY_VIEWS = [
   { id: 'tree', label: 'Tree' },
   { id: 'timeline', label: 'Timeline' },
+]
+
+const WORK_MODES = [
+  { id: 'assistant', label: 'Assistant', title: 'Suggested actions run through the assistant' },
+  { id: 'manual', label: 'Manual', title: 'Pick tools and set every parameter yourself' },
 ]
 
 const STEP_LABELS = {
@@ -65,8 +72,14 @@ export default function StepContent({
   onFeaturesChange,
   onRollback,
   onHistoryRefresh,
-  onSuggestedAction, // ← NEW: fires the message to the assistant
+  onSuggestedAction, // fires the message to the assistant
+  workMode,
+  onWorkModeChange,
+  onToolResult,
+  resultTable,
+  onResultTableClose,
 }) {
+  const manual = workMode === 'manual'
   const [showHistory, setShowHistory] = useState(false)
   const [historyView, setHistoryView] = usePersisted('historyView', 'tree')
   const stepNum = STEP_NUMBERS[activeStep] || 1
@@ -89,7 +102,7 @@ export default function StepContent({
   )
 
   function renderStepPanel() {
-    const commonProps = { actions, tips, onAction: onSuggestedAction }
+    const commonProps = { actions: manual ? [] : actions, tips, onAction: onSuggestedAction, manual }
 
     switch (activeStep) {
       case 'ingestion':
@@ -206,6 +219,21 @@ export default function StepContent({
 
         {/* Version history toggle + active version badge */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
+          <div className="mode-toggle" role="radiogroup" aria-label="Work mode">
+            {WORK_MODES.map(({ id, label, title }) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={workMode === id}
+                title={title}
+                className={`mode-toggle-btn${workMode === id ? ' active' : ''}`}
+                onClick={() => onWorkModeChange(id)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           {datasetVersionId && (
             <div
               style={{
@@ -295,6 +323,17 @@ export default function StepContent({
 
       {/* Main step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
+        {manual && datasetVersionId && (
+          <ManualTools
+            activeStep={activeStep}
+            datasetVersionId={datasetVersionId}
+            targetVariable={targetVariable}
+            selectedFeatures={selectedFeatures}
+            modelKey={modelMetrics?.model_id}
+            onResult={onToolResult}
+          />
+        )}
+        {resultTable && <ResultTable table={resultTable} onClose={onResultTableClose} />}
         {renderStepPanel()}
       </div>
 

@@ -18,6 +18,7 @@ from backend.agents.knowledge_agent import run_knowledge_agent
 from backend.agents.router import classify_intent
 from backend.api.datasets import router as datasets_router
 from backend.api.project import router as project_router
+from backend.api.tools import router as tools_router
 from backend.auth import User, auth_required, get_current_user
 from backend.database import AsyncSessionLocal, init_db
 from backend.limits import chat_limit_per_hour, chat_limiter
@@ -58,6 +59,7 @@ app.add_middleware(
 
 app.include_router(datasets_router)
 app.include_router(project_router)
+app.include_router(tools_router)
 
 
 def _allowed_origin(request: Request) -> Optional[str]:

@@ -14,6 +14,13 @@ import { useTheme } from './hooks/useTheme'
 
 const STEP_IDS = STEPS.map((s) => s.id)
 
+const DIAGNOSTIC_PLOT_TOOLS = new Set([
+  'generate_parity_plot',
+  'generate_residuals_plot',
+  'generate_importance_plot',
+  'generate_coefficients_plot',
+])
+
 const ASSISTANT_DEFAULT_WIDTH = 380
 const ASSISTANT_MIN_WIDTH = 320
 const ASSISTANT_MAX_WIDTH = 1200
@@ -105,6 +112,10 @@ export default function App() {
     return () => { active = false }
   }, [datasetVersionId, previewLimit, setTablePreview])
 
+  // Tool output tables (statistics, SQL, model list) — kept apart from the dataset preview.
+  const [resultTable, setResultTable] = useState(null)
+  const [workMode, setWorkMode] = usePersisted('workMode', 'assistant')
+
   // ── UI state (not persisted — just UI toggles) ────────────
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [pendingAction, setPendingAction] = useState(null)
@@ -166,6 +177,7 @@ export default function App() {
       setDatasetVersionId(result.dataset_version_id)
       setTablePreview(result.table_preview || [])
       clearPlots()
+      setResultTable(null)
       setModelMetrics(null)
       setSelectedFeatures([])
       setTargetVariable(null)
@@ -178,21 +190,24 @@ export default function App() {
       clearPlots, setModelMetrics, setSelectedFeatures, setTargetVariable, setActiveStep],
   )
 
-  // ── Chat response → UI sync ───────────────────────────────
+  // ── Chat response / manual tool run → UI sync ─────────────
   const handleChatResponse = useCallback(
     async (response) => {
       if (!response?.ui_update_required) return
       if (response.active_dataset_version_id) {
         setDatasetVersionId(response.active_dataset_version_id)
       }
+      const onCanvasStep = activeStep === 'preprocessing' || activeStep === 'validation'
+      let nextStep = null
       if (response.plot_data) {
         addPlot(response.plot_data)
-        if (activeStep === 'ingestion' || activeStep === 'quality') {
-          setActiveStep('preprocessing')
+        if (!onCanvasStep) {
+          const diagnostic = (response.tool_calls_made || []).some((t) => DIAGNOSTIC_PLOT_TOOLS.has(t))
+          nextStep = diagnostic ? 'validation' : 'preprocessing'
         }
       }
       if (Array.isArray(response.table_preview)) {
-        setTablePreview(response.table_preview)
+        setResultTable({ title: response.table_title || 'Result', rows: response.table_preview })
       }
       if (response.target_variable !== undefined && response.target_variable !== null) {
         setTargetVariable(response.target_variable)
@@ -206,14 +221,15 @@ export default function App() {
       if (response.model_metrics) {
         setModelMetrics(response.model_metrics)
         markStepComplete('modeling')
-        if (activeStep !== 'modeling' && activeStep !== 'validation') {
-          setActiveStep('modeling')
+        if (!nextStep && activeStep !== 'modeling' && activeStep !== 'validation') {
+          nextStep = 'modeling'
         }
       }
+      if (nextStep) setActiveStep(nextStep)
       if (datasetId) await refreshHistory(datasetId)
     },
     [activeStep, datasetId, refreshHistory, setActiveStep, setDatasetVersionId,
-      setModelMetrics, addPlot, setTablePreview, setSelectedFeatures, setTargetVariable],
+      setModelMetrics, addPlot, setSelectedFeatures, setTargetVariable],
   )
 
   // ── Rollback ──────────────────────────────────────────────
@@ -430,6 +446,11 @@ export default function App() {
           onRollback={handleRollback}
           onHistoryRefresh={setVersionHistory}
           onSuggestedAction={handleSuggestedAction}
+          workMode={workMode}
+          onWorkModeChange={setWorkMode}
+          onToolResult={handleChatResponse}
+          resultTable={resultTable}
+          onResultTableClose={() => setResultTable(null)}
         />
       </div>
 

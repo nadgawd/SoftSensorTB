@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from sklearn.preprocessing import MaxAbsScaler, MinMaxScaler, RobustScaler, StandardScaler
 from sklearn.experimental import enable_iterative_imputer  # noqa
 from sklearn.impute import IterativeImputer, KNNImputer
@@ -111,15 +111,49 @@ class RemoveMissingDataArgs(BaseModel):
         ...,
         description="Technique to handle missing data (e.g., drop_rows, knn, iterative).",
     )
+    columns: Optional[list[str]] = Field(
+        default=None,
+        description=(
+            "Columns to clean. Omit to clean every column. drop_rows drops rows with a "
+            "missing value in any of these columns; mean/median/knn/iterative use the numeric ones."
+        ),
+    )
     flag_missing: bool = Field(
         default=False,
         description="If True, creates boolean indicator columns (e.g. col_is_missing) before imputing.",
+    )
+    n_neighbors: int = Field(
+        default=5,
+        description="Number of neighbours used by the knn strategy.",
+        ge=1,
+    )
+    max_iter: int = Field(
+        default=10,
+        description="Maximum imputation rounds for the iterative strategy.",
+        ge=1,
+        le=100,
+    )
+    random_state: int = Field(
+        default=42,
+        description="Random seed for the iterative strategy.",
     )
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
+
+
+_DEFAULT_OUTLIER_THRESHOLDS = {
+    OutlierMethod.z_score: 3.0,
+    OutlierMethod.iqr: 1.5,
+    OutlierMethod.winsorize: 0.05,
+}
 
 
 class RemoveOutliersArgs(BaseModel):
@@ -138,13 +172,17 @@ class RemoveOutliersArgs(BaseModel):
     )
     method: OutlierMethod = Field(
         ...,
-        description="Outlier detection method: z_score or iqr.",
-    )
-    threshold: float = Field(
-        ...,
         description=(
-            "For z_score: absolute z-score cutoff. "
-            "For iqr: multiplier on the IQR fence (commonly 1.5)."
+            "z_score and iqr drop outlier rows; winsorize caps values at the "
+            "lower/upper percentiles instead of dropping rows."
+        ),
+    )
+    threshold: Optional[float] = Field(
+        default=None,
+        description=(
+            "For z_score: absolute z-score cutoff (default 3). "
+            "For iqr: multiplier on the IQR fence (default 1.5). "
+            "For winsorize: fraction capped in each tail, below 0.5 (default 0.05)."
         ),
         gt=0,
     )
@@ -157,10 +195,13 @@ class RemoveOutliersArgs(BaseModel):
     @field_validator("columns")
     @classmethod
     def _non_empty_names(cls, value: list[str]) -> list[str]:
-        cleaned = [c.strip() for c in value if c and c.strip()]
-        if not cleaned:
-            raise ValueError("columns must contain at least one non-empty name")
-        return cleaned
+        return _clean_names(value)
+
+    @model_validator(mode="after")
+    def _winsorize_limit(self) -> "RemoveOutliersArgs":
+        if self.method == OutlierMethod.winsorize and self.threshold is not None and self.threshold >= 0.5:
+            raise ValueError("For winsorize, threshold is the fraction capped in each tail and must be below 0.5")
+        return self
 
 
 class NormalizeDataArgs(BaseModel):
@@ -179,7 +220,27 @@ class NormalizeDataArgs(BaseModel):
     )
     strategy: NormalizeStrategy = Field(
         ...,
-        description="Scaling strategy: standard, min_max, or robust.",
+        description="Scaling strategy: standard, min_max, robust, or maxabs.",
+    )
+    feature_min: float = Field(
+        default=0.0,
+        description="Lower end of the target range for min_max scaling.",
+    )
+    feature_max: float = Field(
+        default=1.0,
+        description="Upper end of the target range for min_max scaling.",
+    )
+    quantile_low: float = Field(
+        default=25.0,
+        description="Lower percentile of the range used by robust scaling.",
+        ge=0,
+        le=100,
+    )
+    quantile_high: float = Field(
+        default=75.0,
+        description="Upper percentile of the range used by robust scaling.",
+        ge=0,
+        le=100,
     )
 
     @field_validator("dataset_version_id")
@@ -190,10 +251,15 @@ class NormalizeDataArgs(BaseModel):
     @field_validator("columns")
     @classmethod
     def _non_empty_names(cls, value: list[str]) -> list[str]:
-        cleaned = [c.strip() for c in value if c and c.strip()]
-        if not cleaned:
-            raise ValueError("columns must contain at least one non-empty name")
-        return cleaned
+        return _clean_names(value)
+
+    @model_validator(mode="after")
+    def _valid_ranges(self) -> "NormalizeDataArgs":
+        if self.feature_min >= self.feature_max:
+            raise ValueError("feature_min must be smaller than feature_max")
+        if self.quantile_low >= self.quantile_high:
+            raise ValueError("quantile_low must be smaller than quantile_high")
+        return self
 
 
 class DropColumnsArgs(BaseModel):
@@ -282,26 +348,39 @@ class RenameColumnsArgs(BaseModel):
 # Time-series tools
 # ---------------------------------------------------------------------------
 
+class RollingAggFunc(str, Enum):
+    mean = "mean"
+    std = "std"
+    min = "min"
+    max = "max"
+    sum = "sum"
+    median = "median"
+
+
 class RollingAggregateArgs(BaseModel):
     """Arguments for computing rolling window aggregates."""
 
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
     columns: list[str] = Field(..., description="Numeric columns to compute rolling aggregates for.", min_length=1)
     window: int = Field(..., description="Rolling window size (number of rows).", ge=2)
-    agg_func: str = Field("mean", description="Aggregation function: mean, std, min, max, or sum.")
+    agg_func: RollingAggFunc = Field(RollingAggFunc.mean, description="Aggregation function: mean, std, min, max, sum, or median.")
     min_periods: int = Field(1, description="Minimum number of observations required to produce a value.", ge=1)
+    center: bool = Field(False, description="If True, centre the window on each row instead of looking back only.")
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, v: str) -> str: return _validate_uuid_str(v)
 
-    @field_validator("agg_func")
+    @field_validator("columns")
     @classmethod
-    def _valid_agg(cls, v: str) -> str:
-        allowed = {"mean", "std", "min", "max", "sum"}
-        if v not in allowed:
-            raise ValueError(f"agg_func must be one of {allowed}")
-        return v
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
+
+    @model_validator(mode="after")
+    def _periods_fit_window(self) -> "RollingAggregateArgs":
+        if self.min_periods > self.window:
+            raise ValueError("min_periods cannot be larger than window")
+        return self
 
 
 class CreateLagFeaturesArgs(BaseModel):
@@ -315,12 +394,17 @@ class CreateLagFeaturesArgs(BaseModel):
     @classmethod
     def _valid_uuid(cls, v: str) -> str: return _validate_uuid_str(v)
 
+    @field_validator("columns")
+    @classmethod
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
+
     @field_validator("lag_periods")
     @classmethod
     def _valid_lags(cls, v: list[int]) -> list[int]:
         if any(p <= 0 for p in v):
             raise ValueError("All lag_periods must be positive integers")
-        return v
+        return sorted(set(v))
 
 
 # ---------------------------------------------------------------------------
@@ -332,15 +416,27 @@ class SelectFeaturesRFEArgs(BaseModel):
 
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
     target_column: str = Field(..., description="Name of the target/response column.")
+    feature_columns: Optional[list[str]] = Field(
+        None,
+        description="Candidate feature columns. Omit to consider every numeric column except the target.",
+    )
     n_features_to_select: int = Field(5, description="Number of top features to keep.", ge=1)
     estimator: str = Field(
         "ridge",
         description="Base estimator for RFE: 'linear' (plain linear regression), 'ridge' or 'lasso'.",
+        json_schema_extra={"enum": ["linear", "ridge", "lasso"]},
     )
+    alpha: float = Field(1.0, description="Regularization strength of the ridge or lasso estimator.", gt=0)
+    step: int = Field(1, description="Number of features removed at each elimination round.", ge=1)
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, v: str) -> str: return _validate_uuid_str(v)
+
+    @field_validator("feature_columns")
+    @classmethod
+    def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
 
     @field_validator("estimator")
     @classmethod
@@ -357,20 +453,38 @@ class DetectAnomaliesArgs(BaseModel):
     """Arguments for Isolation Forest anomaly detection."""
 
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
-    contamination: float = Field(0.05, description="Expected proportion of anomalies in the dataset (0.0–0.5).", ge=0.01, le=0.5)
+    columns: Optional[list[str]] = Field(
+        None,
+        description="Numeric columns the Isolation Forest looks at. Omit to use every numeric column.",
+    )
+    contamination: float = Field(0.05, description="Expected proportion of anomalies in the dataset (0.01–0.5).", ge=0.01, le=0.5)
     drop_anomalies: bool = Field(True, description="If True, drop anomalous rows. If False, add an 'is_anomaly' flag column instead.")
+    n_estimators: int = Field(100, description="Number of trees in the Isolation Forest.", ge=10, le=2000)
+    random_state: int = Field(42, description="Random seed of the Isolation Forest.")
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, v: str) -> str: return _validate_uuid_str(v)
+
+    @field_validator("columns")
+    @classmethod
+    def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
+
+
+class CorrelationMethod(str, Enum):
+    pearson = "pearson"
+    spearman = "spearman"
+    kendall = "kendall"
 
 
 class DropCollinearFeaturesArgs(BaseModel):
     """Arguments for dropping highly-correlated (collinear) features."""
 
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
-    threshold: float = Field(0.95, description="Pearson correlation threshold above which one of a pair is dropped.", ge=0.5, le=1.0)
+    threshold: float = Field(0.95, description="Absolute correlation above which one column of a pair is dropped.", ge=0.5, le=1.0)
     target_column: Optional[str] = Field(None, description="If provided, this column is excluded from the collinearity analysis and never dropped.")
+    method: CorrelationMethod = Field(CorrelationMethod.pearson, description="Correlation coefficient: pearson, spearman, or kendall.")
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -408,10 +522,12 @@ class GenerateCustomPlotArgs(BaseModel):
             "box_plot, violin_plot, pair_plot, or scatter_3d."
         ),
     )
-    x_column: str = Field(
-        ...,
-        description="X-axis / primary column (ignored for correlation_heatmap and pair_plot).",
-        min_length=1,
+    x_column: Optional[str] = Field(
+        None,
+        description=(
+            "X-axis / primary column. Required for scatter, time_series and scatter_3d; "
+            "ignored for correlation_heatmap and pair_plot."
+        ),
     )
     y_columns: list[str] = Field(
         default_factory=list,
@@ -445,10 +561,34 @@ class GenerateCustomPlotArgs(BaseModel):
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
 
+    @field_validator("x_column", "color_column", "z_column")
+    @classmethod
+    def _blank_is_none(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("y_columns")
+    @classmethod
+    def _clean_y(cls, value: list[str]) -> list[str]:
+        return [c.strip() for c in value if c and c.strip()]
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
+
+
+def _clean_names(value: list[str]) -> list[str]:
+    cleaned = [c.strip() for c in value if c and c.strip()]
+    if not cleaned:
+        raise ValueError("columns must contain at least one non-empty name")
+    return cleaned
+
+
+def _clean_optional_names(value: Optional[list[str]]) -> Optional[list[str]]:
+    """An omitted or empty list means "all applicable columns"."""
+    if value is None:
+        return None
+    return [c.strip() for c in value if c and c.strip()] or None
 
 _WRITE_SQL_PATTERN = re.compile(
     r"\b("
@@ -778,11 +918,10 @@ async def execute_formula(
         df = _load_dataframe(parent)
         
         try:
-            # Safely evaluate the formula. We use engine='python' or just the default.
             new_col_series = df.eval(args.formula)
-            df[args.new_column_name] = new_col_series
         except Exception as e:
-            return str(parent.id), f"Failed to execute formula: {e}"
+            raise ValueError(f"Failed to evaluate formula {args.formula!r}: {e}") from e
+        df[args.new_column_name] = new_col_series
         
         return await _persist_new_version(
             db,
@@ -863,6 +1002,7 @@ async def rolling_aggregate(
     window: int,
     agg_func: str = "mean",
     min_periods: int = 1,
+    center: bool = False,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -875,9 +1015,11 @@ async def rolling_aggregate(
         dataset_version_id=dataset_version_id,
         columns=columns,
         window=window,
-        agg_func=agg_func,
+        agg_func=agg_func,  # type: ignore[arg-type]
         min_periods=min_periods,
+        center=center,
     )
+    func = args.agg_func.value
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
@@ -885,19 +1027,26 @@ async def rolling_aggregate(
         _assert_numeric_columns(df, args.columns)
 
         result = df.copy()
+        created: list[str] = []
         for col in args.columns:
-            new_col_name = f"{col}_rolling{args.window}_{args.agg_func}"
-            roller = result[col].rolling(window=args.window, min_periods=args.min_periods)
-            result[new_col_name] = getattr(roller, args.agg_func)()
+            new_col_name = f"{col}_rolling{args.window}_{func}"
+            roller = result[col].rolling(window=args.window, min_periods=args.min_periods, center=args.center)
+            result[new_col_name] = getattr(roller, func)()
+            created.append(new_col_name)
 
-        created = [f"{c}_rolling{args.window}_{args.agg_func}" for c in args.columns]
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="rolling_aggregate",
-            parameters_used={"columns": args.columns, "window": args.window, "agg_func": args.agg_func},
-            summary_message=f"Created {len(created)} rolling {args.agg_func}(window={args.window}) column(s): {', '.join(created)}",
+            parameters_used={
+                "columns": args.columns,
+                "window": args.window,
+                "agg_func": func,
+                "min_periods": args.min_periods,
+                "center": args.center,
+            },
+            summary_message=f"Created {len(created)} rolling {func}(window={args.window}) column(s): {', '.join(created)}",
         )
 
     if session is not None:
@@ -962,6 +1111,9 @@ async def select_features_rfe(
     target_column: str,
     n_features_to_select: int = 5,
     estimator: str = "ridge",
+    feature_columns: Optional[list[str]] = None,
+    alpha: float = 1.0,
+    step: int = 1,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -976,19 +1128,26 @@ async def select_features_rfe(
     args = SelectFeaturesRFEArgs(
         dataset_version_id=dataset_version_id,
         target_column=target_column,
+        feature_columns=feature_columns,
         n_features_to_select=n_features_to_select,
         estimator=estimator,
+        alpha=alpha,
+        step=step,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
-        _assert_columns_exist(df, [args.target_column])
+        _assert_numeric_columns(df, [args.target_column])
 
-        feature_cols = [
-            c for c in df.columns
-            if c != args.target_column and pd.api.types.is_numeric_dtype(df[c])
-        ]
+        if args.feature_columns:
+            feature_cols = [c for c in args.feature_columns if c != args.target_column]
+            _assert_numeric_columns(df, feature_cols)
+        else:
+            feature_cols = [
+                c for c in df.columns
+                if c != args.target_column and pd.api.types.is_numeric_dtype(df[c])
+            ]
         if len(feature_cols) < args.n_features_to_select:
             return str(parent.id), (
                 f"Not enough numeric feature columns ({len(feature_cols)}) to select {args.n_features_to_select}. "
@@ -1000,10 +1159,10 @@ async def select_features_rfe(
 
         base_est = {
             "linear": LinearRegression,
-            "ridge": lambda: Ridge(alpha=1.0),
-            "lasso": lambda: Lasso(alpha=1.0),
+            "ridge": lambda: Ridge(alpha=args.alpha),
+            "lasso": lambda: Lasso(alpha=args.alpha),
         }[args.estimator]()
-        rfe = RFE(estimator=base_est, n_features_to_select=args.n_features_to_select)
+        rfe = RFE(estimator=base_est, n_features_to_select=args.n_features_to_select, step=args.step)
         rfe.fit(X, y)
 
         selected = [feature_cols[i] for i, s in enumerate(rfe.support_) if s]
@@ -1019,6 +1178,8 @@ async def select_features_rfe(
                 "target_column": args.target_column,
                 "n_features_to_select": args.n_features_to_select,
                 "estimator": args.estimator,
+                "alpha": args.alpha,
+                "step": args.step,
                 "selected_features": selected,
                 "dropped_features": dropped,
             },
@@ -1038,6 +1199,9 @@ async def detect_anomalies(
     dataset_version_id: str,
     contamination: float = 0.05,
     drop_anomalies: bool = True,
+    columns: Optional[list[str]] = None,
+    n_estimators: int = 100,
+    random_state: int = 42,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1050,20 +1214,32 @@ async def detect_anomalies(
 
     args = DetectAnomaliesArgs(
         dataset_version_id=dataset_version_id,
+        columns=columns,
         contamination=contamination,
         drop_anomalies=drop_anomalies,
+        n_estimators=n_estimators,
+        random_state=random_state,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
 
-        numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        if args.columns:
+            _assert_numeric_columns(df, args.columns)
+            numeric_cols = list(args.columns)
+        else:
+            numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
         if not numeric_cols:
             return str(parent.id), "No numeric columns found for anomaly detection."
 
         X = df[numeric_cols].fillna(0)
-        iso = IsolationForest(contamination=args.contamination, random_state=42, n_jobs=-1)
+        iso = IsolationForest(
+            n_estimators=args.n_estimators,
+            contamination=args.contamination,
+            random_state=args.random_state,
+            n_jobs=-1,
+        )
         preds = iso.fit_predict(X)  # -1 = anomaly, 1 = inlier
 
         anomaly_mask = preds == -1
@@ -1083,8 +1259,11 @@ async def detect_anomalies(
             df=result,
             action_performed="detect_anomalies",
             parameters_used={
+                "columns": numeric_cols,
                 "contamination": args.contamination,
                 "drop_anomalies": args.drop_anomalies,
+                "n_estimators": args.n_estimators,
+                "random_state": args.random_state,
                 "n_anomalies_found": n_anomalies,
             },
             summary_message=action_msg,
@@ -1100,6 +1279,7 @@ async def drop_collinear_features(
     dataset_version_id: str,
     threshold: float = 0.95,
     target_column: Optional[str] = None,
+    method: str = "pearson",
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1114,6 +1294,7 @@ async def drop_collinear_features(
         dataset_version_id=dataset_version_id,
         threshold=threshold,
         target_column=target_column,
+        method=method,  # type: ignore[arg-type]
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -1128,7 +1309,7 @@ async def drop_collinear_features(
         if len(feature_cols) < 2:
             return str(parent.id), "Not enough numeric columns for collinearity analysis."
 
-        corr_matrix = df[feature_cols].corr().abs()
+        corr_matrix = df[feature_cols].corr(method=args.method.value).abs()
         variances = df[feature_cols].var()
 
         # Upper triangle of correlation matrix
@@ -1155,9 +1336,13 @@ async def drop_collinear_features(
             parent=parent,
             df=result,
             action_performed="drop_collinear_features",
-            parameters_used={"threshold": args.threshold, "dropped_columns": sorted(to_drop)},
+            parameters_used={
+                "threshold": args.threshold,
+                "method": args.method.value,
+                "dropped_columns": sorted(to_drop),
+            },
             summary_message=(
-                f"Dropped {len(to_drop)} collinear feature(s) with |corr| > {args.threshold}: "
+                f"Dropped {len(to_drop)} collinear feature(s) with |{args.method.value} corr| > {args.threshold}: "
                 f"{', '.join(sorted(to_drop))}"
             ),
         )
@@ -1243,6 +1428,10 @@ async def remove_missing_data(
     dataset_version_id: str,
     strategy: str,
     flag_missing: bool = False,
+    columns: Optional[list[str]] = None,
+    n_neighbors: int = 5,
+    max_iter: int = 10,
+    random_state: int = 42,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1250,76 +1439,82 @@ async def remove_missing_data(
     args = RemoveMissingDataArgs(
         dataset_version_id=dataset_version_id,
         strategy=strategy,  # type: ignore[arg-type]
+        columns=columns,
         flag_missing=flag_missing,
+        n_neighbors=n_neighbors,
+        max_iter=max_iter,
+        random_state=random_state,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
         initial_rows = len(df)
+        if args.columns:
+            _assert_columns_exist(df, args.columns)
+        target_cols = list(args.columns or df.columns)
 
         # Coerce CSV "fake" nulls (empty strings, whitespace, "NA", "N/A",
         # "null", "NaN", "nan", "None", "?") into real np.nan so that
         # dropna() and fillna() strategies can detect them.
         df = _coerce_fake_nulls(df)
 
-        before_na = int(df.isna().sum().sum())
+        before_na = int(df[target_cols].isna().sum().sum())
 
         if args.flag_missing:
-            for col in df.columns:
+            for col in target_cols:
                 if df[col].isna().any():
                     df[f"{col}_is_missing"] = df[col].isna().astype(int)
 
+        numeric_cols = [c for c in target_cols if pd.api.types.is_numeric_dtype(df[c])]
+        result = df.copy()
         if args.strategy == MissingStrategy.drop_rows:
-            result = df.dropna()
+            result = df.dropna(subset=target_cols)
         elif args.strategy == MissingStrategy.fill_mean:
-            result = df.copy()
-            numeric_cols = result.select_dtypes(include=[np.number]).columns
             result[numeric_cols] = result[numeric_cols].fillna(result[numeric_cols].mean())
         elif args.strategy == MissingStrategy.fill_median:
-            result = df.copy()
-            numeric_cols = result.select_dtypes(include=[np.number]).columns
             result[numeric_cols] = result[numeric_cols].fillna(result[numeric_cols].median())
         elif args.strategy == MissingStrategy.fill_mode:
-            result = df.copy()
-            for col in result.columns:
+            for col in target_cols:
                 mode_vals = result[col].mode()
                 if not mode_vals.empty:
                     result[col] = result[col].fillna(mode_vals[0])
         elif args.strategy == MissingStrategy.forward_fill:
-            result = df.ffill()
+            result[target_cols] = result[target_cols].ffill()
         elif args.strategy == MissingStrategy.backward_fill:
-            result = df.bfill()
-        elif args.strategy == MissingStrategy.knn:
-            result = df.copy()
-            numeric_cols = result.select_dtypes(include=[np.number]).columns
-            imputer = KNNImputer()
-            if len(numeric_cols) > 0:
-                result[numeric_cols] = imputer.fit_transform(result[numeric_cols])
-        elif args.strategy == MissingStrategy.iterative:
-            result = df.copy()
-            numeric_cols = result.select_dtypes(include=[np.number]).columns
-            imputer = IterativeImputer(random_state=42)
-            if len(numeric_cols) > 0:
-                result[numeric_cols] = imputer.fit_transform(result[numeric_cols])
-        else:
-            result = df.dropna()
+            result[target_cols] = result[target_cols].bfill()
+        elif args.strategy in (MissingStrategy.knn, MissingStrategy.iterative) and numeric_cols:
+            if args.strategy == MissingStrategy.knn:
+                imputer = KNNImputer(n_neighbors=args.n_neighbors)
+            else:
+                imputer = IterativeImputer(max_iter=args.max_iter, random_state=args.random_state)
+            result[numeric_cols] = imputer.fit_transform(result[numeric_cols])
 
         final_rows = len(result)
         rows_dropped = initial_rows - final_rows
-        after_na = int(result.isna().sum().sum())
+        after_na = int(result[target_cols].isna().sum().sum())
+        scope = f" on {len(target_cols)} selected column(s)" if args.columns else ""
         summary = (
-            f"Applied missing-data strategy '{args.strategy.value}': "
+            f"Applied missing-data strategy '{args.strategy.value}'{scope}: "
             f"rows {initial_rows} → {final_rows} "
             f"({rows_dropped} row(s) dropped), "
             f"null cells {before_na} → {after_na}."
         )
+        parameters: dict[str, Any] = {
+            "strategy": args.strategy.value,
+            "flag_missing": args.flag_missing,
+            "columns": args.columns,
+        }
+        if args.strategy == MissingStrategy.knn:
+            parameters["n_neighbors"] = args.n_neighbors
+        if args.strategy == MissingStrategy.iterative:
+            parameters.update(max_iter=args.max_iter, random_state=args.random_state)
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="remove_missing_data",
-            parameters_used={"strategy": args.strategy.value, "flag_missing": args.flag_missing},
+            parameters_used=parameters,
             summary_message=summary,
         )
 
@@ -1333,7 +1528,7 @@ async def remove_outliers(
     dataset_version_id: str,
     columns: list[str],
     method: str,
-    threshold: float,
+    threshold: Optional[float] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1344,6 +1539,8 @@ async def remove_outliers(
         method=method,  # type: ignore[arg-type]
         threshold=threshold,
     )
+    if args.threshold is None:
+        args.threshold = _DEFAULT_OUTLIER_THRESHOLDS[args.method]
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
@@ -1352,12 +1549,8 @@ async def remove_outliers(
 
         result = df.copy()
         if args.method == OutlierMethod.winsorize:
-            # Winsorization modifies data in-place instead of dropping rows.
-            # Here threshold is used as the symmetric limits, e.g., 0.05 for 5th & 95th percentiles.
+            # Caps the lowest and highest `threshold` fraction instead of dropping rows.
             limit = float(args.threshold)
-            if limit < 0 or limit >= 0.5:
-                # Fallback if user passes something weird like 3.0 (from Z-score)
-                limit = 0.05
             for col in args.columns:
                 result[col] = mstats.winsorize(result[col], limits=[limit, limit])
             removed = 0
@@ -1414,6 +1607,10 @@ async def normalize_data(
     dataset_version_id: str,
     columns: list[str],
     strategy: str,
+    feature_min: float = 0.0,
+    feature_max: float = 1.0,
+    quantile_low: float = 25.0,
+    quantile_high: float = 75.0,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1422,14 +1619,23 @@ async def normalize_data(
         dataset_version_id=dataset_version_id,
         columns=columns,
         strategy=strategy,  # type: ignore[arg-type]
+        feature_min=feature_min,
+        feature_max=feature_max,
+        quantile_low=quantile_low,
+        quantile_high=quantile_high,
     )
 
-    scalers: dict[NormalizeStrategy, type] = {
-        NormalizeStrategy.standard: StandardScaler,
-        NormalizeStrategy.min_max: MinMaxScaler,
-        NormalizeStrategy.robust: RobustScaler,
-        NormalizeStrategy.maxabs: MaxAbsScaler,
-    }
+    parameters: dict[str, Any] = {"columns": args.columns, "strategy": args.strategy.value}
+    if args.strategy == NormalizeStrategy.min_max:
+        scaler: Any = MinMaxScaler(feature_range=(args.feature_min, args.feature_max))
+        parameters["feature_range"] = [args.feature_min, args.feature_max]
+    elif args.strategy == NormalizeStrategy.robust:
+        scaler = RobustScaler(quantile_range=(args.quantile_low, args.quantile_high))
+        parameters["quantile_range"] = [args.quantile_low, args.quantile_high]
+    elif args.strategy == NormalizeStrategy.maxabs:
+        scaler = MaxAbsScaler()
+    else:
+        scaler = StandardScaler()
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
@@ -1437,7 +1643,6 @@ async def normalize_data(
         _assert_numeric_columns(df, args.columns)
 
         result = df.copy()
-        scaler = scalers[args.strategy]()
         result[args.columns] = scaler.fit_transform(result[args.columns])
 
         summary = (
@@ -1449,10 +1654,7 @@ async def normalize_data(
             parent=parent,
             df=result,
             action_performed="normalize_data",
-            parameters_used={
-                "columns": args.columns,
-                "strategy": args.strategy.value,
-            },
+            parameters_used=parameters,
             summary_message=summary,
         )
 
@@ -1465,8 +1667,8 @@ async def normalize_data(
 async def generate_custom_plot(
     dataset_version_id: str,
     plot_type: str,
-    x_column: str,
-    y_columns: list[str],
+    x_column: Optional[str] = None,
+    y_columns: Optional[list[str]] = None,
     color_column: Optional[str] = None,
     trendline: bool = False,
     z_column: Optional[str] = None,
@@ -1486,7 +1688,7 @@ async def generate_custom_plot(
         dataset_version_id=dataset_version_id,
         plot_type=plot_type,  # type: ignore[arg-type]
         x_column=x_column,
-        y_columns=y_columns,
+        y_columns=y_columns or [],
         color_column=color_column,
         trendline=trendline,
         z_column=z_column,
@@ -1512,6 +1714,10 @@ def _build_figure(df: pd.DataFrame, args: GenerateCustomPlotArgs) -> go.Figure:
     plot_type = args.plot_type
     # Resolve optional trendline mode for px.scatter
     trendline_mode = "ols" if args.trendline else None
+    if plot_type in (PlotType.scatter, PlotType.time_series, PlotType.scatter_3d) and not args.x_column:
+        raise ValueError(f"{plot_type.value} needs x_column")
+    if plot_type in (PlotType.histogram, PlotType.box_plot, PlotType.violin_plot) and not (args.x_column or args.y_columns):
+        raise ValueError(f"{plot_type.value} needs x_column or y_columns")
 
     # ── Correlation Heatmap ─────────────────────────────────────────────────
     if plot_type == PlotType.correlation_heatmap:
@@ -1697,9 +1903,13 @@ class TransformStrategy(str, Enum):
 
 class TransformFeaturesArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    columns: list[str] = Field(..., min_length=1)
-    strategy: TransformStrategy
-    kwargs: dict[str, Any] = Field(default_factory=dict, description="e.g. bins for binning or threshold for binarize")
+    columns: list[str] = Field(..., min_length=1, description="Numeric columns to transform; results are added as new columns.")
+    strategy: TransformStrategy = Field(
+        ...,
+        description="log, box_cox, yeo_johnson, sqrt, bin_equal_width, bin_equal_freq, or binarize.",
+    )
+    n_bins: int = Field(5, description="Number of bins for bin_equal_width and bin_equal_freq.", ge=2, le=100)
+    threshold: float = Field(0.0, description="Values above this become 1 for binarize, the rest 0.")
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -1723,14 +1933,37 @@ class EncodeStrategy(str, Enum):
 
 class EncodeCategoricalArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    columns: list[str] = Field(..., min_length=1)
-    strategy: EncodeStrategy
-    target_column: Optional[str] = None
+    columns: list[str] = Field(..., min_length=1, description="Categorical columns to encode.")
+    strategy: EncodeStrategy = Field(
+        ...,
+        description="one_hot, ordinal, frequency, target (needs target_column), or binary.",
+    )
+    target_column: Optional[str] = Field(None, description="Numeric target column; required by the target strategy.")
+    drop_first: bool = Field(True, description="For one_hot: drop the first category of each column to avoid redundant dummies.")
+    smoothing: float = Field(
+        1.0,
+        description="For target: pulls the mean of rare categories towards the overall mean (0 = plain category mean).",
+        ge=0,
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
+
+    @model_validator(mode="after")
+    def _target_needed(self) -> "EncodeCategoricalArgs":
+        if self.strategy == EncodeStrategy.target:
+            if not (self.target_column or "").strip():
+                raise ValueError("The target strategy needs target_column")
+            if self.target_column in self.columns:
+                raise ValueError("target_column cannot also be one of the columns to encode")
+        return self
 
 class ReduceDimensionsStrategy(str, Enum):
     pca = "pca"
@@ -1738,15 +1971,21 @@ class ReduceDimensionsStrategy(str, Enum):
 
 class ReduceDimensionsArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    columns: list[str] = Field(..., min_length=1)
-    strategy: ReduceDimensionsStrategy
-    n_components: Optional[int] = Field(None, description="For PCA")
-    threshold: Optional[float] = Field(None, description="For variance threshold")
+    columns: list[str] = Field(..., min_length=1, description="Numeric columns to reduce.")
+    strategy: ReduceDimensionsStrategy = Field(..., description="pca or variance_threshold.")
+    n_components: int = Field(2, description="Number of principal components to keep (pca).", ge=1)
+    keep_original: bool = Field(False, description="For pca: keep the original columns next to the components.")
+    threshold: float = Field(0.0, description="Drop columns whose variance is not above this (variance_threshold).", ge=0)
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
 
 class FeatureEngineerStrategy(str, Enum):
     polynomial = "polynomial"
@@ -1756,21 +1995,42 @@ class FeatureEngineerStrategy(str, Enum):
 
 class FeatureEngineerArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    columns: list[str] = Field(..., min_length=1)
-    strategy: FeatureEngineerStrategy
-    degree: Optional[int] = Field(2, description="For polynomial")
+    columns: list[str] = Field(..., min_length=1, description="Columns to build features from (exactly 2 for ratio).")
+    strategy: FeatureEngineerStrategy = Field(
+        ...,
+        description="polynomial, datetime (year/month/day/hour/weekday parts), cyclical (sin/cos), or ratio (first / second column).",
+    )
+    degree: int = Field(2, description="Polynomial degree.", ge=2, le=5)
+    interaction_only: bool = Field(False, description="For polynomial: only products of different columns, no powers.")
+    period: Optional[float] = Field(
+        None,
+        description="For cyclical: length of one cycle (e.g. 24 for hours). Omit to use each column's maximum.",
+        gt=0,
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
 
+    @field_validator("columns")
+    @classmethod
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
+
+    @model_validator(mode="after")
+    def _ratio_pair(self) -> "FeatureEngineerArgs":
+        if self.strategy == FeatureEngineerStrategy.ratio and len(self.columns) != 2:
+            raise ValueError("The ratio strategy needs exactly 2 columns (numerator, denominator)")
+        return self
+
 
 async def transform_features(
     dataset_version_id: str,
     columns: list[str],
     strategy: str,
-    kwargs: dict[str, Any],
+    n_bins: int = 5,
+    threshold: float = 0.0,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1781,8 +2041,14 @@ async def transform_features(
         dataset_version_id=dataset_version_id,
         columns=columns,
         strategy=strategy,  # type: ignore[arg-type]
-        kwargs=kwargs,
+        n_bins=n_bins,
+        threshold=threshold,
     )
+    parameters: dict[str, Any] = {"strategy": args.strategy.value, "columns": args.columns}
+    if args.strategy in (TransformStrategy.bin_equal_width, TransformStrategy.bin_equal_freq):
+        parameters["n_bins"] = args.n_bins
+    elif args.strategy == TransformStrategy.binarize:
+        parameters["threshold"] = args.threshold
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
@@ -1803,13 +2069,11 @@ async def transform_features(
             elif args.strategy == TransformStrategy.yeo_johnson:
                 result[f"{col}_yeo"], _ = yeojohnson(result[col])
             elif args.strategy == TransformStrategy.binarize:
-                threshold = args.kwargs.get("threshold", 0.0)
-                binarizer = Binarizer(threshold=threshold)
+                binarizer = Binarizer(threshold=args.threshold)
                 result[f"{col}_bin"] = binarizer.fit_transform(result[[col]])
             elif args.strategy in (TransformStrategy.bin_equal_width, TransformStrategy.bin_equal_freq):
                 strategy_str = "uniform" if args.strategy == TransformStrategy.bin_equal_width else "quantile"
-                bins = args.kwargs.get("bins", 5)
-                kb = KBinsDiscretizer(n_bins=bins, encode='ordinal', strategy=strategy_str) # type: ignore
+                kb = KBinsDiscretizer(n_bins=args.n_bins, encode='ordinal', strategy=strategy_str) # type: ignore
                 result[f"{col}_binned"] = kb.fit_transform(result[[col]])
 
         summary = f"Applied {args.strategy.value} transformation to {len(args.columns)} column(s)."
@@ -1818,7 +2082,7 @@ async def transform_features(
             parent=parent,
             df=result,
             action_performed="transform_features",
-            parameters_used={"strategy": args.strategy.value, "columns": args.columns, "kwargs": args.kwargs},
+            parameters_used=parameters,
             summary_message=summary,
         )
 
@@ -1828,20 +2092,50 @@ async def transform_features(
         return await _run(db)
 
 
+def _ordinal_codes(series: pd.Series) -> pd.Series:
+    """Categories numbered 1..n in sorted order; missing values stay missing."""
+    codes, _ = pd.factorize(series.astype("string"), sort=True)
+    return pd.Series(np.where(codes >= 0, codes + 1, np.nan), index=series.index)
+
+
+def _binary_encode(df: pd.DataFrame, col: str) -> pd.DataFrame:
+    """Replace ``col`` with the bits of its ordinal code (``col_0`` is the most significant)."""
+    codes = _ordinal_codes(df[col])
+    n_bits = max(1, int(codes.max()).bit_length()) if codes.notna().any() else 1
+    ints = codes.fillna(0).astype(int).to_numpy()
+    bits = {f"{col}_{i}": (ints >> (n_bits - 1 - i)) & 1 for i in range(n_bits)}
+    position = df.columns.get_loc(col)
+    out = df.drop(columns=[col])
+    for offset, (name, values) in enumerate(bits.items()):
+        out.insert(position + offset, name, values)
+    return out
+
+
+def _target_encode(series: pd.Series, y: pd.Series, smoothing: float) -> pd.Series:
+    """Smoothed mean of ``y`` per category; unseen or missing categories get the overall mean."""
+    overall = float(y.mean())
+    stats = y.groupby(series).agg(["mean", "count"])
+    encoded = (stats["count"] * stats["mean"] + smoothing * overall) / (stats["count"] + smoothing)
+    return series.map(encoded).astype(float).fillna(overall)
+
+
 async def encode_categorical(
     dataset_version_id: str,
     columns: list[str],
     strategy: str,
     target_column: Optional[str] = None,
+    drop_first: bool = True,
+    smoothing: float = 1.0,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    import category_encoders as ce
     args = EncodeCategoricalArgs(
         dataset_version_id=dataset_version_id,
         columns=columns,
         strategy=strategy, # type: ignore[arg-type]
         target_column=target_column,
+        drop_first=drop_first,
+        smoothing=smoothing,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -1849,33 +2143,44 @@ async def encode_categorical(
         df = _load_dataframe(parent)
         _assert_columns_exist(df, args.columns)
         if args.strategy == EncodeStrategy.target and args.target_column:
-            _assert_columns_exist(df, [args.target_column])
+            _assert_numeric_columns(df, [args.target_column])
         
         result = df.copy()
 
         if args.strategy == EncodeStrategy.one_hot:
-            result = pd.get_dummies(result, columns=args.columns, drop_first=True)
+            result = pd.get_dummies(result, columns=args.columns, drop_first=args.drop_first)
         elif args.strategy == EncodeStrategy.ordinal:
-            encoder = ce.OrdinalEncoder(cols=args.columns)
-            result = encoder.fit_transform(result)
+            for col in args.columns:
+                result[col] = _ordinal_codes(result[col])
         elif args.strategy == EncodeStrategy.frequency:
             for col in args.columns:
                 freq = result[col].value_counts(normalize=True)
                 result[f"{col}_freq"] = result[col].map(freq)
         elif args.strategy == EncodeStrategy.binary:
-            encoder = ce.BinaryEncoder(cols=args.columns)
-            result = encoder.fit_transform(result)
+            for col in args.columns:
+                result = _binary_encode(result, col)
         elif args.strategy == EncodeStrategy.target and args.target_column:
-            encoder = ce.TargetEncoder(cols=args.columns)
-            result = encoder.fit_transform(result, result[args.target_column])
+            y = result[args.target_column].astype(float)
+            for col in args.columns:
+                result[col] = _target_encode(result[col], y, args.smoothing)
 
-        summary = f"Encoded {len(args.columns)} column(s) using {args.strategy.value}."
+        added = [c for c in result.columns if c not in df.columns]
+        summary = (
+            f"Encoded {len(args.columns)} column(s) using {args.strategy.value}"
+            + (f"; added {len(added)} column(s)." if added else " in place.")
+        )
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="encode_categorical",
-            parameters_used={"strategy": args.strategy.value, "columns": args.columns},
+            parameters_used={
+                "strategy": args.strategy.value,
+                "columns": args.columns,
+                **({"drop_first": args.drop_first} if args.strategy == EncodeStrategy.one_hot else {}),
+                **({"target_column": args.target_column, "smoothing": args.smoothing}
+                   if args.strategy == EncodeStrategy.target else {}),
+            },
             summary_message=summary,
         )
 
@@ -1891,6 +2196,7 @@ async def reduce_dimensions(
     strategy: str,
     n_components: Optional[int] = None,
     threshold: Optional[float] = None,
+    keep_original: bool = False,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1901,8 +2207,10 @@ async def reduce_dimensions(
         dataset_version_id=dataset_version_id,
         columns=columns,
         strategy=strategy, # type: ignore[arg-type]
-        n_components=n_components,
-        threshold=threshold,
+        # The model may send null for these; that means "use the default".
+        **({"n_components": n_components} if n_components is not None else {}),
+        **({"threshold": threshold} if threshold is not None else {}),
+        keep_original=keep_original,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -1912,27 +2220,49 @@ async def reduce_dimensions(
         result = df.copy()
 
         if args.strategy == ReduceDimensionsStrategy.pca:
-            n_comps = args.n_components or min(len(args.columns), 2)
-            pca = PCA(n_components=n_comps)
+            limit = min(len(args.columns), len(df))
+            if args.n_components > limit:
+                raise ValueError(f"n_components={args.n_components} is more than the {limit} the selected columns allow")
+            pca = PCA(n_components=args.n_components)
             comps = pca.fit_transform(result[args.columns].fillna(0))
             for i in range(comps.shape[1]):
                 result[f"pca_{i}"] = comps[:, i]
-            result = result.drop(columns=args.columns)
-        elif args.strategy == ReduceDimensionsStrategy.variance_threshold:
-            t = args.threshold or 0.0
-            vt = VarianceThreshold(threshold=t)
+            if not args.keep_original:
+                result = result.drop(columns=args.columns)
+            explained = float(np.sum(pca.explained_variance_ratio_)) * 100
+            summary = (
+                f"PCA reduced {len(args.columns)} column(s) to {args.n_components} component(s) "
+                f"explaining {explained:.1f}% of their variance."
+            )
+            parameters: dict[str, Any] = {
+                "strategy": args.strategy.value,
+                "columns": args.columns,
+                "n_components": args.n_components,
+                "keep_original": args.keep_original,
+            }
+        else:
+            vt = VarianceThreshold(threshold=args.threshold)
             vt.fit(result[args.columns].fillna(0))
             to_keep = np.array(args.columns)[vt.get_support()]
             to_drop = [c for c in args.columns if c not in to_keep]
             result = result.drop(columns=to_drop)
+            summary = (
+                f"Variance threshold {args.threshold} dropped {len(to_drop)} of {len(args.columns)} column(s)"
+                + (f": {', '.join(to_drop)}." if to_drop else ".")
+            )
+            parameters = {
+                "strategy": args.strategy.value,
+                "columns": args.columns,
+                "threshold": args.threshold,
+                "dropped_columns": to_drop,
+            }
 
-        summary = f"Reduced dimensions using {args.strategy.value} on {len(args.columns)} column(s)."
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="reduce_dimensions",
-            parameters_used={"strategy": args.strategy.value},
+            parameters_used=parameters,
             summary_message=summary,
         )
 
@@ -1947,6 +2277,8 @@ async def feature_engineer(
     columns: list[str],
     strategy: str,
     degree: Optional[int] = 2,
+    interaction_only: bool = False,
+    period: Optional[float] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1955,7 +2287,9 @@ async def feature_engineer(
         dataset_version_id=dataset_version_id,
         columns=columns,
         strategy=strategy, # type: ignore[arg-type]
-        degree=degree,
+        degree=degree if degree is not None else 2,
+        interaction_only=interaction_only,
+        period=period,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -1963,10 +2297,12 @@ async def feature_engineer(
         df = _load_dataframe(parent)
         _assert_columns_exist(df, args.columns)
         result = df.copy()
+        parameters: dict[str, Any] = {"strategy": args.strategy.value, "columns": args.columns}
 
         if args.strategy == FeatureEngineerStrategy.polynomial:
             _assert_numeric_columns(df, args.columns)
-            poly = PolynomialFeatures(degree=args.degree or 2, include_bias=False)
+            parameters.update(degree=args.degree, interaction_only=args.interaction_only)
+            poly = PolynomialFeatures(degree=args.degree, interaction_only=args.interaction_only, include_bias=False)
             poly_features = poly.fit_transform(result[args.columns].fillna(0))
             feature_names = poly.get_feature_names_out(args.columns)
             
@@ -1983,23 +2319,29 @@ async def feature_engineer(
                 result[f"{col}_hour"] = result[col].dt.hour
                 result[f"{col}_dayofweek"] = result[col].dt.dayofweek
         elif args.strategy == FeatureEngineerStrategy.cyclical:
+            _assert_numeric_columns(df, args.columns)
+            if args.period is not None:
+                parameters["period"] = args.period
             for col in args.columns:
-                max_val = result[col].max()
-                if max_val > 0:
-                    result[f"{col}_sin"] = np.sin(2 * np.pi * result[col] / max_val)
-                    result[f"{col}_cos"] = np.cos(2 * np.pi * result[col] / max_val)
+                cycle = args.period if args.period is not None else result[col].max()
+                if cycle > 0:
+                    result[f"{col}_sin"] = np.sin(2 * np.pi * result[col] / cycle)
+                    result[f"{col}_cos"] = np.cos(2 * np.pi * result[col] / cycle)
         elif args.strategy == FeatureEngineerStrategy.ratio:
             _assert_numeric_columns(df, args.columns)
-            if len(args.columns) == 2:
-                result[f"{args.columns[0]}_ratio_{args.columns[1]}"] = result[args.columns[0]] / result[args.columns[1]].replace(0, np.nan)
+            result[f"{args.columns[0]}_ratio_{args.columns[1]}"] = result[args.columns[0]] / result[args.columns[1]].replace(0, np.nan)
 
-        summary = f"Engineered features using {args.strategy.value} on {len(args.columns)} column(s)."
+        added = [c for c in result.columns if c not in df.columns]
+        summary = (
+            f"Engineered {len(added)} feature(s) using {args.strategy.value} on {len(args.columns)} column(s)"
+            + (f": {', '.join(added[:20])}{' …' if len(added) > 20 else ''}." if added else ".")
+        )
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="feature_engineer",
-            parameters_used={"strategy": args.strategy.value},
+            parameters_used=parameters,
             summary_message=summary,
         )
 
@@ -2016,9 +2358,10 @@ class BalanceDataStrategy(str, Enum):
 
 class BalanceDataArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    target_column: str = Field(..., min_length=1)
-    strategy: BalanceDataStrategy
+    target_column: str = Field(..., min_length=1, description="Class label column to balance.")
+    strategy: BalanceDataStrategy = Field(..., description="smote (oversample minority classes) or random_undersample.")
     random_state: int = Field(42, description="Random seed")
+    k_neighbors: int = Field(5, description="Neighbours SMOTE uses to synthesise new samples.", ge=1)
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -2026,51 +2369,112 @@ class BalanceDataArgs(BaseModel):
         return _validate_uuid_str(value)
 
 
+_MAX_BALANCE_CLASSES = 50
+
+
+def _format_counts(counts: pd.Series) -> str:
+    return ", ".join(f"{label}: {int(n)}" for label, n in counts.sort_index().items())
+
+
+def _smote(
+    df: pd.DataFrame,
+    target: str,
+    counts: pd.Series,
+    k_neighbors: int,
+    rng: np.random.Generator,
+) -> pd.DataFrame:
+    """Oversample every class up to the largest one with SMOTE.
+
+    Each synthetic row lies between a minority row and one of its k nearest
+    same-class neighbours in the numeric columns; other columns are copied
+    from the minority row.
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    numeric = [c for c in df.columns if c != target and pd.api.types.is_numeric_dtype(df[c])]
+    if not numeric:
+        raise ValueError("SMOTE needs at least one numeric feature column")
+    largest = int(counts.max())
+    synthetic: list[pd.DataFrame] = []
+    for label, size in counts.items():
+        need = largest - int(size)
+        if need == 0:
+            continue
+        group = df[df[target] == label]
+        if len(group) <= k_neighbors:
+            raise ValueError(
+                f"Class {label!r} has {len(group)} rows; SMOTE needs more rows than "
+                f"k_neighbors ({k_neighbors}). Lower k_neighbors or use random_undersample."
+            )
+        X = group[numeric].astype(float)
+        X = X.fillna(X.mean()).fillna(0).to_numpy()
+        neighbours = NearestNeighbors(n_neighbors=k_neighbors + 1).fit(X).kneighbors(X, return_distance=False)[:, 1:]
+        base = rng.integers(0, len(group), need)
+        partner = neighbours[base, rng.integers(0, k_neighbors, need)]
+        rows = group.iloc[base].copy()
+        rows[numeric] = X[base] + rng.random((need, 1)) * (X[partner] - X[base])
+        synthetic.append(rows)
+    return pd.concat([df, *synthetic], ignore_index=True)
+
+
 async def balance_data(
     dataset_version_id: str,
     target_column: str,
     strategy: str,
     random_state: int = 42,
+    k_neighbors: int = 5,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    from imblearn.over_sampling import SMOTE
-    from imblearn.under_sampling import RandomUnderSampler
-
     args = BalanceDataArgs(
         dataset_version_id=dataset_version_id,
         target_column=target_column,
         strategy=strategy, # type: ignore[arg-type]
         random_state=random_state,
+        k_neighbors=k_neighbors,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
         _assert_columns_exist(df, [args.target_column])
-        
-        y = df[args.target_column]
-        X = df.drop(columns=[args.target_column])
+        labelled = df[df[args.target_column].notna()]
+        counts = labelled[args.target_column].value_counts()
+        if len(counts) < 2:
+            raise ValueError(f"'{args.target_column}' needs at least 2 classes to balance")
+        if len(counts) > _MAX_BALANCE_CLASSES:
+            raise ValueError(
+                f"'{args.target_column}' has {len(counts)} distinct values; balancing needs a "
+                "class label column, not a continuous target"
+            )
 
-        # Fill missing values with 0 for balancing algorithms
-        X_filled = X.fillna(0)
-
+        rng = np.random.default_rng(args.random_state)
         if args.strategy == BalanceDataStrategy.smote:
-            sampler = SMOTE(random_state=args.random_state)
+            result = _smote(labelled, args.target_column, counts, args.k_neighbors, rng)
         else:
-            sampler = RandomUnderSampler(random_state=args.random_state)
-            
-        X_res, y_res = sampler.fit_resample(X_filled, y) # type: ignore
-        
-        result = pd.concat([X_res, y_res], axis=1) # type: ignore
+            result = (
+                labelled.groupby(args.target_column, group_keys=False)
+                .sample(n=int(counts.min()), random_state=args.random_state)
+                .sort_index()
+                .reset_index(drop=True)
+            )
 
-        summary = f"Balanced dataset using {args.strategy.value} on target '{args.target_column}'."
+        after = result[args.target_column].value_counts()
+        summary = (
+            f"Balanced '{args.target_column}' with {args.strategy.value}: rows {len(df)} → {len(result)}; "
+            f"class counts {_format_counts(counts)} → {_format_counts(after)}."
+        )
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="balance_data",
-            parameters_used={"strategy": args.strategy.value, "target_column": args.target_column},
+            parameters_used={
+                "strategy": args.strategy.value,
+                "target_column": args.target_column,
+                "random_state": args.random_state,
+                **({"k_neighbors": args.k_neighbors} if args.strategy == BalanceDataStrategy.smote else {}),
+            },
             summary_message=summary,
         )
 
@@ -2098,8 +2502,10 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="remove_missing_data",
         description=(
-            "Handle missing values using drop_rows, fill_mean, fill_median, or "
-            "forward_fill. Saves a new parquet dataset version and logs lineage. "
+            "Handle missing values using drop_rows, fill_mean, fill_median, fill_mode, "
+            "forward_fill, backward_fill, knn (n_neighbors) or iterative imputation "
+            "(max_iter, random_state), on all columns or only `columns`. "
+            "Saves a new parquet dataset version and logs lineage. "
             "Returns (new_version_id, summary_message)."
         ),
         args_model=RemoveMissingDataArgs,
@@ -2108,7 +2514,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="remove_outliers",
         description=(
             "Remove outlier rows from selected numeric columns using z_score "
-            "(absolute standard deviations) or iqr (IQR fence multiplier). "
+            "(absolute standard deviations, default 3) or iqr (IQR fence multiplier, "
+            "default 1.5), or cap them with winsorize (tail fraction, default 0.05). "
             "Saves a new dataset version and logs lineage. "
             "Returns (new_version_id, summary_message)."
         ),
@@ -2118,7 +2525,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="normalize_data",
         description=(
             "Normalize selected numeric columns using scikit-learn strategies "
-            "standard, min_max, or robust. Saves a new dataset version and logs "
+            "standard, min_max (feature_min..feature_max), robust "
+            "(quantile_low..quantile_high percentiles), or maxabs. Saves a new dataset version and logs "
             "lineage. Returns (new_version_id, summary_message)."
         ),
         args_model=NormalizeDataArgs,
@@ -2139,7 +2547,11 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _openai_tool_schema(
         name="transform_features",
-        description="Apply non-linear transformations (log, box-cox, yeo-johnson, sqrt) or binning.",
+        description=(
+            "Apply non-linear transformations (log, box_cox, yeo_johnson, sqrt), binning "
+            "(bin_equal_width / bin_equal_freq with n_bins) or binarize (threshold). "
+            "Adds the results as new columns."
+        ),
         args_model=TransformFeaturesArgs,
     ),
     _openai_tool_schema(
@@ -2214,7 +2626,7 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="select_features_rfe",
         description=(
             "Use Recursive Feature Elimination (RFE) with linear regression, Ridge or Lasso to automatically "
-            "select the most important features and drop the rest. "
+            "select the most important features (from feature_columns, or all numeric columns) and drop the rest. "
             "Saves a new dataset version and logs lineage."
         ),
         args_model=SelectFeaturesRFEArgs,
@@ -2222,7 +2634,7 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="detect_anomalies",
         description=(
-            "Detect multivariate anomalies using Isolation Forest. "
+            "Detect multivariate anomalies using Isolation Forest on the numeric `columns` (default all). "
             "Can either drop anomalous rows or add an 'is_anomaly' flag column. "
             "Saves a new dataset version and logs lineage."
         ),

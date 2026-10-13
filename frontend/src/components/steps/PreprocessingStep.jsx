@@ -4,7 +4,7 @@ import ActionChips from '../ActionChips'
 /**
  * Step 3 — Preprocessing
  */
-export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, actions, tips, onAction }) {
+export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, actions, tips, onAction, manual }) {
   const hasData = tablePreview?.length > 0
 
   return (
@@ -35,7 +35,9 @@ export default function PreprocessingStep({ tablePreview, plotHistory, datasetVe
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-mist)', gap: '8px', padding: '30px' }}>
             <p style={{ fontSize: '1.5rem' }}>📈</p>
             <p style={{ fontSize: '0.875rem', textAlign: 'center', color: 'var(--color-mist)' }}>
-              Click a suggested action above to generate a chart
+              {manual
+                ? 'Choose the Plot tool above, set the chart options and press Plot'
+                : 'Click a suggested action above to generate a chart'}
             </p>
           </div>
         }

@@ -38,6 +38,7 @@ def _meta_from_artifact(artifact: dict[str, Any], trained_at: str) -> dict[str, 
         "new_version_id": str(artifact.get("new_version_id") or ""),
         "r2_score": metrics.get("r2_score"),
         "rmse": metrics.get("rmse"),
+        "hyperparameters": dict(artifact.get("hyperparameters") or {}),
         "trained_at": artifact.get("trained_at") or trained_at,
     }
 

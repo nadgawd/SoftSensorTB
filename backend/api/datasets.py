@@ -8,13 +8,16 @@ from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
+import pyarrow.parquet as pq
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
+from backend.agents.context import _is_numeric
 from backend.auth import User, get_current_user
 from backend.database import AsyncSessionLocal
 from backend.limits import max_upload_bytes
-from backend.mcp_server.eda_tools import _load_dataframe, _write_parquet
+from backend.mcp_server.eda_tools import _load_dataframe, _resolve_storage_path, _write_parquet
+from backend.mcp_server.model_registry import lineage_models
 from backend.models import Dataset
 from backend.services.lineage_service import (
     LineageService,
@@ -241,6 +244,31 @@ async def rollback_to_version(
             columns=list(df.columns),
             plot_data=None,
         )
+
+
+@router.get("/datasets/versions/{dataset_version_id}/schema")
+async def version_schema(
+    dataset_version_id: str,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Columns (name, dtype, numeric) and trained models, for the manual tool forms."""
+    async with AsyncSessionLocal() as session:
+        version = await owned_version(session, dataset_version_id, user)
+        try:
+            parquet = pq.ParquetFile(_resolve_storage_path(version.file_path))
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        models = await lineage_models(session, str(version.id))
+        return {
+            "dataset_version_id": str(version.id),
+            "row_count": parquet.metadata.num_rows,
+            "columns": [
+                {"name": f.name, "dtype": str(f.type), "numeric": _is_numeric(f.type)}
+                for f in parquet.schema_arrow
+                if not f.name.startswith("__index_level")
+            ],
+            "models": models,
+        }
 
 
 @router.get("/datasets/versions/{dataset_version_id}/meta")

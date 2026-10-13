@@ -5,7 +5,7 @@ const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
 /**
  * Step 5 — Modeling
  */
-export default function ModelingStep({ modelMetrics, datasetVersionId, actions, tips, onAction }) {
+export default function ModelingStep({ modelMetrics, datasetVersionId, actions, tips, onAction, manual }) {
   const hasDataset = Boolean(datasetVersionId)
 
   function formatMetric(value) {
@@ -59,6 +59,21 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, actions, 
             )}
           </div>
 
+          {modelMetrics.hyperparameters && Object.keys(modelMetrics.hyperparameters).length > 0 && (
+            <div className="panel" style={{ borderRadius: '14px', padding: '12px 18px' }}>
+              <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: '0 0 8px' }}>
+                Settings Used
+              </p>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                {Object.entries(modelMetrics.hyperparameters).map(([name, value]) => (
+                  <span key={name} className="badge-mist" style={{ padding: '3px 9px', borderRadius: '99px', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>
+                    {name} = {String(value)}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Feature importances */}
           {modelMetrics.feature_importances && (
             <div className="panel" style={{ borderRadius: '14px', padding: '14px 18px' }}>
@@ -98,7 +113,11 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, actions, 
       ) : (
         <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
           <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>⚙️</p>
-          <p style={{ fontSize: '0.875rem' }}>Click a suggested action above to train a soft-sensor model.</p>
+          <p style={{ fontSize: '0.875rem' }}>
+            {manual
+              ? 'Set the algorithm, features and split in the form above, then press Train model.'
+              : 'Click a suggested action above to train a soft-sensor model.'}
+          </p>
         </div>
       )}
     </div>

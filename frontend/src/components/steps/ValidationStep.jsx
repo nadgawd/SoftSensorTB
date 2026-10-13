@@ -4,7 +4,7 @@ import ActionChips from '../ActionChips'
 /**
  * Step 6 — Validation
  */
-export default function ValidationStep({ modelMetrics, plotHistory, actions, tips, onAction }) {
+export default function ValidationStep({ modelMetrics, plotHistory, actions, tips, onAction, manual }) {
   function fmt(v) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
     return Number(v).toFixed(4)
@@ -23,7 +23,11 @@ export default function ValidationStep({ modelMetrics, plotHistory, actions, tip
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-mist)', padding: '30px', gap: '8px' }}>
             <p style={{ fontSize: '1.5rem' }}>📉</p>
             <p style={{ fontSize: '0.875rem', textAlign: 'center' }}>
-              Click <strong style={{ color: 'var(--color-ember)' }}>"Generate a parity plot"</strong> above to visualize model performance
+              {manual ? (
+                <>Choose <strong style={{ color: 'var(--color-ember)' }}>Parity plot</strong> above and press Plot to visualize model performance</>
+              ) : (
+                <>Click <strong style={{ color: 'var(--color-ember)' }}>"Generate a parity plot"</strong> above to visualize model performance</>
+              )}
             </p>
           </div>
         }
@@ -46,6 +50,13 @@ export default function ValidationStep({ modelMetrics, plotHistory, actions, tip
               <MetricRow label="RMSE" value={fmt(modelMetrics.rmse)} note="Root mean squared error" />
               <MetricRow label="Training samples" value={modelMetrics.n_train ?? '—'} note="" />
               <MetricRow label="Test samples" value={modelMetrics.n_test ?? '—'} note="" />
+              {modelMetrics.split_strategy && (
+                <MetricRow
+                  label="Train/test split"
+                  value={modelMetrics.split_strategy}
+                  note={typeof modelMetrics.test_size === 'number' ? `${Math.round(modelMetrics.test_size * 100)}% held out for testing` : ''}
+                />
+              )}
               {modelMetrics.target_column && (
                 <MetricRow label="Target" value={modelMetrics.target_column} note="Soft-sensor output" />
               )}

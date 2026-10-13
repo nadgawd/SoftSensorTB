@@ -84,8 +84,14 @@ _PLOT_TOOLS = frozenset({
     "generate_importance_plot",
     "generate_coefficients_plot",
 })
-_TABLE_TOOLS = frozenset({"run_duckdb_query", "get_column_statistics"})
+_TABLE_TOOLS = frozenset({"run_duckdb_query", "get_column_statistics", "list_trained_models"})
 _METRIC_TOOLS = frozenset({"train_soft_sensor"})
+_MAX_TABLE_ROWS = 50
+_TABLE_TITLES = {
+    "run_duckdb_query": "Query result",
+    "get_column_statistics": "Column statistics",
+    "list_trained_models": "Trained models",
+}
 
 
 def _execution_system_prompt(
@@ -211,6 +217,35 @@ def _inject_dataset_version(
     return args
 
 
+def _cell(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return json.dumps(value, default=str)
+
+
+def _table_rows(tool_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
+    if tool_name == "get_column_statistics":
+        return [
+            {"column": name, **{k: _cell(v) for k, v in stats.items()}}
+            for name, stats in (result.get("statistics") or {}).items()
+        ]
+    if tool_name == "list_trained_models":
+        return [
+            {
+                "model_id": m.get("model_id"),
+                "algorithm": m.get("algorithm"),
+                "target": m.get("target_column"),
+                "features": ", ".join(m.get("feature_columns") or []),
+                "r2_score": m.get("r2_score"),
+                "rmse": m.get("rmse"),
+                "settings": _cell(m.get("hyperparameters") or None),
+                "trained_at": m.get("trained_at"),
+            }
+            for m in result.get("models") or []
+        ]
+    return list(result.get("rows") or [])
+
+
 def _update_ui_state(
     state: dict[str, Any],
     *,
@@ -230,9 +265,13 @@ def _update_ui_state(
         return
 
     if tool_name in _TABLE_TOOLS and isinstance(result, dict):
-        rows = result.get("rows") or []
+        rows = _table_rows(tool_name, result)
         # Cap preview size for the chat response payload.
-        state["table_preview"] = rows[:50]
+        state["table_preview"] = rows[:_MAX_TABLE_ROWS]
+        state["table_title"] = (
+            f"{_TABLE_TITLES[tool_name]} · first {_MAX_TABLE_ROWS} of {len(rows)} rows"
+            if len(rows) > _MAX_TABLE_ROWS else _TABLE_TITLES[tool_name]
+        )
         state["ui_update_required"] = True
         return
 
@@ -254,10 +293,27 @@ def _update_ui_state(
             "n_test": result.get("n_test"),
             "target_column": result.get("target_column"),
             "feature_columns": result.get("feature_columns"),
+            "split_strategy": result.get("split_strategy"),
+            "test_size": result.get("test_size"),
+            "hyperparameters": result.get("hyperparameters"),
         }
         if "new_version_id" in result:
             state["active_dataset_version_id"] = result["new_version_id"]
         state["ui_update_required"] = True
+
+
+def _new_ui_state(dataset_version_id: str, ui: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    ui = ui or {}
+    return {
+        "ui_update_required": False,
+        "active_dataset_version_id": dataset_version_id,
+        "plot_data": None,
+        "table_preview": None,
+        "table_title": None,
+        "model_metrics": None,
+        "selected_features": ui.get("selectedFeatures") or [],
+        "target_variable": ui.get("targetVariable"),
+    }
 
 
 async def _dispatch_tool(
@@ -273,6 +329,35 @@ async def _dispatch_tool(
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+async def run_tool_manually(
+    tool_name: str,
+    arguments: dict[str, Any],
+    dataset_version_id: str,
+) -> dict[str, Any]:
+    """Run one tool the user configured by hand.
+
+    Goes through the same dispatch and UI-state folding as the chat agent, so
+    a manual run updates the workbench exactly like the assistant calling it.
+    The caller must already have checked that the user owns the version.
+    """
+    result = await _dispatch_tool(tool_name, arguments, dataset_version_id)
+    state = _new_ui_state(dataset_version_id)
+    _update_ui_state(state, tool_name=tool_name, result=result)
+    message = result[1] if isinstance(result, tuple) and len(result) == 2 else _summarize_tool_result(tool_name, result)
+    return {
+        "tool": tool_name,
+        "message": message,
+        "summary": _summarize_tool_result(tool_name, result),
+        "ui_update_required": bool(state["ui_update_required"]),
+        "active_dataset_version_id": state["active_dataset_version_id"],
+        "plot_data": state["plot_data"],
+        "table_preview": state["table_preview"],
+        "table_title": state["table_title"],
+        "model_metrics": state["model_metrics"],
+        "tool_calls_made": [tool_name],
+    }
 
 
 def _run_ui_tool(
@@ -375,15 +460,7 @@ async def run_execution_agent(
     """
     client = get_llm_client(agent_type="execution")
     ui = parse_ui_state(ui_context)
-    ui_state: dict[str, Any] = {
-        "ui_update_required": False,
-        "active_dataset_version_id": dataset_version_id,
-        "plot_data": None,
-        "table_preview": None,
-        "model_metrics": None,
-        "selected_features": ui.get("selectedFeatures") or [],
-        "target_variable": ui.get("targetVariable"),
-    }
+    ui_state = _new_ui_state(dataset_version_id, ui)
     features_changed = False
     tool_calls_made: list[str] = []
 
@@ -543,6 +620,7 @@ async def run_execution_agent(
             "active_dataset_version_id": ui_state["active_dataset_version_id"],
             "plot_data": ui_state["plot_data"],
             "table_preview": ui_state["table_preview"],
+            "table_title": ui_state["table_title"],
             "model_metrics": ui_state["model_metrics"],
             "selected_features": ui_state["selected_features"] if features_changed else None,
             "target_variable": ui_state["target_variable"] if features_changed else None,

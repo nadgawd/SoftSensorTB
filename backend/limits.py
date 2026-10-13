@@ -32,12 +32,19 @@ def chat_limit_per_hour() -> int:
     return _env_int("CHAT_RATE_LIMIT_PER_HOUR", 40 if auth_required() else 0)
 
 
+def manual_limit_per_hour() -> int:
+    """Manual tool runs cost no LLM credit but do cost CPU. 0 disables the limit."""
+    from backend.auth import auth_required
+
+    return _env_int("MANUAL_RATE_LIMIT_PER_HOUR", 600 if auth_required() else 0)
+
+
 class SlidingWindowLimiter:
     def __init__(self, window_s: float = 3600.0) -> None:
         self.window_s = window_s
         self._hits: dict[str, deque[float]] = defaultdict(deque)
 
-    def check(self, key: str, limit: int) -> None:
+    def check(self, key: str, limit: int, what: str = "Chat limit reached ({limit} messages per hour)") -> None:
         if limit <= 0:
             return
         now = time.monotonic()
@@ -48,7 +55,7 @@ class SlidingWindowLimiter:
             retry = int(self.window_s - (now - hits[0])) + 1
             raise HTTPException(
                 status_code=429,
-                detail=f"Chat limit reached ({limit} messages per hour). Try again in {retry // 60 + 1} min.",
+                detail=f"{what.format(limit=limit)}. Try again in {retry // 60 + 1} min.",
                 headers={"Retry-After": str(retry)},
             )
         hits.append(now)
@@ -58,3 +65,4 @@ class SlidingWindowLimiter:
 
 
 chat_limiter = SlidingWindowLimiter()
+manual_limiter = SlidingWindowLimiter()

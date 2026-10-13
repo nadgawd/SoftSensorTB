@@ -116,9 +116,39 @@ class TrainSoftSensorArgs(BaseModel):
         default="random",
         description=(
             "How to split data into train/test: "
-            "'random' (sklearn train_test_split) or "
-            "'sequential' (last 20% of rows as test, preserving time order)."
+            "'random' (shuffled train_test_split) or "
+            "'sequential' (last test_size fraction of rows as test, preserving time order)."
         ),
+        json_schema_extra={"enum": ["random", "sequential"]},
+    )
+    test_size: float = Field(
+        default=_TEST_SIZE,
+        description="Fraction of rows held out as the test set (0.2 = 80/20 train/test split).",
+        ge=0.05,
+        le=0.5,
+    )
+    random_state: int = Field(
+        default=_RANDOM_STATE,
+        description="Random seed of the random train/test split.",
+    )
+    fit_intercept: bool = Field(
+        default=True,
+        description="Fit an intercept term (OLS, Ridge, Lasso).",
+    )
+    pls_scale: bool = Field(
+        default=True,
+        description="Standardize X and y inside PLS.",
+    )
+    max_iter: int = Field(
+        default=1000,
+        description="Maximum solver iterations for Lasso.",
+        ge=100,
+        le=100000,
+    )
+    knn_weights: str = Field(
+        default="uniform",
+        description="k-NN neighbour weighting: 'uniform' or 'distance'.",
+        json_schema_extra={"enum": ["uniform", "distance"]},
     )
 
     @field_validator("dataset_version_id")
@@ -139,6 +169,14 @@ class TrainSoftSensorArgs(BaseModel):
     def _valid_split_strategy(cls, v: str) -> str:
         if v not in {"random", "sequential"}:
             raise ValueError("split_strategy must be 'random' or 'sequential'")
+        return v
+
+    @field_validator("knn_weights")
+    @classmethod
+    def _valid_knn_weights(cls, v: str) -> str:
+        v = v.strip().lower()
+        if v not in {"uniform", "distance"}:
+            raise ValueError("knn_weights must be 'uniform' or 'distance'")
         return v
 
     @field_validator("feature_columns")
@@ -257,21 +295,30 @@ def _fit_estimator(
     n_components: int,
     alpha: float = 1.0,
     n_neighbors: int = 5,
+    *,
+    fit_intercept: bool = True,
+    pls_scale: bool = True,
+    max_iter: int = 1000,
+    knn_weights: str = "uniform",
 ) -> Any:
     if algorithm == SoftSensorAlgorithm.OLS:
-        model = LinearRegression()
+        model = LinearRegression(fit_intercept=fit_intercept)
         model.fit(X_train, y_train)
         return model
     elif algorithm == SoftSensorAlgorithm.RIDGE:
-        model = Ridge(alpha=alpha)
+        model = Ridge(alpha=alpha, fit_intercept=fit_intercept)
         model.fit(X_train, y_train)
         return model
     elif algorithm == SoftSensorAlgorithm.LASSO:
-        model = Lasso(alpha=alpha)
+        model = Lasso(alpha=alpha, fit_intercept=fit_intercept, max_iter=max_iter)
         model.fit(X_train, y_train)
         return model
     elif algorithm == SoftSensorAlgorithm.KNN:
-        model = KNeighborsRegressor(n_neighbors=n_neighbors)
+        if n_neighbors > len(X_train):
+            raise ValueError(
+                f"n_neighbors={n_neighbors} exceeds the {len(X_train)} training rows"
+            )
+        model = KNeighborsRegressor(n_neighbors=n_neighbors, weights=knn_weights)
         model.fit(X_train, y_train)
         return model
 
@@ -288,7 +335,7 @@ def _fit_estimator(
         return model
     else:
         # Default PLS
-        model = PLSRegression(n_components=n_components, scale=True)
+        model = PLSRegression(n_components=n_components, scale=pls_scale)
         model.fit(X_train, y_train)
         return model
 
@@ -331,6 +378,40 @@ def _predict(model: Any, X: pd.DataFrame) -> np.ndarray:
     return np.asarray(y_hat, dtype=float).reshape(-1)
 
 
+def _split(
+    X: pd.DataFrame, y: pd.Series, args: TrainSoftSensorArgs
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    if args.split_strategy == "sequential":
+        # Time-order preserving: the last `test_size` fraction of rows is the test set.
+        n_test = max(1, int(len(X) * args.test_size))
+        n_train = len(X) - n_test
+        return X.iloc[:n_train], X.iloc[n_train:], y.iloc[:n_train], y.iloc[n_train:]
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=args.test_size, random_state=args.random_state
+    )
+    return X_train, X_test, y_train, y_test
+
+
+_ALGORITHM_HYPERPARAMETERS: dict[SoftSensorAlgorithm, tuple[str, ...]] = {
+    SoftSensorAlgorithm.OLS: ("fit_intercept",),
+    SoftSensorAlgorithm.RIDGE: ("alpha", "fit_intercept"),
+    SoftSensorAlgorithm.LASSO: ("alpha", "fit_intercept", "max_iter"),
+    SoftSensorAlgorithm.PLS: ("n_components", "pls_scale"),
+    SoftSensorAlgorithm.PCR: ("n_components",),
+    SoftSensorAlgorithm.KNN: ("n_neighbors", "knn_weights"),
+}
+
+
+def _hyperparameters(args: TrainSoftSensorArgs) -> dict[str, Any]:
+    """The settings that shaped this model, for lineage and the model registry."""
+    out: dict[str, Any] = {"split_strategy": args.split_strategy, "test_size": args.test_size}
+    if args.split_strategy == "random":
+        out["random_state"] = args.random_state
+    for name in _ALGORITHM_HYPERPARAMETERS[args.algorithm]:
+        out[name] = getattr(args, name)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
@@ -345,11 +426,17 @@ async def train_soft_sensor(
     alpha: float = 1.0,
     n_neighbors: int = 5,
     split_strategy: str = "random",
+    test_size: float = _TEST_SIZE,
+    random_state: int = _RANDOM_STATE,
+    fit_intercept: bool = True,
+    pls_scale: bool = True,
+    max_iter: int = 1000,
+    knn_weights: str = "uniform",
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
     """
-    Train a soft sensor on an 80/20 train/test split.
+    Train a soft sensor on a train/test split (``test_size`` held out, 0.2 by default).
 
     Persists the ``.pkl`` artifact through storage and returns metrics plus
     feature coefficients for process interpretation.
@@ -363,6 +450,12 @@ async def train_soft_sensor(
         alpha=alpha,
         n_neighbors=n_neighbors,
         split_strategy=split_strategy,
+        test_size=test_size,
+        random_state=random_state,
+        fit_intercept=fit_intercept,
+        pls_scale=pls_scale,
+        max_iter=max_iter,
+        knn_weights=knn_weights,
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
@@ -374,19 +467,7 @@ async def train_soft_sensor(
             target_column=args.target_column,
         )
 
-        if args.split_strategy == "sequential":
-            # Time-series safe split: last 20% of rows are test set
-            n_test = max(1, int(len(X) * _TEST_SIZE))
-            n_train = len(X) - n_test
-            X_train, X_test = X.iloc[:n_train], X.iloc[n_train:]
-            y_train, y_test = y.iloc[:n_train], y.iloc[n_train:]
-        else:
-            X_train, X_test, y_train, y_test = train_test_split(
-                X,
-                y,
-                test_size=_TEST_SIZE,
-                random_state=_RANDOM_STATE,
-            )
+        X_train, X_test, y_train, y_test = _split(X, y, args)
         model = _fit_estimator(
             args.algorithm,
             X_train,
@@ -394,7 +475,12 @@ async def train_soft_sensor(
             args.n_components,
             args.alpha,
             args.n_neighbors,
+            fit_intercept=args.fit_intercept,
+            pls_scale=args.pls_scale,
+            max_iter=args.max_iter,
+            knn_weights=args.knn_weights,
         )
+        hyperparameters = _hyperparameters(args)
         y_pred = _predict(model, X_test)
         r2 = float(r2_score(y_test, y_pred))
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
@@ -421,7 +507,7 @@ async def train_soft_sensor(
                 "algorithm": args.algorithm.value,
                 "target": args.target_column,
                 "features": args.feature_columns,
-                "split_strategy": args.split_strategy,
+                **hyperparameters,
             },
             summary_message=(
                 f"Trained {args.algorithm.value} soft sensor for "
@@ -436,6 +522,7 @@ async def train_soft_sensor(
             "feature_columns": args.feature_columns,
             "target_column": args.target_column,
             "n_components": args.n_components,
+            "hyperparameters": hyperparameters,
             "dataset_version_id": args.dataset_version_id,
             "new_version_id": new_version_id,
             "metrics": {"r2_score": r2, "rmse": rmse},
@@ -462,6 +549,8 @@ async def train_soft_sensor(
             "coefficients": coefficients,
             "artifact_path": artifact_path,
             "split_strategy": args.split_strategy,
+            "test_size": args.test_size,
+            "hyperparameters": hyperparameters,
             "n_train": int(len(X_train)),
             "n_test": int(len(X_test)),
             "target_column": args.target_column,
@@ -792,7 +881,9 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="train_soft_sensor",
         description=(
             "Train a soft-sensor regression model (linear regression / OLS, PLS, "
-            "Ridge, Lasso, PCR or k-NN) on a dataset version with an 80/20 train/test split. "
+            "Ridge, Lasso, PCR or k-NN) on a dataset version. test_size sets the held-out "
+            "fraction (default 0.2, i.e. an 80/20 train/test split); split_strategy picks a "
+            "shuffled (random_state) or time-ordered split. "
             "Reports test-set R² and RMSE, saves a .pkl artifact under "
             "data_storage/models/, and returns model_id, metrics, and feature "
             "coefficients/importances."
