@@ -1,11 +1,11 @@
-import ActionChips from '../ActionChips'
+import StepTips from '../StepTips'
 
 const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
 
 /**
  * Step 5 — Modeling
  */
-export default function ModelingStep({ modelMetrics, datasetVersionId, actions, tips, onAction, manual }) {
+export default function ModelingStep({ modelMetrics, datasetVersionId, tips, manual }) {
   const hasDataset = Boolean(datasetVersionId)
 
   function formatMetric(value) {
@@ -15,8 +15,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, actions, 
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Dynamic tips + clickable actions */}
-      <ActionChips actions={actions} tips={tips} onAction={onAction} />
+      <StepTips tips={tips} />
 
       {/* Algorithm display */}
       <div className="panel" style={{ borderRadius: '14px', padding: '16px 18px' }}>
@@ -116,7 +115,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, actions, 
           <p style={{ fontSize: '0.875rem' }}>
             {manual
               ? 'Set the algorithm, features and split in the form above, then press Train model.'
-              : 'Click a suggested action above to train a soft-sensor model.'}
+              : 'Open the Assistant and pick a suggestion, or ask it to train a soft-sensor model.'}
           </p>
         </div>
       )}

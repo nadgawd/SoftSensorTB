@@ -1,10 +1,10 @@
 import { useMemo } from 'react'
-import ActionChips from '../ActionChips'
+import StepTips from '../StepTips'
 
 /**
  * Step 2 — Data Quality
  */
-export default function DataQualityStep({ tablePreview, fileName, actions, tips, onAction }) {
+export default function DataQualityStep({ tablePreview, fileName, tips }) {
   const stats = useMemo(() => {
     if (!tablePreview?.length) return null
     const columns = Object.keys(tablePreview[0])
@@ -37,7 +37,7 @@ export default function DataQualityStep({ tablePreview, fileName, actions, tips,
           <p style={{ fontSize: '1.5rem', marginBottom: '10px' }}>🔍</p>
           <p style={{ fontSize: '0.875rem' }}>Upload a dataset in Step 1 to see data quality assessment here.</p>
         </div>
-        <ActionChips actions={actions} tips={tips} onAction={onAction} />
+        <StepTips tips={tips} />
       </div>
     )
   }
@@ -45,7 +45,7 @@ export default function DataQualityStep({ tablePreview, fileName, actions, tips,
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* Dynamic tips */}
-      <ActionChips actions={actions} tips={tips} onAction={onAction} />
+      <StepTips tips={tips} />
 
       {/* Quality summary badges */}
       <div className="panel" style={{ borderRadius: '14px', padding: '16px 20px' }}>

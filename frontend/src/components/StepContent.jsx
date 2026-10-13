@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import DataIngestionStep from './steps/DataIngestionStep'
 import DataQualityStep from './steps/DataQualityStep'
 import PreprocessingStep from './steps/PreprocessingStep'
@@ -9,7 +9,6 @@ import ExportStep from './steps/ExportStep'
 import VersionHistory from './VersionHistory'
 import ManualTools from './manual/ManualTools'
 import ResultTable from './manual/ResultTable'
-import { getDynamicContext } from '../utils/tips'
 import { usePersisted } from '../hooks/usePersisted'
 
 const HISTORY_VIEWS = [
@@ -18,7 +17,7 @@ const HISTORY_VIEWS = [
 ]
 
 const WORK_MODES = [
-  { id: 'assistant', label: 'Assistant', title: 'Suggested actions run through the assistant' },
+  { id: 'assistant', label: 'Assistant', title: 'Ask the assistant to run tools for you' },
   { id: 'manual', label: 'Manual', title: 'Pick tools and set every parameter yourself' },
 ]
 
@@ -72,7 +71,7 @@ export default function StepContent({
   onFeaturesChange,
   onRollback,
   onHistoryRefresh,
-  onSuggestedAction, // fires the message to the assistant
+  tips,
   workMode,
   onWorkModeChange,
   onToolResult,
@@ -84,25 +83,8 @@ export default function StepContent({
   const [historyView, setHistoryView] = usePersisted('historyView', 'tree')
   const stepNum = STEP_NUMBERS[activeStep] || 1
 
-  // Build dynamic context for tips engine
-  const tipsCtx = useMemo(() => ({
-    columns: tablePreview?.length ? Object.keys(tablePreview[0]) : [],
-    rowCount: tablePreview?.length ?? 0,
-    hasTarget: Boolean(targetVariable),
-    targetVariable,
-    selectedFeatures: selectedFeatures || [],
-    hasModel: Boolean(modelMetrics),
-    r2Score: modelMetrics?.r2_score ?? null,
-    hasPlot: Boolean(plotHistory.activePlot),
-  }), [tablePreview, targetVariable, selectedFeatures, modelMetrics, plotHistory.activePlot])
-
-  const { actions, tips } = useMemo(
-    () => getDynamicContext(activeStep, tipsCtx),
-    [activeStep, tipsCtx],
-  )
-
   function renderStepPanel() {
-    const commonProps = { actions: manual ? [] : actions, tips, onAction: onSuggestedAction, manual }
+    const commonProps = { tips, manual }
 
     switch (activeStep) {
       case 'ingestion':

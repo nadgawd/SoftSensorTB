@@ -46,8 +46,7 @@ export default function AssistantPanel({
   stepHint,
   uiContext,
   onChatResponse,
-  pendingAction,
-  onPendingActionConsumed,
+  suggestions = [],
   width,
   onWidthPreview,
   onWidthCommit,
@@ -63,6 +62,7 @@ export default function AssistantPanel({
   const [error, setError] = useState(null)
   const [thinkingAvailable, setThinkingAvailable] = useState(false)
   const [think, setThink] = usePersisted('thinkMode', false)
+  const [showSuggestions, setShowSuggestions] = usePersisted('showSuggestions', true)
   const [messages, setMessages] = usePersisted('chatMessages', [
     {
       role: 'assistant',
@@ -152,19 +152,7 @@ export default function AssistantPanel({
     return () => { cancelled = true }
   }, [open])
 
-  // Auto-submit a pending action from clicking a chip
-  useEffect(() => {
-    if (!pendingAction || busy) return
-    // slight delay so the panel animation completes first
-    const timer = setTimeout(() => {
-      handleSubmitText(pendingAction)
-      onPendingActionConsumed?.()
-    }, 400)
-    return () => clearTimeout(timer)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingAction])
-
-  // Core send function (used by both submit button and pendingAction)
+  // Core send function (used by the submit button and the suggestion chips)
   async function handleSubmitText(prompt) {
     if (!prompt?.trim() || busy) return
 
@@ -491,6 +479,33 @@ export default function AssistantPanel({
             }}
           >
             {error}
+          </div>
+        )}
+        {suggestions.length > 0 && (
+          <div className="chat-suggestions">
+            <button
+              type="button"
+              className="chat-suggestions-toggle"
+              aria-expanded={showSuggestions}
+              onClick={() => setShowSuggestions((v) => !v)}
+            >
+              {showSuggestions ? '▾' : '▸'} Suggestions · {stepHint}
+            </button>
+            {showSuggestions && (
+              <div className="chat-suggestions-list">
+                {suggestions.map((text, i) => (
+                  <button
+                    key={`${i}-${text}`}
+                    type="button"
+                    className="chat-suggestion"
+                    disabled={busy}
+                    onClick={() => handleSubmitText(text)}
+                  >
+                    {text}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
         {!datasetVersionId && (

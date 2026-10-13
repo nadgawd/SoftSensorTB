@@ -1,10 +1,10 @@
 import PlotCanvas from '../PlotCanvas'
-import ActionChips from '../ActionChips'
+import StepTips from '../StepTips'
 
 /**
  * Step 6 — Validation
  */
-export default function ValidationStep({ modelMetrics, plotHistory, actions, tips, onAction, manual }) {
+export default function ValidationStep({ modelMetrics, plotHistory, tips, manual }) {
   function fmt(v) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
     return Number(v).toFixed(4)
@@ -12,8 +12,7 @@ export default function ValidationStep({ modelMetrics, plotHistory, actions, tip
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
-      {/* Dynamic tips + actions */}
-      <ActionChips actions={actions} tips={tips} onAction={onAction} />
+      <StepTips tips={tips} />
 
       {/* Parity / validation plot */}
       <PlotCanvas
@@ -26,7 +25,7 @@ export default function ValidationStep({ modelMetrics, plotHistory, actions, tip
               {manual ? (
                 <>Choose <strong style={{ color: 'var(--color-ember)' }}>Parity plot</strong> above and press Plot to visualize model performance</>
               ) : (
-                <>Click <strong style={{ color: 'var(--color-ember)' }}>"Generate a parity plot"</strong> above to visualize model performance</>
+                <>Ask the Assistant to <strong style={{ color: 'var(--color-ember)' }}>generate a parity plot</strong> to visualize model performance</>
               )}
             </p>
           </div>

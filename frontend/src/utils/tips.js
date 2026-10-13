@@ -85,7 +85,7 @@ export function getDynamicContext(step, ctx = {}) {
           ? [
               hasPlot
                 ? '📈 Chart updated. You can ask for a **trendline** or color it by another column.'
-                : '💡 Click a suggested action to generate a chart or transform the data.',
+                : '💡 Pick a suggestion in the **Assistant** chat to generate a chart or transform the data.',
               '🔧 Each preprocessing step creates a new dataset version — you can roll back anytime via the **History** button.',
               rowCount < 50
                 ? `⚠ **${rowCount} rows** is very small. Be careful with lagging which drops initial rows.`

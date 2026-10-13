@@ -1,9 +1,9 @@
-import ActionChips from '../ActionChips'
+import StepTips from '../StepTips'
 
 /**
  * Step 7 — Export
  */
-export default function ExportStep({ fileName, modelMetrics, tablePreview, datasetVersionId, actions, tips, onAction }) {
+export default function ExportStep({ fileName, modelMetrics, tablePreview, datasetVersionId, tips }) {
   const hasModel = Boolean(modelMetrics)
   const hasData = Boolean(tablePreview?.length)
 
@@ -26,8 +26,7 @@ export default function ExportStep({ fileName, modelMetrics, tablePreview, datas
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Dynamic tips & actions */}
-      <ActionChips actions={actions} tips={tips} onAction={onAction} />
+      <StepTips tips={tips} />
 
       {/* Export summary card */}
       <div className="panel" style={{ borderRadius: '14px', padding: '18px 22px' }}>

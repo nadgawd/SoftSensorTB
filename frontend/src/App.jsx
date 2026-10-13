@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import StepSidebar from './components/StepSidebar'
 import { STEPS } from './constants/steps'
 import StepContent from './components/StepContent'
@@ -11,6 +11,7 @@ import { usePersisted, clearPersistedSession } from './hooks/usePersisted'
 import { resetProject } from './lib/projectSync'
 import { usePlotHistory } from './hooks/usePlotHistory'
 import { useTheme } from './hooks/useTheme'
+import { getDynamicContext } from './utils/tips'
 
 const STEP_IDS = STEPS.map((s) => s.id)
 
@@ -118,8 +119,19 @@ export default function App() {
 
   // ── UI state (not persisted — just UI toggles) ────────────
   const [assistantOpen, setAssistantOpen] = useState(false)
-  const [pendingAction, setPendingAction] = useState(null)
   const { theme, toggleTheme } = useTheme()
+
+  // Step tips (shown on the step) and suggested prompts (shown in the assistant chat).
+  const { actions: suggestions, tips } = useMemo(() => getDynamicContext(activeStep, {
+    columns: tablePreview?.length ? Object.keys(tablePreview[0]) : [],
+    rowCount: tablePreview?.length ?? 0,
+    hasTarget: Boolean(targetVariable),
+    targetVariable,
+    selectedFeatures: selectedFeatures || [],
+    hasModel: Boolean(modelMetrics),
+    r2Score: modelMetrics?.r2_score ?? null,
+    hasPlot: Boolean(plotHistory.activePlot),
+  }), [activeStep, tablePreview, targetVariable, selectedFeatures, modelMetrics, plotHistory.activePlot])
 
   // ── Assistant panel width (drag its left edge) ────────────
   const [savedAssistantWidth, setSavedAssistantWidth] = usePersisted('assistantWidth', ASSISTANT_DEFAULT_WIDTH)
@@ -151,12 +163,6 @@ export default function App() {
     const timer = setTimeout(() => window.dispatchEvent(new Event('resize')), 340)
     return () => clearTimeout(timer)
   }, [assistantOpen, savedAssistantWidth])
-
-  // ── Suggested action chip → assistant send ────────────────
-  const handleSuggestedAction = useCallback((text) => {
-    setPendingAction(text)
-    setAssistantOpen(true)
-  }, [])
 
   // ── History helpers ───────────────────────────────────────
   const refreshHistory = useCallback(async (id) => {
@@ -445,7 +451,7 @@ export default function App() {
           }}
           onRollback={handleRollback}
           onHistoryRefresh={setVersionHistory}
-          onSuggestedAction={handleSuggestedAction}
+          tips={tips}
           workMode={workMode}
           onWorkModeChange={setWorkMode}
           onToolResult={handleChatResponse}
@@ -467,8 +473,7 @@ export default function App() {
           modelMetrics: modelMetrics || null,
         })}
         onChatResponse={handleChatResponse}
-        pendingAction={pendingAction}
-        onPendingActionConsumed={() => setPendingAction(null)}
+        suggestions={suggestions}
         width={assistantWidth}
         onWidthPreview={setDragAssistantWidth}
         onWidthCommit={commitAssistantWidth}

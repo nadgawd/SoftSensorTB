@@ -700,6 +700,47 @@
 .account-notice.ok { color: var(--color-success); }
 .account-notice.error { color: var(--color-alert); }
 
+/* ── Suggested prompts in the assistant chat ───────────────── */
+.chat-suggestions { margin-bottom: 10px; }
+.chat-suggestions-toggle {
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-mist);
+  cursor: pointer;
+}
+.chat-suggestions-toggle:hover { color: var(--color-foam); }
+.chat-suggestions-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.chat-suggestion {
+  padding: 5px 11px;
+  border-radius: 99px;
+  border: 1px solid color-mix(in srgb, var(--color-signal) 35%, transparent);
+  background: color-mix(in srgb, var(--color-signal) 8%, transparent);
+  color: var(--color-signal);
+  font-family: var(--font-display);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: all 150ms ease;
+}
+.chat-suggestion:hover:not(:disabled) {
+  border-color: var(--color-signal);
+  background: color-mix(in srgb, var(--color-signal) 14%, transparent);
+}
+.chat-suggestion:disabled { opacity: 0.45; cursor: not-allowed; }
+
 /* ── Work mode toggle (Assistant | Manual) ─────────────────── */
 .mode-toggle {
   display: flex;

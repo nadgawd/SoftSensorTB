@@ -1,16 +1,15 @@
 import PlotCanvas from '../PlotCanvas'
-import ActionChips from '../ActionChips'
+import StepTips from '../StepTips'
 
 /**
  * Step 3 — Preprocessing
  */
-export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, actions, tips, onAction, manual }) {
+export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, tips, manual }) {
   const hasData = tablePreview?.length > 0
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
-      {/* Dynamic tips + clickable actions */}
-      <ActionChips actions={actions} tips={tips} onAction={onAction} />
+      <StepTips tips={tips} />
 
       {/* Status bar */}
       {hasData && (
@@ -37,7 +36,7 @@ export default function PreprocessingStep({ tablePreview, plotHistory, datasetVe
             <p style={{ fontSize: '0.875rem', textAlign: 'center', color: 'var(--color-mist)' }}>
               {manual
                 ? 'Choose the Plot tool above, set the chart options and press Plot'
-                : 'Click a suggested action above to generate a chart'}
+                : 'Open the Assistant and pick a suggestion to generate a chart'}
             </p>
           </div>
         }

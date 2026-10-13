@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { uploadDataset } from '../../api/client'
-import ActionChips from '../ActionChips'
+import StepTips from '../StepTips'
 
 /**
  * Step 1 — Data Ingestion
@@ -9,7 +9,7 @@ import ActionChips from '../ActionChips'
 export default function DataIngestionStep({
   fileName, tablePreview, targetVariable,
   onUploadSuccess, onTargetSelect,
-  actions, tips, onAction,
+  tips,
 }) {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
@@ -76,8 +76,7 @@ export default function DataIngestionStep({
         </div>
       )}
 
-      {/* Dynamic tips & actions */}
-      <ActionChips actions={actions} tips={tips} onAction={onAction} />
+      <StepTips tips={tips} />
 
       {/* Column / tag table */}
       {columns.length > 0 && (
