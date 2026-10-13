@@ -1,16 +1,13 @@
 import PlotCanvas from '../PlotCanvas'
-import StepTips from '../StepTips'
 
 /**
  * Step 3 — Preprocessing
  */
-export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, tips }) {
+export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId }) {
   const hasData = tablePreview?.length > 0
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
-      <StepTips tips={tips} />
-
       {/* Status bar */}
       {hasData && (
         <div className="panel" style={{ borderRadius: '14px', padding: '12px 18px' }}>

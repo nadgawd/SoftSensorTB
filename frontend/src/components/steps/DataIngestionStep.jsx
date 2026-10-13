@@ -1,7 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { uploadDataset } from '../../api/client'
-import StepTips from '../StepTips'
 
 /**
  * Step 1 — Data Ingestion
@@ -9,7 +8,6 @@ import StepTips from '../StepTips'
 export default function DataIngestionStep({
   fileName, tablePreview, targetVariable,
   onUploadSuccess, onTargetSelect,
-  tips,
 }) {
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState(null)
@@ -76,8 +74,6 @@ export default function DataIngestionStep({
         </div>
       )}
 
-      <StepTips tips={tips} />
-
       {/* Column / tag table */}
       {columns.length > 0 && (
         <div className="panel" style={{ borderRadius: '14px', overflow: 'hidden' }}>
@@ -134,13 +130,6 @@ export default function DataIngestionStep({
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {!columns.length && !tips?.length && (
-        <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
-          <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>📊</p>
-          <p style={{ fontSize: '0.875rem' }}>Upload a CSV, TXT, or Parquet file to see tag columns here.</p>
         </div>
       )}
     </div>

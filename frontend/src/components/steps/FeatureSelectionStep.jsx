@@ -1,11 +1,8 @@
-import StepTips from '../StepTips'
-
 /**
  * Step 4 — Feature Selection
  */
 export default function FeatureSelectionStep({
   tablePreview, targetVariable, selectedFeatures, onFeaturesChange,
-  tips,
 }) {
   const hasData = tablePreview?.length > 0
   const columns = hasData ? Object.keys(tablePreview[0]) : []
@@ -32,7 +29,6 @@ export default function FeatureSelectionStep({
           <p style={{ fontSize: '1.5rem', marginBottom: '10px' }}>🎯</p>
           <p style={{ fontSize: '0.875rem' }}>Upload a dataset to select feature variables.</p>
         </div>
-        <StepTips tips={tips} />
       </div>
     )
   }
@@ -41,8 +37,6 @@ export default function FeatureSelectionStep({
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StepTips tips={tips} />
-
       {/* Header row */}
       <div className="panel" style={{ borderRadius: '14px', padding: '14px 18px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>

@@ -1,9 +1,7 @@
-import StepTips from '../StepTips'
-
 /**
  * Step 7 — Export
  */
-export default function ExportStep({ fileName, modelMetrics, tablePreview, datasetVersionId, tips }) {
+export default function ExportStep({ fileName, modelMetrics, tablePreview, datasetVersionId }) {
   const hasModel = Boolean(modelMetrics)
   const hasData = Boolean(tablePreview?.length)
 
@@ -26,8 +24,6 @@ export default function ExportStep({ fileName, modelMetrics, tablePreview, datas
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StepTips tips={tips} />
-
       {/* Export summary card */}
       <div className="panel" style={{ borderRadius: '14px', padding: '18px 22px' }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: '0 0 14px' }}>

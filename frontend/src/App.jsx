@@ -11,7 +11,7 @@ import { usePersisted, clearPersistedSession } from './hooks/usePersisted'
 import { resetProject } from './lib/projectSync'
 import { usePlotHistory } from './hooks/usePlotHistory'
 import { useTheme } from './hooks/useTheme'
-import { getDynamicContext } from './utils/tips'
+import { getSuggestions } from './utils/suggestions'
 import { useManualTools } from './hooks/useManualTools'
 import { editsFromArguments } from './lib/manualForm'
 
@@ -142,17 +142,15 @@ export default function App() {
   const [assistantOpen, setAssistantOpen] = usePersisted('assistantOpen', true)
   const { theme, toggleTheme } = useTheme()
 
-  // Step tips (shown on the step) and suggested prompts (shown in the assistant chat).
-  const { actions: suggestions, tips } = useMemo(() => getDynamicContext(activeStep, {
+  // Suggested prompts shown in the assistant chat.
+  const suggestions = useMemo(() => getSuggestions(activeStep, {
     columns: tablePreview?.length ? Object.keys(tablePreview[0]) : [],
-    rowCount: tablePreview?.length ?? 0,
     hasTarget: Boolean(targetVariable),
     targetVariable,
     selectedFeatures: selectedFeatures || [],
     hasModel: Boolean(modelMetrics),
     r2Score: modelMetrics?.r2_score ?? null,
-    hasPlot: Boolean(plotHistory.activePlot),
-  }), [activeStep, tablePreview, targetVariable, selectedFeatures, modelMetrics, plotHistory.activePlot])
+  }), [activeStep, tablePreview, targetVariable, selectedFeatures, modelMetrics])
 
   // ── Assistant panel width (drag its left edge) ────────────
   const [savedAssistantWidth, setSavedAssistantWidth] = usePersisted('assistantWidth', ASSISTANT_DEFAULT_WIDTH)
@@ -549,7 +547,6 @@ export default function App() {
           }}
           onRollback={handleRollback}
           onHistoryRefresh={setVersionHistory}
-          tips={tips}
           manualTools={{
             tools: manualToolSpecs,
             specError: manualSpecError,

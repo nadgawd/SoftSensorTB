@@ -66,7 +66,6 @@ export default function StepContent({
   onFeaturesChange,
   onRollback,
   onHistoryRefresh,
-  tips,
   manualTools,
   resultTable,
   onResultTableClose,
@@ -76,8 +75,6 @@ export default function StepContent({
   const stepNum = STEP_NUMBERS[activeStep] || 1
 
   function renderStepPanel() {
-    const commonProps = { tips }
-
     switch (activeStep) {
       case 'ingestion':
         return (
@@ -87,7 +84,6 @@ export default function StepContent({
             targetVariable={targetVariable}
             onUploadSuccess={onUploadSuccess}
             onTargetSelect={onTargetSelect}
-            {...commonProps}
           />
         )
       case 'quality':
@@ -95,7 +91,6 @@ export default function StepContent({
           <DataQualityStep
             tablePreview={tablePreview}
             fileName={fileName}
-            {...commonProps}
           />
         )
       case 'preprocessing':
@@ -104,7 +99,6 @@ export default function StepContent({
             tablePreview={tablePreview}
             plotHistory={plotHistory}
             datasetVersionId={datasetVersionId}
-            {...commonProps}
           />
         )
       case 'feature-selection':
@@ -114,7 +108,6 @@ export default function StepContent({
             targetVariable={targetVariable}
             selectedFeatures={selectedFeatures}
             onFeaturesChange={onFeaturesChange}
-            {...commonProps}
           />
         )
       case 'modeling':
@@ -122,7 +115,6 @@ export default function StepContent({
           <ModelingStep
             modelMetrics={modelMetrics}
             datasetVersionId={datasetVersionId}
-            {...commonProps}
           />
         )
       case 'validation':
@@ -130,7 +122,6 @@ export default function StepContent({
           <ValidationStep
             modelMetrics={modelMetrics}
             plotHistory={plotHistory}
-            {...commonProps}
           />
         )
       case 'export':
@@ -140,7 +131,6 @@ export default function StepContent({
             modelMetrics={modelMetrics}
             tablePreview={tablePreview}
             datasetVersionId={datasetVersionId}
-            {...commonProps}
           />
         )
       default:

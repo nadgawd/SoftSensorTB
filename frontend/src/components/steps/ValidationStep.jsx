@@ -1,10 +1,9 @@
 import PlotCanvas from '../PlotCanvas'
-import StepTips from '../StepTips'
 
 /**
  * Step 6 — Validation
  */
-export default function ValidationStep({ modelMetrics, plotHistory, tips }) {
+export default function ValidationStep({ modelMetrics, plotHistory }) {
   function fmt(v) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
     return Number(v).toFixed(4)
@@ -12,8 +11,6 @@ export default function ValidationStep({ modelMetrics, plotHistory, tips }) {
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
-      <StepTips tips={tips} />
-
       {/* Parity / validation plot */}
       <PlotCanvas
         label="Predictions vs. Lab Measurements"

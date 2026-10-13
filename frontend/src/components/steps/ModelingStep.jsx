@@ -1,11 +1,9 @@
-import StepTips from '../StepTips'
-
 const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
 
 /**
  * Step 5 — Modeling
  */
-export default function ModelingStep({ modelMetrics, datasetVersionId, tips }) {
+export default function ModelingStep({ modelMetrics, datasetVersionId }) {
   const hasDataset = Boolean(datasetVersionId)
 
   function formatMetric(value) {
@@ -15,8 +13,6 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, tips }) {
 
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StepTips tips={tips} />
-
       {/* Algorithm display */}
       <div className="panel" style={{ borderRadius: '14px', padding: '16px 18px' }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: '0 0 10px' }}>
