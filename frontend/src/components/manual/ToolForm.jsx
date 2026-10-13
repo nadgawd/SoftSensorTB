@@ -157,6 +157,9 @@ function ModelSelect({ value, onChange, models, id }) {
 }
 
 function FieldControl({ field, value, onChange, schema, values, id }) {
+  if (!schema && ['column', 'columns', 'mapping'].includes(field.widget)) {
+    return <p className="manual-hint">Columns appear once a dataset is loaded.</p>
+  }
   switch (field.widget) {
     case 'select':
       return <SelectInput field={field} value={value} onChange={onChange} id={id} />

@@ -160,7 +160,9 @@ export default function ManualTools({
             <button type="button" className="btn-ghost" onClick={reset} disabled={!edited || isRunning}>
               Reset to defaults
             </button>
-            {assistantBusy ? (
+            {!datasetVersionId ? (
+              <span className="manual-hint">Upload a dataset in Step 1 to run tools.</span>
+            ) : assistantBusy ? (
               <span className="manual-hint">The assistant is working on this dataset; wait for it to finish.</span>
             ) : (
               KIND_NOTES[tool.kind] && <span className="manual-hint">{KIND_NOTES[tool.kind]}</span>

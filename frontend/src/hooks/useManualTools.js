@@ -22,7 +22,12 @@ export function useManualTools() {
     let cancelled = false
     loadSpec()
       .then((data) => !cancelled && setState({ tools: data.tools, error: null }))
-      .catch((err) => !cancelled && setState({ tools: null, error: errorDetail(err) }))
+      .catch((err) => !cancelled && setState({
+        tools: null,
+        error: err?.response?.status === 404
+          ? 'the server is running an older version without the Tools API. Redeploy the backend.'
+          : errorDetail(err),
+      }))
     return () => {
       cancelled = true
     }

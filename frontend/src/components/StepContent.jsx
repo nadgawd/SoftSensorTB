@@ -282,16 +282,14 @@ export default function StepContent({
 
       {/* Main step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
-        {datasetVersionId && (
-          <ManualTools
-            activeStep={activeStep}
-            datasetVersionId={datasetVersionId}
-            targetVariable={targetVariable}
-            selectedFeatures={selectedFeatures}
-            modelKey={modelMetrics?.model_id}
-            {...manualTools}
-          />
-        )}
+        <ManualTools
+          activeStep={activeStep}
+          datasetVersionId={datasetVersionId}
+          targetVariable={targetVariable}
+          selectedFeatures={selectedFeatures}
+          modelKey={modelMetrics?.model_id}
+          {...manualTools}
+        />
         {resultTable && <ResultTable table={resultTable} onClose={onResultTableClose} />}
         {renderStepPanel()}
       </div>
