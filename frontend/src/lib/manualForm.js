@@ -168,4 +168,46 @@ export function buildArguments(tool, values) {
   return { args, errors }
 }
 
+function editValue(field, value) {
+  switch (field.widget) {
+    case 'checkbox':
+      return Boolean(value)
+    case 'int_list':
+      return Array.isArray(value) ? value.join(', ') : String(value)
+    case 'columns':
+    case 'text_list':
+      return (Array.isArray(value) ? value : [value]).map(String)
+    case 'mapping':
+      return value && typeof value === 'object'
+        ? Object.entries(value).map(([from, to]) => ({ from, to: String(to) }))
+        : [{ from: '', to: '' }]
+    case 'select': {
+      const text = String(value)
+      return field.options.find((o) => String(o) === text)
+        ?? field.options.find((o) => String(o).toLowerCase() === text.toLowerCase())
+        ?? text
+    }
+    default:
+      return String(value)
+  }
+}
+
+/**
+ * Form edits that reproduce a tool call (e.g. one the assistant made).
+ * Arguments the call left out stay at their defaults, which is what the tool used.
+ */
+export function editsFromArguments(tool, args) {
+  const edits = {}
+  for (const field of tool.fields) {
+    const value = args?.[field.name]
+    if (value !== undefined && value !== null) {
+      edits[field.name] = editValue(field, value)
+    } else if (field.app_default) {
+      // The workbench default would not be what the call used.
+      edits[field.name] = field.widget === 'columns' ? [] : ''
+    }
+  }
+  return edits
+}
+
 export { columnChoices }

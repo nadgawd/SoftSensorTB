@@ -10,11 +10,14 @@ import pytest
 
 from backend.agents import execution_agent
 from backend.agents.context import (
+    MAX_MANUAL_ACTIONS,
     DatasetContext,
     history_messages,
     render_dataset_context,
+    render_manual_actions,
     render_tool_history,
 )
+from backend.agents.knowledge_agent import _system_prompt as knowledge_system_prompt
 from backend.agents.router import classify_intent
 from backend.agents.ui_tools import apply_feature_selection
 from backend.mcp_server.model_registry import models_for_lineage
@@ -213,7 +216,16 @@ def test_execution_agent_streams_steps_and_applies_feature_selection(monkeypatch
         return [e async for e in execution_agent.run_execution_agent(
             "select only the new features",
             "v1",
-            ui_context=json.dumps({"targetVariable": "S", "selectedFeatures": ["TI1", "T1"]}),
+            ui_context=json.dumps({
+                "targetVariable": "S",
+                "selectedFeatures": ["TI1", "T1"],
+                "manualActions": [{
+                    "tool": "create_lag_features",
+                    "args": {"columns": ["TI1", "T2"], "lag_periods": [1]},
+                    "result": "Created 2 lag columns",
+                    "sinceLastReply": True,
+                }],
+            }),
             history=[{"role": "user", "content": "make lag features"},
                      {"role": "assistant", "content": "Done", "tools": ["create_lag_features"]}],
         )]
@@ -228,6 +240,14 @@ def test_execution_agent_streams_steps_and_applies_feature_selection(monkeypatch
     ends = [e["data"] for e in events if e["event"] == "tool_end"]
     assert all(end["ok"] for end in ends)
     assert "3 features" in ends[1]["summary"]
+    # Full arguments come back so the UI can show the call in the tool's form.
+    assert ends[0]["arguments"] == {"query": "SELECT 1"}
+    assert ends[1]["arguments"] == {"select": ["*_lag*", "*rolling*"]}
+
+    # Tools-panel runs reach the model in the system prompt.
+    system = client.prompts[0][0]["content"]
+    assert "tools the user ran by hand in the Tools panel" in system
+    assert '* create_lag_features({"columns": ["TI1", "T2"], "lag_periods": [1]}) -> Created 2 lag columns' in system
 
     final = events[-1]
     assert final["event"] == "final_state"
@@ -351,3 +371,34 @@ def test_claim_check_runs_once_so_a_stubborn_model_cannot_loop(monkeypatch):
     assert [e["event"] for e in events].count("retract") == 1
     assert len(client.prompts) == 2
     assert events[-1]["event"] == "final_state"
+
+
+def test_manual_actions_render_newest_with_marks_and_clipped_args():
+    actions = [
+        {"tool": f"tool_{i}", "args": {"i": i}, "result": f"result {i}", "sinceLastReply": i >= 11}
+        for i in range(12)
+    ]
+    actions.append({"tool": "run_duckdb_query", "args": {"sql_query": "x" * 1000}, "sinceLastReply": True})
+    text = render_manual_actions(actions)
+    lines = text.splitlines()[1:]
+    assert len(lines) == MAX_MANUAL_ACTIONS
+    assert lines[0].strip().startswith("- tool_3(")
+    assert lines[-2].strip() == '* tool_11({"i": 11}) -> result 11'
+    assert lines[-1].strip().endswith("…) -> done")
+
+
+@pytest.mark.parametrize("value", [None, "nope", [], [{"args": {}}], [42]])
+def test_manual_actions_ignore_malformed_input(value):
+    assert render_manual_actions(value) == ""
+
+
+def test_knowledge_prompt_lists_manual_actions_readably():
+    ui = json.dumps({
+        "targetVariable": "y",
+        "manualActions": [{"tool": "normalize_data", "args": {"strategy": "standard"}, "result": "Scaled 3 columns"}],
+    })
+    prompt = knowledge_system_prompt(ui_context=ui)
+    assert '"targetVariable": "y"' in prompt
+    assert '- normalize_data({"strategy": "standard"}) -> Scaled 3 columns' in prompt
+    assert "manualActions" not in prompt
+    assert "not json" in knowledge_system_prompt(ui_context="not json")

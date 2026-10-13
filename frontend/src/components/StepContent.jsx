@@ -16,11 +16,6 @@ const HISTORY_VIEWS = [
   { id: 'timeline', label: 'Timeline' },
 ]
 
-const WORK_MODES = [
-  { id: 'assistant', label: 'Assistant', title: 'Ask the assistant to run tools for you' },
-  { id: 'manual', label: 'Manual', title: 'Pick tools and set every parameter yourself' },
-]
-
 const STEP_LABELS = {
   ingestion: 'Data Ingestion',
   quality: 'Data Quality',
@@ -72,19 +67,16 @@ export default function StepContent({
   onRollback,
   onHistoryRefresh,
   tips,
-  workMode,
-  onWorkModeChange,
-  onToolResult,
+  manualTools,
   resultTable,
   onResultTableClose,
 }) {
-  const manual = workMode === 'manual'
   const [showHistory, setShowHistory] = useState(false)
   const [historyView, setHistoryView] = usePersisted('historyView', 'tree')
   const stepNum = STEP_NUMBERS[activeStep] || 1
 
   function renderStepPanel() {
-    const commonProps = { tips, manual }
+    const commonProps = { tips }
 
     switch (activeStep) {
       case 'ingestion':
@@ -201,21 +193,6 @@ export default function StepContent({
 
         {/* Version history toggle + active version badge */}
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-          <div className="mode-toggle" role="radiogroup" aria-label="Work mode">
-            {WORK_MODES.map(({ id, label, title }) => (
-              <button
-                key={id}
-                type="button"
-                role="radio"
-                aria-checked={workMode === id}
-                title={title}
-                className={`mode-toggle-btn${workMode === id ? ' active' : ''}`}
-                onClick={() => onWorkModeChange(id)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
           {datasetVersionId && (
             <div
               style={{
@@ -305,14 +282,14 @@ export default function StepContent({
 
       {/* Main step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
-        {manual && datasetVersionId && (
+        {datasetVersionId && (
           <ManualTools
             activeStep={activeStep}
             datasetVersionId={datasetVersionId}
             targetVariable={targetVariable}
             selectedFeatures={selectedFeatures}
             modelKey={modelMetrics?.model_id}
-            onResult={onToolResult}
+            {...manualTools}
           />
         )}
         {resultTable && <ResultTable table={resultTable} onClose={onResultTableClose} />}

@@ -12,6 +12,8 @@ import { resetProject } from './lib/projectSync'
 import { usePlotHistory } from './hooks/usePlotHistory'
 import { useTheme } from './hooks/useTheme'
 import { getDynamicContext } from './utils/tips'
+import { useManualTools } from './hooks/useManualTools'
+import { editsFromArguments } from './lib/manualForm'
 
 const STEP_IDS = STEPS.map((s) => s.id)
 
@@ -27,6 +29,16 @@ const ASSISTANT_MIN_WIDTH = 320
 const ASSISTANT_MAX_WIDTH = 1200
 // Space kept for the step sidebar plus a usable slice of the main canvas.
 const MAIN_MIN_WIDTH = 480
+
+const CHAT_MAX_AGE = 24 * 60 * 60 * 1000
+const MAX_MANUAL_ACTIONS_IN_CONTEXT = 10
+const WELCOME_MESSAGE = {
+  role: 'assistant',
+  intent: null,
+  content:
+    'Hello! I\'m your soft-sensor assistant. Upload a dataset to get started, or ask me a conceptual question about process analytics, PLS, linear regression (OLS), Ridge, Lasso, PCR, k-NN, or EDA.',
+  toolCalls: [],
+}
 
 /**
  * Soft Sensor Toolbox — main application shell.
@@ -115,10 +127,19 @@ export default function App() {
 
   // Tool output tables (statistics, SQL, model list) — kept apart from the dataset preview.
   const [resultTable, setResultTable] = useState(null)
-  const [workMode, setWorkMode] = usePersisted('workMode', 'assistant')
 
-  // ── UI state (not persisted — just UI toggles) ────────────
-  const [assistantOpen, setAssistantOpen] = useState(false)
+  // ── Tools panel + assistant, side by side, sharing state ──
+  // The chat log also records Tools-panel runs, so the assistant sees them.
+  const [chatMessages, setChatMessages] = usePersisted('chatMessages', [WELCOME_MESSAGE], { maxAge: CHAT_MAX_AGE })
+  // Per tool: form values the user (or the assistant's last call) set.
+  const [manualEdits, setManualEdits] = usePersisted('manualEdits', {})
+  const [manualEditsFrom, setManualEditsFrom] = usePersisted('manualEditsFrom', {})
+  const [manualToolByStep, setManualToolByStep] = usePersisted('manualToolByStep', {})
+  const { tools: manualToolSpecs, error: manualSpecError, retry: retryManualSpec } = useManualTools()
+  const [assistantBusy, setAssistantBusy] = useState(false)
+  const [toolsBusy, setToolsBusy] = useState(false)
+
+  const [assistantOpen, setAssistantOpen] = usePersisted('assistantOpen', true)
   const { theme, toggleTheme } = useTheme()
 
   // Step tips (shown on the step) and suggested prompts (shown in the assistant chat).
@@ -237,6 +258,83 @@ export default function App() {
     [activeStep, datasetId, refreshHistory, setActiveStep, setDatasetVersionId,
       setModelMetrics, addPlot, setSelectedFeatures, setTargetVariable],
   )
+
+  // ── Tools panel run → same UI sync as the chat, plus a chat log entry ──
+  const handleToolResult = useCallback(async (response, { tool, label, args }) => {
+    await handleChatResponse(response)
+    setChatMessages((prev) => [...prev, {
+      role: 'manual',
+      tool,
+      label,
+      args,
+      content: response.message || '',
+      at: Date.now(),
+    }])
+  }, [handleChatResponse, setChatMessages])
+
+  const editManualField = useCallback((tool, field, value) => {
+    setManualEdits((prev) => ({ ...prev, [tool]: { ...prev[tool], [field]: value } }))
+    setManualEditsFrom((prev) => {
+      if (!prev[tool]) return prev
+      const next = { ...prev }
+      delete next[tool]
+      return next
+    })
+  }, [setManualEdits, setManualEditsFrom])
+
+  const resetManualTool = useCallback((tool) => {
+    setManualEdits((prev) => ({ ...prev, [tool]: {} }))
+    setManualEditsFrom((prev) => {
+      const next = { ...prev }
+      delete next[tool]
+      return next
+    })
+  }, [setManualEdits, setManualEditsFrom])
+
+  const selectManualTool = useCallback((step, tool) => {
+    setManualToolByStep((prev) => ({ ...prev, [step]: tool }))
+  }, [setManualToolByStep])
+
+  // ── Assistant tool calls → the same tool's form shows what it used ──
+  const handleAssistantToolCalls = useCallback((calls) => {
+    const specs = new Map((manualToolSpecs || []).map((t) => [t.name, t]))
+    const filled = calls.filter((c) => specs.has(c.name))
+    if (!filled.length) return
+    setManualEdits((prev) => {
+      const next = { ...prev }
+      for (const c of filled) next[c.name] = editsFromArguments(specs.get(c.name), c.args)
+      return next
+    })
+    setManualEditsFrom((prev) => {
+      const next = { ...prev }
+      for (const c of filled) next[c.name] = 'assistant'
+      return next
+    })
+    setManualToolByStep((prev) => {
+      const next = { ...prev }
+      for (const c of filled) {
+        const { steps } = specs.get(c.name)
+        next[steps.includes(activeStep) ? activeStep : steps[0]] = c.name
+      }
+      return next
+    })
+  }, [manualToolSpecs, activeStep, setManualEdits, setManualEditsFrom, setManualToolByStep])
+
+  // Tools-panel runs the assistant should know about (since its last reply are marked).
+  const manualActions = useMemo(() => {
+    let lastReply = -1
+    chatMessages.forEach((m, i) => { if (m.role === 'assistant') lastReply = i })
+    return chatMessages
+      .map((m, i) => ({ m, i }))
+      .filter(({ m }) => m.role === 'manual')
+      .slice(-MAX_MANUAL_ACTIONS_IN_CONTEXT)
+      .map(({ m, i }) => ({
+        tool: m.tool,
+        args: m.args,
+        result: (m.content || '').slice(0, 300),
+        sinceLastReply: i > lastReply,
+      }))
+  }, [chatMessages])
 
   // ── Rollback ──────────────────────────────────────────────
   const handleRollback = useCallback((result) => {
@@ -452,9 +550,20 @@ export default function App() {
           onRollback={handleRollback}
           onHistoryRefresh={setVersionHistory}
           tips={tips}
-          workMode={workMode}
-          onWorkModeChange={setWorkMode}
-          onToolResult={handleChatResponse}
+          manualTools={{
+            tools: manualToolSpecs,
+            specError: manualSpecError,
+            onRetrySpec: retryManualSpec,
+            edits: manualEdits,
+            editsFrom: manualEditsFrom,
+            onEdit: editManualField,
+            onReset: resetManualTool,
+            toolByStep: manualToolByStep,
+            onToolSelect: selectManualTool,
+            assistantBusy,
+            onBusyChange: setToolsBusy,
+            onResult: handleToolResult,
+          }}
           resultTable={resultTable}
           onResultTableClose={() => setResultTable(null)}
         />
@@ -471,8 +580,14 @@ export default function App() {
           selectedFeatures,
           activePlot: plotHistory.activePlot?.title ?? null,
           modelMetrics: modelMetrics || null,
+          manualActions,
         })}
         onChatResponse={handleChatResponse}
+        onToolCalls={handleAssistantToolCalls}
+        onBusyChange={setAssistantBusy}
+        toolsBusy={toolsBusy}
+        messages={chatMessages}
+        setMessages={setChatMessages}
         suggestions={suggestions}
         width={assistantWidth}
         onWidthPreview={setDragAssistantWidth}

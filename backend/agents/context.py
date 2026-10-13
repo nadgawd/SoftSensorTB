@@ -27,6 +27,9 @@ MAX_HISTORY_MESSAGES = 12
 MAX_HISTORY_CHARS = 1500
 MAX_COLUMNS_LISTED = 300
 MAX_MODELS_LISTED = 5
+MAX_MANUAL_ACTIONS = 10
+MAX_MANUAL_ARGS_CHARS = 300
+MAX_MANUAL_RESULT_CHARS = 200
 
 
 @dataclass
@@ -135,7 +138,35 @@ def render_ui_state(ui: dict[str, Any]) -> str:
         )
     if ui.get("activePlot"):
         lines.append(f"  plot on canvas: {ui['activePlot']}")
+    manual = render_manual_actions(ui.get("manualActions"))
+    if manual:
+        lines.append(manual)
     return "\n".join(lines)
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def render_manual_actions(actions: Any) -> str:
+    """Tools the user ran from the Tools panel, so the agent does not redo or contradict them."""
+    if not isinstance(actions, list):
+        return ""
+    lines = []
+    for action in actions[-MAX_MANUAL_ACTIONS:]:
+        if not isinstance(action, dict) or not action.get("tool"):
+            continue
+        args = _clip(json.dumps(action.get("args") or {}, default=str, ensure_ascii=False), MAX_MANUAL_ARGS_CHARS)
+        result = _clip(" ".join(str(action.get("result") or "").split()), MAX_MANUAL_RESULT_CHARS)
+        mark = "*" if action.get("sinceLastReply") else "-"
+        lines.append(f"    {mark} {action['tool']}({args}) -> {result or 'done'}")
+    if not lines:
+        return ""
+    return (
+        "  tools the user ran by hand in the Tools panel (oldest first; * = after your last reply). "
+        "Their effects are already in the dataset and UI state above; do not repeat them unless asked:\n"
+        + "\n".join(lines)
+    )
 
 
 def _turn_field(turn: Any, name: str) -> Any:

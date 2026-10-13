@@ -741,30 +741,26 @@
 }
 .chat-suggestion:disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ── Work mode toggle (Assistant | Manual) ─────────────────── */
-.mode-toggle {
-  display: flex;
-  padding: 2px;
-  border-radius: 8px;
-  border: 1px solid var(--color-line);
-  background: var(--color-panel);
+/* Tools-panel runs shown in the conversation */
+.chat-manual {
+  align-self: stretch;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--color-line-2);
+  background: var(--history-bg);
 }
-.mode-toggle-btn {
-  padding: 4px 12px;
-  border-radius: 6px;
-  border: none;
-  background: transparent;
-  color: var(--color-mist);
+.chat-manual-head { margin: 0; font-size: 12px; color: var(--color-mist); }
+.chat-manual-head strong { color: var(--color-foam); font-weight: 600; }
+.chat-manual-body {
+  margin: 4px 0 0;
   font-size: 12px;
-  font-family: var(--font-display);
-  cursor: pointer;
-  transition: all 150ms ease;
-}
-.mode-toggle-btn:hover { color: var(--color-foam); }
-.mode-toggle-btn.active {
-  background: var(--history-card-active-bg);
-  color: var(--color-signal);
-  font-weight: 600;
+  line-height: 1.45;
+  color: var(--color-foam-2);
+  white-space: pre-wrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* ── Manual tools panel ────────────────────────────────────── */
@@ -786,24 +782,8 @@
   color: var(--color-mist);
 }
 .manual-close { margin-left: auto; }
-.manual-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
-.manual-tab {
-  padding: 5px 12px;
-  border-radius: 99px;
-  border: 1px solid var(--color-line-2);
-  background: transparent;
-  color: var(--color-mist);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 150ms ease;
-}
-.manual-tab:hover { color: var(--color-foam); border-color: color-mix(in srgb, var(--color-signal) 40%, transparent); }
-.manual-tab.active {
-  color: var(--color-signal);
-  border-color: color-mix(in srgb, var(--color-signal) 55%, transparent);
-  background: var(--history-card-active-bg);
-  font-weight: 600;
-}
+.manual-tool-select { width: auto; min-width: 240px; max-width: 100%; font-weight: 600; }
+.manual-source { padding: 3px 9px; border-radius: 99px; font-size: 11px; }
 .manual-tool-desc {
   margin: 0;
   font-size: 12.5px;

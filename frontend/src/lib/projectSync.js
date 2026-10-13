@@ -13,7 +13,7 @@ const PREFIX = 'sst_v1_'
 const PROJECT_KEYS = [
   'activeStep', 'completedSteps', 'fileName', 'datasetId', 'datasetVersionId',
   'targetVariable', 'selectedFeatures', 'modelMetrics', 'versionHistory',
-  'chatMessages', 'plotHistory',
+  'chatMessages', 'plotHistory', 'manualEdits', 'manualEditsFrom', 'manualToolByStep',
 ]
 const OWNER_KEY = 'sst_owner'
 const SAVE_DELAY_MS = 1500

@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react'
 import ToolForm from './ToolForm'
 import { errorDetail, runManualTool } from '../../api/client'
-import { useDatasetSchema, useManualTools } from '../../hooks/useManualTools'
-import { usePersisted } from '../../hooks/usePersisted'
+import { useDatasetSchema } from '../../hooks/useManualTools'
 import { buildArguments, formValues } from '../../lib/manualForm'
 
 const PREFERRED_TOOL = {
@@ -28,12 +27,30 @@ const KIND_NOTES = {
   train: 'Trains on the active dataset version and evaluates on the held-out test rows.',
 }
 
-/** Pick a tool for the current step, set its parameters and run it without the assistant. */
-export default function ManualTools({ activeStep, datasetVersionId, targetVariable, selectedFeatures, modelKey, onResult }) {
-  const { tools, error: specError, retry } = useManualTools()
+/**
+ * The step's tools: pick one, set its parameters, run it.
+ * Form values live in App so the assistant's tool calls fill them in too.
+ */
+export default function ManualTools({
+  activeStep,
+  datasetVersionId,
+  targetVariable,
+  selectedFeatures,
+  modelKey,
+  tools,
+  specError,
+  onRetrySpec,
+  edits,
+  editsFrom,
+  onEdit,
+  onReset,
+  toolByStep,
+  onToolSelect,
+  assistantBusy,
+  onBusyChange,
+  onResult,
+}) {
   const { schema, error: schemaError, loading: schemaLoading } = useDatasetSchema(datasetVersionId, modelKey)
-  const [toolByStep, setToolByStep] = usePersisted('manualToolByStep', {})
-  const [edits, setEdits] = useState({})
   const [errors, setErrors] = useState({})
   const [running, setRunning] = useState(null)
   const [status, setStatus] = useState(null)
@@ -42,8 +59,7 @@ export default function ManualTools({ activeStep, datasetVersionId, targetVariab
     () => (tools || []).filter((t) => t.steps.includes(activeStep)),
     [tools, activeStep],
   )
-  const chosen = toolByStep[activeStep]
-  const tool = stepTools.find((t) => t.name === chosen)
+  const tool = stepTools.find((t) => t.name === toolByStep[activeStep])
     || stepTools.find((t) => t.name === PREFERRED_TOOL[activeStep])
     || stepTools[0]
 
@@ -56,8 +72,8 @@ export default function ManualTools({ activeStep, datasetVersionId, targetVariab
   if (specError) {
     return (
       <section className="panel manual-panel">
-        <p className="manual-error">Could not load the tool forms: {specError}</p>
-        <button type="button" className="btn-ghost" onClick={retry}>Retry</button>
+        <p className="manual-error">Could not load the tools: {specError}</p>
+        <button type="button" className="btn-ghost" onClick={onRetrySpec}>Retry</button>
       </section>
     )
   }
@@ -68,18 +84,18 @@ export default function ManualTools({ activeStep, datasetVersionId, targetVariab
 
   const toolErrors = errors[tool.name] || {}
   const toolStatus = status?.tool === tool.name ? status : null
-  const isRunning = running === tool.name
+  const isRunning = running !== null
   const edited = Boolean(edits[tool.name] && Object.keys(edits[tool.name]).length)
 
   function setField(name, value) {
-    setEdits((prev) => ({ ...prev, [tool.name]: { ...prev[tool.name], [name]: value } }))
+    onEdit(tool.name, name, value)
     if (toolErrors[name]) {
       setErrors((prev) => ({ ...prev, [tool.name]: { ...prev[tool.name], [name]: undefined } }))
     }
   }
 
   function reset() {
-    setEdits((prev) => ({ ...prev, [tool.name]: {} }))
+    onReset(tool.name)
     setErrors((prev) => ({ ...prev, [tool.name]: {} }))
     setStatus(null)
   }
@@ -92,36 +108,36 @@ export default function ManualTools({ activeStep, datasetVersionId, targetVariab
       return
     }
     setRunning(tool.name)
+    onBusyChange?.(true)
     setStatus(null)
     try {
       const result = await runManualTool(tool.name, datasetVersionId, args)
-      onResult(result)
+      await onResult(result, { tool: tool.name, label: tool.label, args })
       setStatus({ tool: tool.name, ok: true, text: result.message || 'Done.' })
     } catch (err) {
       setStatus({ tool: tool.name, ok: false, text: errorDetail(err, 'The tool failed.') })
     } finally {
       setRunning(null)
+      onBusyChange?.(false)
     }
   }
 
+  const selectId = `manual-tool-${activeStep}`
   return (
-    <section className="panel manual-panel" aria-label="Manual tools">
+    <section className="panel manual-panel" aria-label="Tools">
       <div className="manual-head">
-        <p className="manual-title">Manual tools</p>
-        <div className="manual-tabs" role="tablist" aria-label="Tools for this step">
-          {stepTools.map((t) => (
-            <button
-              key={t.name}
-              type="button"
-              role="tab"
-              aria-selected={t.name === tool.name}
-              className={`manual-tab${t.name === tool.name ? ' active' : ''}`}
-              onClick={() => setToolByStep((prev) => ({ ...prev, [activeStep]: t.name }))}
-            >
-              {t.label}
-            </button>
-          ))}
-        </div>
+        <label className="manual-title" htmlFor={selectId}>Tools</label>
+        <select
+          id={selectId}
+          className="input-base manual-input manual-tool-select"
+          value={tool.name}
+          onChange={(e) => onToolSelect(activeStep, e.target.value)}
+        >
+          {stepTools.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
+        </select>
+        {editsFrom[tool.name] === 'assistant' && (
+          <span className="badge badge-ember manual-source">Set by the assistant’s last run</span>
+        )}
       </div>
 
       <p className="manual-tool-desc" title={tool.description}>{tool.description}</p>
@@ -138,13 +154,17 @@ export default function ManualTools({ activeStep, datasetVersionId, targetVariab
         >
           <ToolForm tool={tool} values={values} onChange={setField} schema={schema} errors={toolErrors} />
           <div className="manual-actions">
-            <button type="submit" className="btn-signal" disabled={isRunning || !schema}>
-              {isRunning ? 'Running…' : RUN_LABELS[tool.kind] || 'Run'}
+            <button type="submit" className="btn-signal" disabled={isRunning || assistantBusy || !schema}>
+              {running === tool.name ? 'Running…' : RUN_LABELS[tool.kind] || 'Run'}
             </button>
             <button type="button" className="btn-ghost" onClick={reset} disabled={!edited || isRunning}>
               Reset to defaults
             </button>
-            {KIND_NOTES[tool.kind] && <span className="manual-hint">{KIND_NOTES[tool.kind]}</span>}
+            {assistantBusy ? (
+              <span className="manual-hint">The assistant is working on this dataset; wait for it to finish.</span>
+            ) : (
+              KIND_NOTES[tool.kind] && <span className="manual-hint">{KIND_NOTES[tool.kind]}</span>
+            )}
           </div>
         </form>
       )}

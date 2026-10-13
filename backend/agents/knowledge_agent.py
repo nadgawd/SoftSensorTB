@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, AsyncGenerator, Iterable, Optional
 
 from backend.agents.context import (
     history_messages,
     load_dataset_context,
+    parse_ui_state,
     render_dataset_context,
+    render_manual_actions,
     render_tool_history,
 )
 from backend.agents.llm_client import get_llm_client
@@ -56,9 +59,14 @@ def _system_prompt(
             "Tailor your answer to be most relevant to this step."
         )
     if ui_context:
+        ui = parse_ui_state(ui_context)
+        shown = ui_context
+        if ui:
+            manual = render_manual_actions(ui.pop("manualActions", None))
+            shown = json.dumps(ui, default=str, ensure_ascii=False) + (f"\n{manual}" if manual else "")
         prompt += (
             f"\n\nThe user is currently looking at this UI context (e.g. plot or metrics):\n"
-            f"{ui_context}\n"
+            f"{shown}\n"
             "If their question asks about 'the plot', 'this graph', or 'the metrics', refer to this context to answer."
         )
     return prompt

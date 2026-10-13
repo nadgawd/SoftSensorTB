@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react'
 import { usePersisted } from '../hooks/usePersisted'
 import { ActivitySummary, LegacyToolChips, LiveActivity } from './ChatActivity'
 
-const SESSION_MAX_AGE = 24 * 60 * 60 * 1000
 const HISTORY_TURNS = 12
 const EMPTY_LIVE = { intent: null, status: 'Sending', steps: [], draft: '', reasoningActive: false }
 
@@ -36,6 +35,16 @@ function IntentBadge({ intent, uiUpdate }) {
 }
 
 
+/** A tool the user ran from the Tools panel, shown in the conversation. */
+function ManualEntry({ msg }) {
+  return (
+    <div className="chat-manual animate-slide-up">
+      <p className="chat-manual-head">⚙ You ran <strong>{msg.label || msg.tool}</strong> from the Tools panel</p>
+      {msg.content && <p className="chat-manual-body">{msg.content}</p>}
+    </div>
+  )
+}
+
 /**
  * Collapsible AI assistant panel that slides in from the right.
  */
@@ -46,6 +55,11 @@ export default function AssistantPanel({
   stepHint,
   uiContext,
   onChatResponse,
+  onToolCalls,
+  onBusyChange,
+  toolsBusy,
+  messages,
+  setMessages,
   suggestions = [],
   width,
   onWidthPreview,
@@ -63,15 +77,6 @@ export default function AssistantPanel({
   const [thinkingAvailable, setThinkingAvailable] = useState(false)
   const [think, setThink] = usePersisted('thinkMode', false)
   const [showSuggestions, setShowSuggestions] = usePersisted('showSuggestions', true)
-  const [messages, setMessages] = usePersisted('chatMessages', [
-    {
-      role: 'assistant',
-      intent: null,
-      content:
-        'Hello! I\'m your soft-sensor assistant. Upload a dataset to get started, or ask me a conceptual question about process analytics, PLS, linear regression (OLS), Ridge, Lasso, PCR, k-NN, or EDA.',
-      toolCalls: [],
-    },
-  ], { maxAge: SESSION_MAX_AGE })
   const bottomRef = useRef(null)
   const textareaRef = useRef(null)
   const abortControllerRef = useRef(null)
@@ -79,6 +84,10 @@ export default function AssistantPanel({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, busy, live.steps.length])
+
+  useEffect(() => {
+    onBusyChange?.(busy)
+  }, [busy, onBusyChange])
 
   useEffect(() => {
     if (!busy) return
@@ -154,7 +163,7 @@ export default function AssistantPanel({
 
   // Core send function (used by the submit button and the suggestion chips)
   async function handleSubmitText(prompt) {
-    if (!prompt?.trim() || busy) return
+    if (!prompt?.trim() || busy || toolsBusy) return
 
     setError(null)
     setInput('')
@@ -210,7 +219,7 @@ export default function AssistantPanel({
         } else if (event === 'tool_end') {
           steps = steps.map((s) =>
             s.type === 'tool' && s.id === data.id
-              ? { ...s, ok: data.ok, ms: data.ms, summary: data.summary }
+              ? { ...s, ok: data.ok, ms: data.ms, summary: data.summary, arguments: data.arguments }
               : s,
           )
         } else if (event === 'final_state') {
@@ -240,8 +249,10 @@ export default function AssistantPanel({
       ])
 
       if (finalResponse.ui_update_required) {
-        onChatResponse?.(finalResponse)
+        await onChatResponse?.(finalResponse)
       }
+      const succeeded = steps.filter((s) => s.type === 'tool' && s.ok && s.arguments)
+      if (succeeded.length) onToolCalls?.(succeeded.map((s) => ({ name: s.name, args: s.arguments })))
     } catch (err) {
       if (err.name === 'AbortError') {
         setMessages((prev) => [
@@ -282,14 +293,12 @@ export default function AssistantPanel({
   function handleSubmit(e) {
     e?.preventDefault()
     handleSubmitText(input.trim())
-    setInput('')
   }
 
   function handleKeyDown(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSubmitText(input.trim())
-      setInput('')
     }
   }
 
@@ -405,7 +414,9 @@ export default function AssistantPanel({
         className="scroll-y"
         style={{ flex: 1, padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}
       >
-        {messages.map((msg, idx) => (
+        {messages.map((msg, idx) => msg.role === 'manual' ? (
+          <ManualEntry key={idx} msg={msg} />
+        ) : (
           <div
             key={idx}
             className="animate-slide-up"
@@ -498,7 +509,7 @@ export default function AssistantPanel({
                     key={`${i}-${text}`}
                     type="button"
                     className="chat-suggestion"
-                    disabled={busy}
+                    disabled={busy || toolsBusy}
                     onClick={() => handleSubmitText(text)}
                   >
                     {text}
@@ -517,6 +528,11 @@ export default function AssistantPanel({
             }}
           >
             Upload a dataset to enable the data tools. Conceptual questions work without a dataset.
+          </p>
+        )}
+        {toolsBusy && !busy && (
+          <p style={{ margin: '0 0 8px', fontSize: '11px', color: 'var(--color-mist)' }}>
+            A tool from the Tools panel is running; send when it finishes.
           </p>
         )}
         {thinkingAvailable && (
@@ -575,7 +591,7 @@ export default function AssistantPanel({
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={!input.trim()}
+              disabled={!input.trim() || toolsBusy}
               className="btn-signal"
               style={{
                 padding: '10px 14px',

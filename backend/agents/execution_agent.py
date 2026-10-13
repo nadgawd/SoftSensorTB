@@ -588,7 +588,12 @@ async def run_execution_agent(
                     result = await _dispatch_tool(name, arguments, ui_state["active_dataset_version_id"])
                 _update_ui_state(ui_state, tool_name=name, result=result)
                 payload = _serialize_tool_result(name, result)
-                end = {"ok": True, "summary": _summarize_tool_result(name, result)}
+                end = {
+                    "ok": True,
+                    "summary": _summarize_tool_result(name, result),
+                    # Full arguments, so the UI can show the call in the tool's form.
+                    "arguments": {k: v for k, v in (arguments or {}).items() if k != "dataset_version_id"},
+                }
             except Exception as exc:  # noqa: BLE001 — surface tool errors to the LLM
                 payload = json.dumps({"error": str(exc)})
                 end = {"ok": False, "summary": _truncate(str(exc), _MAX_SUMMARY_CHARS)}

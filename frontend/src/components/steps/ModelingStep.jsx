@@ -5,7 +5,7 @@ const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
 /**
  * Step 5 — Modeling
  */
-export default function ModelingStep({ modelMetrics, datasetVersionId, tips, manual }) {
+export default function ModelingStep({ modelMetrics, datasetVersionId, tips }) {
   const hasDataset = Boolean(datasetVersionId)
 
   function formatMetric(value) {
@@ -113,9 +113,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, tips, man
         <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
           <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>⚙️</p>
           <p style={{ fontSize: '0.875rem' }}>
-            {manual
-              ? 'Set the algorithm, features and split in the form above, then press Train model.'
-              : 'Open the Assistant and pick a suggestion, or ask it to train a soft-sensor model.'}
+            Set the algorithm, features and split in the Tools panel above and press Train model, or ask the Assistant.
           </p>
         </div>
       )}

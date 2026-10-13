@@ -4,7 +4,7 @@ import StepTips from '../StepTips'
 /**
  * Step 6 — Validation
  */
-export default function ValidationStep({ modelMetrics, plotHistory, tips, manual }) {
+export default function ValidationStep({ modelMetrics, plotHistory, tips }) {
   function fmt(v) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
     return Number(v).toFixed(4)
@@ -22,11 +22,7 @@ export default function ValidationStep({ modelMetrics, plotHistory, tips, manual
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-mist)', padding: '30px', gap: '8px' }}>
             <p style={{ fontSize: '1.5rem' }}>📉</p>
             <p style={{ fontSize: '0.875rem', textAlign: 'center' }}>
-              {manual ? (
-                <>Choose <strong style={{ color: 'var(--color-ember)' }}>Parity plot</strong> above and press Plot to visualize model performance</>
-              ) : (
-                <>Ask the Assistant to <strong style={{ color: 'var(--color-ember)' }}>generate a parity plot</strong> to visualize model performance</>
-              )}
+              Choose <strong style={{ color: 'var(--color-ember)' }}>Parity plot</strong> in the Tools panel above, or ask the Assistant, to visualize model performance
             </p>
           </div>
         }

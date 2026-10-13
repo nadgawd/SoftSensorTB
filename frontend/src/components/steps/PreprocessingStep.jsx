@@ -4,7 +4,7 @@ import StepTips from '../StepTips'
 /**
  * Step 3 — Preprocessing
  */
-export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, tips, manual }) {
+export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId, tips }) {
   const hasData = tablePreview?.length > 0
 
   return (
@@ -34,9 +34,7 @@ export default function PreprocessingStep({ tablePreview, plotHistory, datasetVe
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-mist)', gap: '8px', padding: '30px' }}>
             <p style={{ fontSize: '1.5rem' }}>📈</p>
             <p style={{ fontSize: '0.875rem', textAlign: 'center', color: 'var(--color-mist)' }}>
-              {manual
-                ? 'Choose the Plot tool above, set the chart options and press Plot'
-                : 'Open the Assistant and pick a suggestion to generate a chart'}
+              Pick the Plot tool above and press Plot, or ask the Assistant for a chart
             </p>
           </div>
         }
