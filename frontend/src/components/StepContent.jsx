@@ -272,6 +272,9 @@ export default function StepContent({
 
       {/* Main step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
+        {activeStep === 'ingestion' && (
+          <div style={{ marginBottom: '16px' }}>{renderStepPanel()}</div>
+        )}
         <ManualTools
           activeStep={activeStep}
           datasetVersionId={datasetVersionId}
@@ -281,7 +284,7 @@ export default function StepContent({
           {...manualTools}
         />
         {resultTable && <ResultTable table={resultTable} onClose={onResultTableClose} />}
-        {renderStepPanel()}
+        {activeStep !== 'ingestion' && renderStepPanel()}
       </div>
 
       {/* Data preview footer (all steps except ingestion) */}
