@@ -1,9 +1,11 @@
 import PlotCanvas from '../PlotCanvas'
+import { CV_LABELS, splitLabel } from '../../utils/splits'
 
 /**
  * Step 6 — Validation
  */
 export default function ValidationStep({ modelMetrics, plotHistory }) {
+  const cv = modelMetrics?.cv
   function fmt(v) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
     return Number(v).toFixed(4)
@@ -38,16 +40,35 @@ export default function ValidationStep({ modelMetrics, plotHistory }) {
               <tr><th>Metric</th><th>Value</th><th>Notes</th></tr>
             </thead>
             <tbody>
-              <MetricRow label="R²" value={fmt(modelMetrics.r2_score)} note="Coefficient of determination" />
-              <MetricRow label="RMSE" value={fmt(modelMetrics.rmse)} note="Root mean squared error" />
+              <MetricRow label="Test R²" value={fmt(modelMetrics.r2_score)} note="Coefficient of determination on the held-out rows" />
+              <MetricRow label="Test RMSE" value={fmt(modelMetrics.rmse)} note="Root mean squared error on the held-out rows" />
               <MetricRow label="Training samples" value={modelMetrics.n_train ?? '—'} note="" />
               <MetricRow label="Test samples" value={modelMetrics.n_test ?? '—'} note="" />
               {modelMetrics.split_strategy && (
                 <MetricRow
                   label="Train/test split"
-                  value={modelMetrics.split_strategy}
+                  value={splitLabel(modelMetrics.split_strategy)}
                   note={typeof modelMetrics.test_size === 'number' ? `${Math.round(modelMetrics.test_size * 100)}% held out for testing` : ''}
                 />
+              )}
+              {cv && (
+                <>
+                  <MetricRow
+                    label="Cross-validation"
+                    value={CV_LABELS[cv.strategy] ?? cv.strategy}
+                    note={`${cv.n_splits} folds over ${cv.n_rows} training rows`}
+                  />
+                  <MetricRow
+                    label="CV R²"
+                    value={fmt(cv.r2)}
+                    note={cv.fold_r2_mean != null ? `Per fold ${fmt(cv.fold_r2_mean)} ± ${fmt(cv.fold_r2_std)}` : 'Pooled over every left-out row'}
+                  />
+                  <MetricRow
+                    label="CV RMSE"
+                    value={fmt(cv.rmse)}
+                    note={cv.fold_rmse_mean != null ? `Per fold ${fmt(cv.fold_rmse_mean)} ± ${fmt(cv.fold_rmse_std)}` : 'Pooled over every left-out row'}
+                  />
+                </>
               )}
               {modelMetrics.target_column && (
                 <MetricRow label="Target" value={modelMetrics.target_column} note="Soft-sensor output" />

@@ -54,6 +54,12 @@ class OutlierMethod(str, Enum):
     z_score = "z_score"
     iqr = "iqr"
     winsorize = "winsorize"
+    clip = "clip"
+
+
+class OutlierAction(str, Enum):
+    drop = "drop"
+    cap = "cap"
 
 
 class NormalizeStrategy(str, Enum):
@@ -173,8 +179,9 @@ class RemoveOutliersArgs(BaseModel):
     method: OutlierMethod = Field(
         ...,
         description=(
-            "z_score and iqr drop outlier rows; winsorize caps values at the "
-            "lower/upper percentiles instead of dropping rows."
+            "z_score and iqr find outliers beyond a z-score or IQR fence, then drop the rows "
+            "or cap the values at the fence (see action); winsorize caps the lowest and highest "
+            "threshold fraction at those percentiles; clip caps values to lower_bound / upper_bound."
         ),
     )
     threshold: Optional[float] = Field(
@@ -185,6 +192,21 @@ class RemoveOutliersArgs(BaseModel):
             "For winsorize: fraction capped in each tail, below 0.5 (default 0.05)."
         ),
         gt=0,
+    )
+    action: OutlierAction = Field(
+        default=OutlierAction.drop,
+        description=(
+            "For z_score and iqr: drop the outlier rows, or cap (clip) the outlying values "
+            "at the fence and keep every row."
+        ),
+    )
+    lower_bound: Optional[float] = Field(
+        default=None,
+        description="For clip: values below this are raised to it. Omit for no lower limit.",
+    )
+    upper_bound: Optional[float] = Field(
+        default=None,
+        description="For clip: values above this are lowered to it. Omit for no upper limit.",
     )
 
     @field_validator("dataset_version_id")
@@ -198,9 +220,14 @@ class RemoveOutliersArgs(BaseModel):
         return _clean_names(value)
 
     @model_validator(mode="after")
-    def _winsorize_limit(self) -> "RemoveOutliersArgs":
+    def _method_limits(self) -> "RemoveOutliersArgs":
         if self.method == OutlierMethod.winsorize and self.threshold is not None and self.threshold >= 0.5:
             raise ValueError("For winsorize, threshold is the fraction capped in each tail and must be below 0.5")
+        if self.method == OutlierMethod.clip:
+            if self.lower_bound is None and self.upper_bound is None:
+                raise ValueError("clip needs lower_bound, upper_bound or both")
+            if self.lower_bound is not None and self.upper_bound is not None and self.lower_bound >= self.upper_bound:
+                raise ValueError("lower_bound must be smaller than upper_bound")
         return self
 
 
@@ -1529,18 +1556,24 @@ async def remove_outliers(
     columns: list[str],
     method: str,
     threshold: Optional[float] = None,
+    action: str = "drop",
+    lower_bound: Optional[float] = None,
+    upper_bound: Optional[float] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    """Drop outlier rows via z-score or IQR fences; save version + lineage."""
+    """Drop or cap outliers (z-score / IQR fences, winsorizing, fixed bounds); save version + lineage."""
     args = RemoveOutliersArgs(
         dataset_version_id=dataset_version_id,
         columns=columns,
         method=method,  # type: ignore[arg-type]
         threshold=threshold,
+        action=action,  # type: ignore[arg-type]
+        lower_bound=lower_bound,
+        upper_bound=upper_bound,
     )
     if args.threshold is None:
-        args.threshold = _DEFAULT_OUTLIER_THRESHOLDS[args.method]
+        args.threshold = _DEFAULT_OUTLIER_THRESHOLDS.get(args.method)
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
@@ -1548,52 +1581,74 @@ async def remove_outliers(
         _assert_numeric_columns(df, args.columns)
 
         result = df.copy()
+        parameters: dict[str, Any] = {"columns": args.columns, "method": args.method.value}
         if args.method == OutlierMethod.winsorize:
             # Caps the lowest and highest `threshold` fraction instead of dropping rows.
             limit = float(args.threshold)
             for col in args.columns:
                 result[col] = mstats.winsorize(result[col], limits=[limit, limit])
-            removed = 0
+            parameters["threshold"] = limit
             summary = (
                 f"Winsorized columns {args.columns} using limits "
                 f"[{limit}, {1 - limit}]."
             )
+        elif args.method == OutlierMethod.clip:
+            capped = 0
+            for col in args.columns:
+                series = df[col]
+                too_low = series < args.lower_bound if args.lower_bound is not None else False
+                too_high = series > args.upper_bound if args.upper_bound is not None else False
+                capped += int((too_low | too_high).sum())
+                result[col] = series.clip(lower=args.lower_bound, upper=args.upper_bound)
+            parameters.update(lower_bound=args.lower_bound, upper_bound=args.upper_bound)
+            summary = (
+                f"Clipped {capped} value(s) in columns {args.columns} to "
+                f"[{'-∞' if args.lower_bound is None else args.lower_bound}, "
+                f"{'∞' if args.upper_bound is None else args.upper_bound}]; no rows dropped."
+            )
         else:
-            mask = pd.Series(True, index=df.index)
-            if args.method == OutlierMethod.z_score:
-                for col in args.columns:
-                    series = df[col]
+            fences: dict[str, tuple[float, float]] = {}
+            for col in args.columns:
+                series = df[col]
+                if args.method == OutlierMethod.z_score:
                     std = series.std(ddof=0)
                     if std == 0 or pd.isna(std):
                         continue
-                    z = (series - series.mean()) / std
-                    mask &= z.abs() <= args.threshold
-            else:  # iqr
-                for col in args.columns:
-                    q1 = df[col].quantile(0.25)
-                    q3 = df[col].quantile(0.75)
+                    mean = series.mean()
+                    fences[col] = (mean - args.threshold * std, mean + args.threshold * std)
+                else:  # iqr
+                    q1 = series.quantile(0.25)
+                    q3 = series.quantile(0.75)
                     iqr = q3 - q1
-                    lower = q1 - args.threshold * iqr
-                    upper = q3 + args.threshold * iqr
+                    fences[col] = (q1 - args.threshold * iqr, q3 + args.threshold * iqr)
+            parameters.update(threshold=args.threshold, action=args.action.value)
+
+            if args.action == OutlierAction.cap:
+                capped = 0
+                for col, (lower, upper) in fences.items():
+                    capped += int(((df[col] < lower) | (df[col] > upper)).sum())
+                    result[col] = df[col].clip(lower=lower, upper=upper)
+                summary = (
+                    f"Capped {capped} outlier value(s) at the {args.method.value} fence "
+                    f"(threshold={args.threshold}) in columns {args.columns}; no rows dropped."
+                )
+            else:
+                mask = pd.Series(True, index=df.index)
+                for col, (lower, upper) in fences.items():
                     mask &= df[col].between(lower, upper)
-            
-            result = df.loc[mask].copy()
-            removed = len(df) - len(result)
-            summary = (
-                f"Removed {removed} outlier row(s) using {args.method.value} "
-                f"(threshold={args.threshold}) on columns {args.columns}; "
-                f"rows {len(df)} → {len(result)}."
-            )
+                result = df.loc[mask].copy()
+                removed = len(df) - len(result)
+                summary = (
+                    f"Removed {removed} outlier row(s) using {args.method.value} "
+                    f"(threshold={args.threshold}) on columns {args.columns}; "
+                    f"rows {len(df)} → {len(result)}."
+                )
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="remove_outliers",
-            parameters_used={
-                "columns": args.columns,
-                "method": args.method.value,
-                "threshold": args.threshold,
-            },
+            parameters_used=parameters,
             summary_message=summary,
         )
 
@@ -1797,7 +1852,10 @@ def _build_figure(df: pd.DataFrame, args: GenerateCustomPlotArgs) -> go.Figure:
         plot_df = df[[args.x_column, *args.y_columns, *extra]].copy()
         # Only attempt datetime conversion for string/object columns.
         if pd.api.types.is_string_dtype(plot_df[args.x_column]) or pd.api.types.is_object_dtype(plot_df[args.x_column]):
-            plot_df[args.x_column] = pd.to_datetime(plot_df[args.x_column], errors="ignore")
+            parsed = pd.to_datetime(plot_df[args.x_column], errors="coerce", format="mixed")
+            # Text that is not dates (batch ids, tags) stays as it is.
+            if parsed.notna().sum() == plot_df[args.x_column].notna().sum():
+                plot_df[args.x_column] = parsed
         melted = plot_df.melt(
             id_vars=[args.x_column, *extra],
             value_vars=args.y_columns,
@@ -1926,6 +1984,7 @@ class TransformFeaturesArgs(BaseModel):
 
 class EncodeStrategy(str, Enum):
     one_hot = "one_hot"
+    label = "label"
     ordinal = "ordinal"
     frequency = "frequency"
     target = "target"
@@ -1936,7 +1995,11 @@ class EncodeCategoricalArgs(BaseModel):
     columns: list[str] = Field(..., min_length=1, description="Categorical columns to encode.")
     strategy: EncodeStrategy = Field(
         ...,
-        description="one_hot, ordinal, frequency, target (needs target_column), or binary.",
+        description=(
+            "one_hot (dummy columns), label (codes 0..n-1 in sorted order, like scikit-learn's "
+            "LabelEncoder), ordinal (codes 1..n in sorted order or in category_order), frequency, "
+            "target (needs target_column), or binary."
+        ),
     )
     target_column: Optional[str] = Field(None, description="Numeric target column; required by the target strategy.")
     drop_first: bool = Field(True, description="For one_hot: drop the first category of each column to avoid redundant dummies.")
@@ -1944,6 +2007,13 @@ class EncodeCategoricalArgs(BaseModel):
         1.0,
         description="For target: pulls the mean of rare categories towards the overall mean (0 = plain category mean).",
         ge=0,
+    )
+    category_order: Optional[list[str]] = Field(
+        None,
+        description=(
+            "For ordinal: the categories from lowest to highest, e.g. ['low', 'medium', 'high'], "
+            "coded 1..n in this order. Every value of the columns must be listed. Omit to use sorted order."
+        ),
     )
 
     @field_validator("dataset_version_id")
@@ -1955,6 +2025,16 @@ class EncodeCategoricalArgs(BaseModel):
     @classmethod
     def _non_empty_names(cls, value: list[str]) -> list[str]:
         return _clean_names(value)
+
+    @field_validator("category_order")
+    @classmethod
+    def _clean_order(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        cleaned = [str(c).strip() for c in value if str(c).strip()]
+        if len(set(cleaned)) != len(cleaned):
+            raise ValueError("category_order lists a category more than once")
+        return cleaned or None
 
     @model_validator(mode="after")
     def _target_needed(self) -> "EncodeCategoricalArgs":
@@ -2098,6 +2178,28 @@ def _ordinal_codes(series: pd.Series) -> pd.Series:
     return pd.Series(np.where(codes >= 0, codes + 1, np.nan), index=series.index)
 
 
+def _label_codes(series: pd.Series) -> pd.Series:
+    """Categories numbered 0..n-1 in sorted order (scikit-learn LabelEncoder); missing stays missing."""
+    return _ordinal_codes(series) - 1
+
+
+def _ordered_codes(series: pd.Series, order: Sequence[str]) -> pd.Series:
+    """Categories numbered 1..n in the given order; every value must be listed."""
+    text = series.astype("string")
+    mapping = {category: i for i, category in enumerate(order, start=1)}
+    unknown = sorted({v for v in text.dropna().unique() if v not in mapping})
+    if unknown:
+        raise ValueError(
+            f"'{series.name}' has values missing from category_order: {unknown[:10]}"
+            + (" …" if len(unknown) > 10 else "")
+        )
+    return pd.Series(
+        [mapping[v] if isinstance(v, str) else np.nan for v in text],
+        index=series.index,
+        dtype=float,
+    )
+
+
 def _binary_encode(df: pd.DataFrame, col: str) -> pd.DataFrame:
     """Replace ``col`` with the bits of its ordinal code (``col_0`` is the most significant)."""
     codes = _ordinal_codes(df[col])
@@ -2126,6 +2228,7 @@ async def encode_categorical(
     target_column: Optional[str] = None,
     drop_first: bool = True,
     smoothing: float = 1.0,
+    category_order: Optional[list[str]] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -2136,6 +2239,7 @@ async def encode_categorical(
         target_column=target_column,
         drop_first=drop_first,
         smoothing=smoothing,
+        category_order=category_order,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -2149,9 +2253,15 @@ async def encode_categorical(
 
         if args.strategy == EncodeStrategy.one_hot:
             result = pd.get_dummies(result, columns=args.columns, drop_first=args.drop_first)
+        elif args.strategy == EncodeStrategy.label:
+            for col in args.columns:
+                result[col] = _label_codes(result[col])
         elif args.strategy == EncodeStrategy.ordinal:
             for col in args.columns:
-                result[col] = _ordinal_codes(result[col])
+                result[col] = (
+                    _ordered_codes(result[col], args.category_order)
+                    if args.category_order else _ordinal_codes(result[col])
+                )
         elif args.strategy == EncodeStrategy.frequency:
             for col in args.columns:
                 freq = result[col].value_counts(normalize=True)
@@ -2178,6 +2288,8 @@ async def encode_categorical(
                 "strategy": args.strategy.value,
                 "columns": args.columns,
                 **({"drop_first": args.drop_first} if args.strategy == EncodeStrategy.one_hot else {}),
+                **({"category_order": args.category_order}
+                   if args.strategy == EncodeStrategy.ordinal and args.category_order else {}),
                 **({"target_column": args.target_column, "smoothing": args.smoothing}
                    if args.strategy == EncodeStrategy.target else {}),
             },
@@ -2485,6 +2597,936 @@ async def balance_data(
 
 
 # ---------------------------------------------------------------------------
+# Data inspection: head / tail / info / describe / shape / value counts /
+# missing values / correlation / profiling report
+# ---------------------------------------------------------------------------
+
+
+class InspectView(str, Enum):
+    head = "head"
+    tail = "tail"
+    info = "info"
+    describe = "describe"
+    shape = "shape"
+    value_counts = "value_counts"
+    missing = "missing"
+    correlation = "correlation"
+    profile = "profile"
+
+
+_MAX_INSPECT_ROWS = 50
+
+
+class InspectDataArgs(BaseModel):
+    dataset_version_id: str = Field(..., min_length=36, max_length=36)
+    view: InspectView = Field(
+        ...,
+        description=(
+            "head / tail: the first or last n_rows rows; info: dtype, non-null, missing and memory "
+            "per column; describe: count, mean, std, min, quartiles, max (numeric) and unique, top, "
+            "freq (text); shape: row and column counts; value_counts: the top_n most frequent values "
+            "per column; missing: missing values per column (isnull, including text such as 'NA' or "
+            "'?'); correlation: correlation matrix of the numeric columns (method); profile: a "
+            "profiling report per column (type, missing, unique, zeros, mean, std, min, median, max, "
+            "skew, kurtosis, most frequent value)."
+        ),
+    )
+    columns: Optional[list[str]] = Field(
+        None,
+        description="Columns to include. Omit to use every column (every numeric one for correlation).",
+    )
+    n_rows: int = Field(10, description="Rows shown by head and tail.", ge=1, le=_MAX_INSPECT_ROWS)
+    top_n: int = Field(10, description="Most frequent values listed per column by value_counts.", ge=1, le=50)
+    method: CorrelationMethod = Field(
+        CorrelationMethod.pearson,
+        description="Correlation coefficient for the correlation view: pearson, spearman or kendall.",
+    )
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
+
+
+def _num(value: Any, digits: int = 6) -> Optional[float]:
+    """A rounded float, or None for missing / non-finite values."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(f, digits) if np.isfinite(f) else None
+
+
+def _json_cell(value: Any) -> Any:
+    """A strict-JSON scalar: NaN / NA become None, timestamps and other objects text."""
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, (int, np.integer)):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        return _num(value)
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return str(value)
+
+
+def _uniform_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every row gets every key (in first-seen order), so tables keep all their columns."""
+    keys: list[str] = []
+    for row in rows:
+        keys.extend(k for k in row if k not in keys)
+    return [{k: _json_cell(row.get(k)) for k in keys} for row in rows]
+
+
+def _is_plain_numeric(series: pd.Series) -> bool:
+    return pd.api.types.is_numeric_dtype(series) and not pd.api.types.is_bool_dtype(series)
+
+
+def _positioned(df: pd.DataFrame, start: int) -> list[dict[str, Any]]:
+    label = "row" if "row" not in df.columns else "_row"
+    out = df.reset_index(drop=True)
+    out.insert(0, label, range(start, start + len(out)))
+    return out.to_dict(orient="records")
+
+
+def _inspect(df: pd.DataFrame, args: InspectDataArgs) -> tuple[str, list[dict[str, Any]]]:
+    n_rows, n_cols = df.shape
+    view = args.view
+    if view == InspectView.head:
+        return f"head — first {min(args.n_rows, n_rows)} of {n_rows} rows", _positioned(df.head(args.n_rows), 0)
+    if view == InspectView.tail:
+        part = df.tail(args.n_rows)
+        return f"tail — last {len(part)} of {n_rows} rows", _positioned(part, n_rows - len(part))
+    if view == InspectView.shape:
+        return "shape", [{"rows": n_rows, "columns": n_cols}]
+
+    if view == InspectView.correlation:
+        numeric = [c for c in df.columns if _is_plain_numeric(df[c])]
+        if len(numeric) < 2:
+            raise ValueError("The correlation view needs at least 2 numeric columns")
+        corr = df[numeric].corr(method=args.method.value)
+        rows = [{"column": c, **{o: _num(corr.loc[c, o], 4) for o in numeric}} for c in numeric]
+        return f"correlation ({args.method.value})", rows
+
+    if view == InspectView.describe:
+        desc = df.describe(include="all").T
+        rows = [{"column": str(col), **{str(k): v for k, v in stats.items()}} for col, stats in desc.iterrows()]
+        return f"describe — {n_rows} rows", rows
+
+    if view == InspectView.value_counts:
+        rows = []
+        for col in df.columns:
+            counts = df[col].value_counts(dropna=False)
+            for value, count in counts.head(args.top_n).items():
+                rows.append({
+                    "column": col,
+                    "value": "(missing)" if _json_cell(value) is None else _json_cell(value),
+                    "count": int(count),
+                    "percent": round(100 * int(count) / n_rows, 2) if n_rows else 0.0,
+                    "distinct_values": int(len(counts)),
+                })
+        return f"value_counts — top {args.top_n} per column", rows
+
+    # info, missing and profile count text placeholders ("NA", "?", blanks) as missing,
+    # the way remove_missing_data treats them.
+    clean = _coerce_fake_nulls(df)
+    missing = clean.isna().sum()
+    if view == InspectView.info:
+        memory = df.memory_usage(deep=True)
+        rows = [
+            {
+                "column": c,
+                "dtype": str(df[c].dtype),
+                "non_null": int(n_rows - missing[c]),
+                "missing": int(missing[c]),
+                "memory_kb": round(float(memory[c]) / 1024, 2),
+            }
+            for c in df.columns
+        ]
+        return f"info — {n_rows} rows × {n_cols} columns, {float(memory.sum()) / 1024:.1f} KB", rows
+    if view == InspectView.missing:
+        rows = [
+            {
+                "column": c,
+                "missing": int(missing[c]),
+                "missing_pct": round(100 * float(missing[c]) / n_rows, 2) if n_rows else 0.0,
+                "non_null": int(n_rows - missing[c]),
+            }
+            for c in df.columns
+        ]
+        rows.sort(key=lambda r: r["missing"], reverse=True)
+        return f"missing values — {int(missing.sum())} missing cell(s) in {n_rows} rows", rows
+
+    rows = []
+    for c in df.columns:
+        s = clean[c]
+        row: dict[str, Any] = {
+            "column": c,
+            "dtype": str(df[c].dtype),
+            "non_null": int(n_rows - missing[c]),
+            "missing": int(missing[c]),
+            "missing_pct": round(100 * float(missing[c]) / n_rows, 2) if n_rows else 0.0,
+            "unique": int(s.nunique(dropna=True)),
+        }
+        if _is_plain_numeric(s):
+            x = s.astype(float)
+            row.update(
+                zeros=int((x == 0).sum()),
+                mean=_num(x.mean()),
+                std=_num(x.std()),
+                min=_num(x.min()),
+                median=_num(x.median()),
+                max=_num(x.max()),
+                skew=_num(x.skew(), 4),
+                kurtosis=_num(x.kurt(), 4),
+            )
+        counts = s.value_counts()
+        if len(counts):
+            row.update(top=counts.index[0], top_freq=int(counts.iloc[0]))
+        rows.append(row)
+    return f"profile — {n_rows} rows × {n_cols} columns", rows
+
+
+async def inspect_data(
+    dataset_version_id: str,
+    view: str,
+    columns: Optional[list[str]] = None,
+    n_rows: int = 10,
+    top_n: int = 10,
+    method: str = "pearson",
+    *,
+    session: Optional[AsyncSession] = None,
+) -> dict[str, Any]:
+    """Look at the data the way pandas does (head, info, describe, …); never modifies it."""
+    args = InspectDataArgs(
+        dataset_version_id=dataset_version_id,
+        view=view,  # type: ignore[arg-type]
+        columns=columns,
+        n_rows=n_rows,
+        top_n=top_n,
+        method=method,  # type: ignore[arg-type]
+    )
+
+    async def _run(db: AsyncSession) -> dict[str, Any]:
+        version = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(version)
+        if args.columns:
+            _assert_columns_exist(df, args.columns)
+            df = df[args.columns]
+        title, rows = _inspect(df, args)
+        return {
+            "dataset_version_id": args.dataset_version_id,
+            "view": args.view.value,
+            "title": title,
+            "rows": _uniform_rows(rows),
+        }
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+# ---------------------------------------------------------------------------
+# Row filtering, duplicates, type conversion and text cleaning
+# ---------------------------------------------------------------------------
+
+
+class DropRowsMode(str, Enum):
+    condition = "condition"
+    row_range = "row_range"
+
+
+class RowOperator(str, Enum):
+    equals = "equals"
+    not_equals = "not_equals"
+    greater_than = "greater_than"
+    greater_or_equal = "greater_or_equal"
+    less_than = "less_than"
+    less_or_equal = "less_or_equal"
+    contains = "contains"
+    is_missing = "is_missing"
+    not_missing = "not_missing"
+
+
+_VALUELESS_OPERATORS = frozenset({RowOperator.is_missing, RowOperator.not_missing})
+_OPERATOR_SYMBOLS = {
+    RowOperator.equals: "==",
+    RowOperator.not_equals: "!=",
+    RowOperator.greater_than: ">",
+    RowOperator.greater_or_equal: ">=",
+    RowOperator.less_than: "<",
+    RowOperator.less_or_equal: "<=",
+    RowOperator.contains: "contains",
+    RowOperator.is_missing: "is missing",
+    RowOperator.not_missing: "is not missing",
+}
+
+
+class DropRowsArgs(BaseModel):
+    dataset_version_id: str = Field(..., min_length=36, max_length=36)
+    mode: DropRowsMode = Field(
+        ...,
+        description=(
+            "condition: the rows where `column` `operator` `value` holds; row_range: the rows at "
+            "positions start_row (inclusive) to end_row (exclusive), counted from 0 like pandas iloc."
+        ),
+    )
+    column: Optional[str] = Field(None, description="Column the condition tests (condition mode).")
+    operator: RowOperator = Field(
+        RowOperator.equals,
+        description=(
+            "Comparison for condition mode: equals, not_equals, greater_than, greater_or_equal, "
+            "less_than, less_or_equal, contains (text, case-insensitive), is_missing, not_missing."
+        ),
+    )
+    value: Optional[str] = Field(
+        None,
+        description="Value the column is compared with; a number for numeric columns. Not used by is_missing / not_missing.",
+    )
+    start_row: int = Field(0, description="First row position of the range (row_range, 0-based, inclusive).", ge=0)
+    end_row: Optional[int] = Field(
+        None,
+        description="Row position where the range stops (row_range, exclusive). Omit to go to the last row.",
+        ge=1,
+    )
+    keep_matching: bool = Field(
+        False,
+        description="Keep only the matching rows and drop all others (a filter), instead of dropping the matching rows.",
+    )
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("column", mode="before")
+    @classmethod
+    def _blank_column(cls, value: Any) -> Any:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _value_as_text(cls, value: Any) -> Any:
+        return None if value is None else str(value)
+
+    @model_validator(mode="after")
+    def _mode_needs(self) -> "DropRowsArgs":
+        if self.mode == DropRowsMode.condition:
+            if not self.column:
+                raise ValueError("condition mode needs column")
+            if self.operator not in _VALUELESS_OPERATORS and (self.value is None or self.value == ""):
+                raise ValueError(f"The {self.operator.value} operator needs a value")
+        elif self.end_row is not None and self.end_row <= self.start_row:
+            raise ValueError("end_row must be larger than start_row")
+        return self
+
+
+def _condition_mask(df: pd.DataFrame, args: DropRowsArgs) -> pd.Series:
+    series = df[args.column]
+    op = args.operator
+    if op == RowOperator.is_missing:
+        return _coerce_fake_nulls(df[[args.column]])[args.column].isna()
+    if op == RowOperator.not_missing:
+        return _coerce_fake_nulls(df[[args.column]])[args.column].notna()
+    if op == RowOperator.contains:
+        return series.astype("string").str.contains(args.value, case=False, regex=False, na=False).astype(bool)
+
+    text = args.value.strip()
+    if pd.api.types.is_bool_dtype(series):
+        target: Any = text.lower() in {"true", "1", "yes", "t", "y"}
+    elif pd.api.types.is_numeric_dtype(series):
+        try:
+            target = float(text)
+        except ValueError as exc:
+            raise ValueError(f"'{args.column}' is numeric, so value must be a number (got {args.value!r})") from exc
+    elif pd.api.types.is_datetime64_any_dtype(series):
+        try:
+            target = pd.Timestamp(text)
+        except ValueError as exc:
+            raise ValueError(f"'{args.column}' holds dates, so value must be a date (got {args.value!r})") from exc
+    else:
+        series = series.astype("string")
+        target = args.value
+    compare = {
+        RowOperator.equals: series == target,
+        RowOperator.not_equals: series != target,
+        RowOperator.greater_than: series > target,
+        RowOperator.greater_or_equal: series >= target,
+        RowOperator.less_than: series < target,
+        RowOperator.less_or_equal: series <= target,
+    }[op]
+    return compare.fillna(False).astype(bool)
+
+
+async def drop_rows(
+    dataset_version_id: str,
+    mode: str,
+    column: Optional[str] = None,
+    operator: str = "equals",
+    value: Optional[str] = None,
+    start_row: int = 0,
+    end_row: Optional[int] = None,
+    keep_matching: bool = False,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> tuple[str, str]:
+    """Drop (or keep only) the rows matching a condition or a position range."""
+    args = DropRowsArgs(
+        dataset_version_id=dataset_version_id,
+        mode=mode,  # type: ignore[arg-type]
+        column=column,
+        operator=operator,  # type: ignore[arg-type]
+        value=value,
+        start_row=start_row,
+        end_row=end_row,
+        keep_matching=keep_matching,
+    )
+
+    async def _run(db: AsyncSession) -> tuple[str, str]:
+        parent = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(parent)
+        n = len(df)
+        if args.mode == DropRowsMode.condition:
+            _assert_columns_exist(df, [args.column])
+            matching = _condition_mask(df, args)
+            rule = f"{args.column} {_OPERATOR_SYMBOLS[args.operator]}"
+            if args.operator not in _VALUELESS_OPERATORS:
+                rule += f" {args.value}"
+            parameters: dict[str, Any] = {
+                "mode": args.mode.value, "column": args.column, "operator": args.operator.value,
+                **({"value": args.value} if args.operator not in _VALUELESS_OPERATORS else {}),
+            }
+        else:
+            end = min(args.end_row if args.end_row is not None else n, n)
+            positions = np.zeros(n, dtype=bool)
+            positions[args.start_row:end] = True
+            matching = pd.Series(positions, index=df.index)
+            rule = (
+                f"rows {args.start_row}–{end - 1}" if end > args.start_row
+                else f"rows from position {args.start_row} (the dataset has {n} rows)"
+            )
+            parameters = {"mode": args.mode.value, "start_row": args.start_row, "end_row": args.end_row}
+        parameters["keep_matching"] = args.keep_matching
+
+        drop = ~matching if args.keep_matching else matching
+        n_drop = int(drop.sum())
+        if n_drop == 0:
+            return str(parent.id), f"No rows to drop ({'keeping' if args.keep_matching else 'matching'} {rule}). No changes made."
+        if n_drop == n:
+            raise ValueError(f"This would drop all {n} rows ({rule}); nothing would be left.")
+        result = df.loc[~drop].reset_index(drop=True)
+        verb = "Kept only rows where" if args.keep_matching else "Dropped rows where"
+        if args.mode == DropRowsMode.row_range:
+            verb = "Kept only" if args.keep_matching else "Dropped"
+        return await _persist_new_version(
+            db,
+            parent=parent,
+            df=result,
+            action_performed="drop_rows",
+            parameters_used={**parameters, "rows_dropped": n_drop},
+            summary_message=f"{verb} {rule}: {n_drop} row(s) dropped, rows {n} → {len(result)}.",
+        )
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+class DuplicateKeep(str, Enum):
+    first = "first"
+    last = "last"
+    none = "none"
+
+
+class DropDuplicatesArgs(BaseModel):
+    dataset_version_id: str = Field(..., min_length=36, max_length=36)
+    columns: Optional[list[str]] = Field(
+        None,
+        description="Rows count as duplicates when these columns match. Omit to compare whole rows.",
+    )
+    keep: DuplicateKeep = Field(
+        DuplicateKeep.first,
+        description="Which copy of a duplicated row to keep: first, last, or none (drop every copy).",
+    )
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
+
+
+async def drop_duplicates(
+    dataset_version_id: str,
+    columns: Optional[list[str]] = None,
+    keep: str = "first",
+    *,
+    session: Optional[AsyncSession] = None,
+) -> tuple[str, str]:
+    """Drop duplicated rows (pandas drop_duplicates)."""
+    args = DropDuplicatesArgs(dataset_version_id=dataset_version_id, columns=columns, keep=keep)  # type: ignore[arg-type]
+
+    async def _run(db: AsyncSession) -> tuple[str, str]:
+        parent = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(parent)
+        if args.columns:
+            _assert_columns_exist(df, args.columns)
+        keep_arg: Any = False if args.keep == DuplicateKeep.none else args.keep.value
+        result = df.drop_duplicates(subset=args.columns, keep=keep_arg).reset_index(drop=True)
+        removed = len(df) - len(result)
+        scope = f" on columns {args.columns}" if args.columns else ""
+        if removed == 0:
+            return str(parent.id), f"No duplicate rows found{scope}. No changes made."
+        return await _persist_new_version(
+            db,
+            parent=parent,
+            df=result,
+            action_performed="drop_duplicates",
+            parameters_used={"columns": args.columns, "keep": args.keep.value, "rows_dropped": removed},
+            summary_message=(
+                f"Dropped {removed} duplicate row(s){scope} (keep={args.keep.value}); "
+                f"rows {len(df)} → {len(result)}."
+            ),
+        )
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+class TargetType(str, Enum):
+    FLOAT = "float"
+    INTEGER = "integer"
+    STRING = "string"
+    CATEGORY = "category"
+    BOOLEAN = "boolean"
+    DATETIME = "datetime"
+
+
+class ConvertTypesArgs(BaseModel):
+    dataset_version_id: str = Field(..., min_length=36, max_length=36)
+    columns: list[str] = Field(..., min_length=1, description="Columns to convert.")
+    target_type: TargetType = Field(
+        ...,
+        description=(
+            "New type: float, integer (whole numbers), string (text), category, boolean "
+            "(true/false, yes/no, 1/0) or datetime (parses dates and times)."
+        ),
+    )
+    errors: str = Field(
+        "coerce",
+        description="coerce: values that cannot be converted become missing; raise: stop with an error instead.",
+        json_schema_extra={"enum": ["coerce", "raise"]},
+    )
+    datetime_format: Optional[str] = Field(
+        None,
+        description="For datetime: strftime format such as '%d/%m/%Y %H:%M'. Omit to detect it per value.",
+    )
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
+
+    @field_validator("errors")
+    @classmethod
+    def _valid_errors(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"coerce", "raise"}:
+            raise ValueError("errors must be 'coerce' or 'raise'")
+        return value
+
+    @field_validator("datetime_format", mode="before")
+    @classmethod
+    def _blank_format(cls, value: Any) -> Any:
+        return value.strip() or None if isinstance(value, str) else value
+
+
+_TRUE_TEXT = frozenset({"true", "t", "yes", "y", "1", "on"})
+_FALSE_TEXT = frozenset({"false", "f", "no", "n", "0", "off"})
+
+
+def _to_boolean(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(series):
+        return series.astype("boolean")
+    if pd.api.types.is_numeric_dtype(series):
+        return series.map(lambda v: pd.NA if pd.isna(v) else bool(v != 0)).astype("boolean")
+
+    def read(v: Any) -> Any:
+        if not isinstance(v, str):
+            return pd.NA
+        text = v.strip().lower()
+        return True if text in _TRUE_TEXT else False if text in _FALSE_TEXT else pd.NA
+
+    return series.map(read).astype("boolean")
+
+
+def _convert_column(series: pd.Series, args: ConvertTypesArgs) -> pd.Series:
+    kind = args.target_type
+    if kind in (TargetType.FLOAT, TargetType.INTEGER):
+        text = series.map(lambda v: v.strip() if isinstance(v, str) else v)
+        numbers = pd.to_numeric(text, errors=args.errors)
+        if kind == TargetType.FLOAT:
+            return numbers.astype("float64")
+        whole = numbers.dropna()
+        if len(whole) and not (whole % 1 == 0).all():
+            example = whole[whole % 1 != 0].iloc[0]
+            raise ValueError(f"'{series.name}' has fractional values (e.g. {example}); convert it to float instead")
+        return numbers.astype("int64" if numbers.notna().all() else "Int64")
+    if kind == TargetType.STRING:
+        return series.astype("string")
+    if kind == TargetType.CATEGORY:
+        return series.astype("category")
+    if kind == TargetType.BOOLEAN:
+        flags = _to_boolean(series)
+        bad = series.notna() & flags.isna()
+        if bad.any() and args.errors == "raise":
+            raise ValueError(f"'{series.name}' has values that are not true/false, e.g. {series[bad].iloc[0]!r}")
+        return flags.astype(bool) if flags.notna().all() else flags
+    if _is_plain_numeric(series) and not args.datetime_format:
+        return pd.to_datetime(series, errors=args.errors)
+    return pd.to_datetime(series, errors=args.errors, format=args.datetime_format or "mixed")
+
+
+async def convert_types(
+    dataset_version_id: str,
+    columns: list[str],
+    target_type: str,
+    errors: str = "coerce",
+    datetime_format: Optional[str] = None,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> tuple[str, str]:
+    """Cast columns to another type (astype / to_numeric / to_datetime)."""
+    args = ConvertTypesArgs(
+        dataset_version_id=dataset_version_id,
+        columns=columns,
+        target_type=target_type,  # type: ignore[arg-type]
+        errors=errors,
+        datetime_format=datetime_format,
+    )
+
+    async def _run(db: AsyncSession) -> tuple[str, str]:
+        parent = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(parent)
+        _assert_columns_exist(df, args.columns)
+        # Text placeholders ("NA", "?", blanks) are missing values, not conversion failures.
+        clean = _coerce_fake_nulls(df[args.columns])
+        result = df.copy()
+        lost: dict[str, int] = {}
+        for col in args.columns:
+            try:
+                converted = _convert_column(clean[col], args)
+            except (ValueError, TypeError) as exc:
+                message = str(exc)
+                raise ValueError(message if f"'{col}'" in message else f"'{col}': {message}") from exc
+            failed = int((clean[col].notna() & converted.isna()).sum())
+            if failed:
+                lost[col] = failed
+            result[col] = converted
+        summary = f"Converted {len(args.columns)} column(s) to {args.target_type.value}: {', '.join(args.columns)}."
+        if lost:
+            summary += " Values that could not be converted are now missing: " + ", ".join(
+                f"{c} ({n})" for c, n in lost.items()
+            ) + "."
+        return await _persist_new_version(
+            db,
+            parent=parent,
+            df=result,
+            action_performed="convert_types",
+            parameters_used={
+                "columns": args.columns,
+                "target_type": args.target_type.value,
+                "errors": args.errors,
+                **({"datetime_format": args.datetime_format} if args.datetime_format else {}),
+                "values_made_missing": lost,
+            },
+            summary_message=summary,
+        )
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+class TextOperation(str, Enum):
+    strip = "strip"
+    lower = "lower"
+    upper = "upper"
+    title = "title"
+    collapse_whitespace = "collapse_whitespace"
+    replace = "replace"
+
+
+class CleanTextArgs(BaseModel):
+    dataset_version_id: str = Field(..., min_length=36, max_length=36)
+    columns: list[str] = Field(..., min_length=1, description="Text columns to clean.")
+    operation: TextOperation = Field(
+        ...,
+        description=(
+            "strip (trim leading/trailing spaces), lower, upper, title (Title Case), "
+            "collapse_whitespace (runs of spaces become one, then trim), or replace (find → replace_with)."
+        ),
+    )
+    find: Optional[str] = Field(None, description="For replace: the text (or regular expression) to find.", max_length=200)
+    replace_with: str = Field("", description="For replace: what each match becomes (empty to delete it).", max_length=200)
+    use_regex: bool = Field(False, description="For replace: treat find as a regular expression.")
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("columns")
+    @classmethod
+    def _non_empty_names(cls, value: list[str]) -> list[str]:
+        return _clean_names(value)
+
+    @model_validator(mode="after")
+    def _replace_needs_find(self) -> "CleanTextArgs":
+        if self.operation == TextOperation.replace:
+            if not self.find:
+                raise ValueError("replace needs find")
+            if self.use_regex:
+                try:
+                    re.compile(self.find)
+                except re.error as exc:
+                    raise ValueError(f"find is not a valid regular expression: {exc}") from exc
+        return self
+
+
+def _clean_strings(values: pd.Series, args: CleanTextArgs) -> pd.Series:
+    text = values.str
+    op = args.operation
+    if op == TextOperation.strip:
+        return text.strip()
+    if op == TextOperation.lower:
+        return text.lower()
+    if op == TextOperation.upper:
+        return text.upper()
+    if op == TextOperation.title:
+        return text.title()
+    if op == TextOperation.collapse_whitespace:
+        return text.replace(r"\s+", " ", regex=True).str.strip()
+    return text.replace(args.find, args.replace_with, regex=args.use_regex)
+
+
+async def clean_text(
+    dataset_version_id: str,
+    columns: list[str],
+    operation: str,
+    find: Optional[str] = None,
+    replace_with: str = "",
+    use_regex: bool = False,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> tuple[str, str]:
+    """Strip, re-case, collapse spaces in, or find-and-replace text columns."""
+    args = CleanTextArgs(
+        dataset_version_id=dataset_version_id,
+        columns=columns,
+        operation=operation,  # type: ignore[arg-type]
+        find=find,
+        replace_with=replace_with,
+        use_regex=use_regex,
+    )
+
+    async def _run(db: AsyncSession) -> tuple[str, str]:
+        parent = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(parent)
+        _assert_columns_exist(df, args.columns)
+        not_text = [
+            c for c in args.columns
+            if not (pd.api.types.is_string_dtype(df[c]) or pd.api.types.is_object_dtype(df[c])
+                    or isinstance(df[c].dtype, pd.CategoricalDtype))
+        ]
+        if not_text:
+            raise ValueError(f"Not text columns: {not_text}. Convert them with convert_types (string) first.")
+
+        result = df.copy()
+        changed = 0
+        for col in args.columns:
+            original = df[col]
+            was_category = isinstance(original.dtype, pd.CategoricalDtype)
+            values = original.astype(object)
+            is_text = values.map(lambda v: isinstance(v, str))
+            before = values[is_text].astype(str)
+            after = _clean_strings(before, args)
+            changed += int((before != after).sum())
+            cleaned = values.copy()
+            cleaned[is_text] = after
+            result[col] = cleaned.astype("category") if was_category else cleaned.astype(original.dtype)
+        detail = (
+            f" '{args.find}' → '{args.replace_with}'" if args.operation == TextOperation.replace else ""
+        )
+        return await _persist_new_version(
+            db,
+            parent=parent,
+            df=result,
+            action_performed="clean_text",
+            parameters_used={
+                "columns": args.columns,
+                "operation": args.operation.value,
+                **({"find": args.find, "replace_with": args.replace_with, "use_regex": args.use_regex}
+                   if args.operation == TextOperation.replace else {}),
+                "values_changed": changed,
+            },
+            summary_message=(
+                f"Applied {args.operation.value}{detail} to {len(args.columns)} column(s); "
+                f"{changed} value(s) changed."
+            ),
+        )
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+# ---------------------------------------------------------------------------
+# Univariate feature selection (SelectKBest)
+# ---------------------------------------------------------------------------
+
+
+class KBestScore(str, Enum):
+    f_regression = "f_regression"
+    mutual_info_regression = "mutual_info_regression"
+
+
+class SelectKBestArgs(BaseModel):
+    dataset_version_id: str = Field(..., min_length=36, max_length=36)
+    target_column: str = Field(..., description="Name of the target/response column.")
+    feature_columns: Optional[list[str]] = Field(
+        None,
+        description="Candidate feature columns. Omit to consider every numeric column except the target.",
+    )
+    k: int = Field(5, description="Number of best-scoring features to keep.", ge=1)
+    score_func: KBestScore = Field(
+        KBestScore.f_regression,
+        description=(
+            "Score of each feature against the target: f_regression (linear F-test) or "
+            "mutual_info_regression (also catches non-linear dependence)."
+        ),
+    )
+    random_state: int = Field(42, description="Random seed of mutual_info_regression.")
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("feature_columns")
+    @classmethod
+    def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
+
+
+async def select_k_best(
+    dataset_version_id: str,
+    target_column: str,
+    feature_columns: Optional[list[str]] = None,
+    k: int = 5,
+    score_func: str = "f_regression",
+    random_state: int = 42,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> tuple[str, str]:
+    """Keep the k features that score best against the target (SelectKBest); drop the rest."""
+    from sklearn.feature_selection import f_regression, mutual_info_regression
+
+    args = SelectKBestArgs(
+        dataset_version_id=dataset_version_id,
+        target_column=target_column,
+        feature_columns=feature_columns,
+        k=k,
+        score_func=score_func,  # type: ignore[arg-type]
+        random_state=random_state,
+    )
+
+    async def _run(db: AsyncSession) -> tuple[str, str]:
+        parent = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(parent)
+        _assert_numeric_columns(df, [args.target_column])
+        if args.feature_columns:
+            feature_cols = [c for c in args.feature_columns if c != args.target_column]
+            _assert_numeric_columns(df, feature_cols)
+        else:
+            feature_cols = [
+                c for c in df.columns
+                if c != args.target_column and _is_plain_numeric(df[c]) and not c.startswith("Predicted_")
+            ]
+        if len(feature_cols) <= args.k:
+            return str(parent.id), (
+                f"Only {len(feature_cols)} numeric feature column(s), not more than k={args.k}; nothing to drop. "
+                "No changes made."
+            )
+        complete = df[[*feature_cols, args.target_column]].dropna()
+        if len(complete) < 5:
+            raise ValueError(f"Need at least 5 rows without missing values; found {len(complete)}")
+        X = complete[feature_cols].astype(float).to_numpy()
+        y = complete[args.target_column].astype(float).to_numpy()
+        if args.score_func == KBestScore.f_regression:
+            scores, _ = f_regression(X, y)
+        else:
+            scores = mutual_info_regression(X, y, random_state=args.random_state)
+        scores = np.nan_to_num(np.asarray(scores, dtype=float), nan=0.0, posinf=np.finfo(float).max)
+        order = np.argsort(-scores, kind="stable")
+        selected = [feature_cols[i] for i in order[: args.k]]
+        dropped = [c for c in feature_cols if c not in selected]
+        ranked = {feature_cols[i]: round(float(scores[i]), 4) for i in order}
+
+        result = df.drop(columns=dropped)
+        return await _persist_new_version(
+            db,
+            parent=parent,
+            df=result,
+            action_performed="select_k_best",
+            parameters_used={
+                "target_column": args.target_column,
+                "k": args.k,
+                "score_func": args.score_func.value,
+                **({"random_state": args.random_state} if args.score_func == KBestScore.mutual_info_regression else {}),
+                "scores": ranked,
+                "selected_features": selected,
+                "dropped_features": dropped,
+            },
+            summary_message=(
+                f"SelectKBest ({args.score_func.value}) kept {len(selected)} features: "
+                + ", ".join(f"{c} ({ranked[c]})" for c in selected)
+                + f". Dropped {len(dropped)}: {', '.join(dropped)}."
+            ),
+        )
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+# ---------------------------------------------------------------------------
 # OpenAI / Groq tool schema export + dispatch map
 # ---------------------------------------------------------------------------
 
@@ -2513,10 +3555,11 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="remove_outliers",
         description=(
-            "Remove outlier rows from selected numeric columns using z_score "
-            "(absolute standard deviations, default 3) or iqr (IQR fence multiplier, "
-            "default 1.5), or cap them with winsorize (tail fraction, default 0.05). "
-            "Saves a new dataset version and logs lineage. "
+            "Handle outliers in selected numeric columns: z_score (absolute standard deviations, "
+            "default 3) or iqr (IQR fence multiplier, default 1.5) either drop the outlier rows "
+            "(action=drop) or cap the values at the fence (action=cap); winsorize caps each tail "
+            "at a percentile (tail fraction, default 0.05); clip caps values to fixed "
+            "lower_bound / upper_bound. Saves a new dataset version and logs lineage. "
             "Returns (new_version_id, summary_message)."
         ),
         args_model=RemoveOutliersArgs,
@@ -2556,7 +3599,10 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     ),
     _openai_tool_schema(
         name="encode_categorical",
-        description="Encode categorical features using one_hot, ordinal, frequency, target, or binary.",
+        description=(
+            "Encode categorical features using one_hot, label (0..n-1 codes), ordinal (1..n codes, "
+            "in sorted order or a given category_order), frequency, target, or binary."
+        ),
         args_model=EncodeCategoricalArgs,
     ),
     _openai_tool_schema(
@@ -2660,6 +3706,61 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         ),
         args_model=GetColumnStatisticsArgs,
     ),
+    _openai_tool_schema(
+        name="inspect_data",
+        description=(
+            "Look at the data like pandas does, without changing it: head / tail (first or last "
+            "n_rows rows), info (dtypes, non-null counts, memory), describe, shape, value_counts, "
+            "missing (isnull counts per column), correlation (corr matrix) or profile (a full "
+            "per-column profiling report). Returns a table."
+        ),
+        args_model=InspectDataArgs,
+    ),
+    _openai_tool_schema(
+        name="drop_rows",
+        description=(
+            "Drop rows that match a condition on one column (equals, greater_than, contains, "
+            "is_missing, …) or that sit in a row-position range; keep_matching=true keeps only "
+            "those rows instead (a filter). Saves a new dataset version and logs lineage."
+        ),
+        args_model=DropRowsArgs,
+    ),
+    _openai_tool_schema(
+        name="drop_duplicates",
+        description=(
+            "Drop duplicated rows, comparing whole rows or only `columns`, keeping the first, "
+            "the last or no copy. Saves a new dataset version and logs lineage."
+        ),
+        args_model=DropDuplicatesArgs,
+    ),
+    _openai_tool_schema(
+        name="convert_types",
+        description=(
+            "Cast columns to float, integer, string, category, boolean or datetime (type "
+            "conversion and datetime parsing, with an optional datetime_format). Unconvertible "
+            "values become missing (errors=coerce) or stop the tool (errors=raise). Saves a new "
+            "dataset version and logs lineage."
+        ),
+        args_model=ConvertTypesArgs,
+    ),
+    _openai_tool_schema(
+        name="clean_text",
+        description=(
+            "Clean text columns: strip spaces, lower / upper / title case, collapse repeated "
+            "whitespace, or find-and-replace (plain text or regex). Saves a new dataset version "
+            "and logs lineage."
+        ),
+        args_model=CleanTextArgs,
+    ),
+    _openai_tool_schema(
+        name="select_k_best",
+        description=(
+            "SelectKBest: score every candidate feature against the target with f_regression or "
+            "mutual_info_regression, keep the k best and drop the rest. Saves a new dataset "
+            "version and logs lineage."
+        ),
+        args_model=SelectKBestArgs,
+    ),
 ]
 
 TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
@@ -2685,6 +3786,13 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "drop_collinear_features": drop_collinear_features,
     # Statistical profiler
     "get_column_statistics": get_column_statistics,
+    "inspect_data": inspect_data,
+    # Rows, types and text
+    "drop_rows": drop_rows,
+    "drop_duplicates": drop_duplicates,
+    "convert_types": convert_types,
+    "clean_text": clean_text,
+    "select_k_best": select_k_best,
 }
 
 __all__ = [
@@ -2722,4 +3830,10 @@ __all__ = [
     "drop_collinear_features",
     "get_column_statistics",
     "run_duckdb_query",
+    "inspect_data",
+    "drop_rows",
+    "drop_duplicates",
+    "convert_types",
+    "clean_text",
+    "select_k_best",
 ]

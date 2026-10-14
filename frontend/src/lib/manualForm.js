@@ -9,10 +9,14 @@
 
 const COLUMN_WIDGETS = new Set(['column', 'columns'])
 
+/** `show_when` is one set of conditions that must all hold, or a list of such sets of which any may hold. */
 export function isVisible(field, values) {
   const when = field.show_when
   if (!when) return true
-  return Object.entries(when).every(([other, allowed]) => allowed.includes(values[other]))
+  const alternatives = Array.isArray(when) ? when : [when]
+  return alternatives.some((conditions) =>
+    Object.entries(conditions).every(([other, allowed]) => allowed.includes(values[other])),
+  )
 }
 
 /** Columns a field may pick; a feature list never offers the form's target. */

@@ -21,10 +21,15 @@ from backend.mcp_server.eda_tools import (
     _smote,
     _target_encode,
 )
-from backend.mcp_server.modeling_tools import TrainSoftSensorArgs, _split
+from backend.mcp_server.modeling_tools import TrainSoftSensorArgs, _cross_validate, _split, _strata
 from test_online_api import as_user, client, new_user, storage, upload  # noqa: F401 — fixtures
 
 _VID = "00000000-0000-4000-8000-000000000000"
+
+
+def _alternatives(when):
+    """``show_when`` is one dict of conditions, or a list of dicts of which any may hold."""
+    return when if isinstance(when, list) else [when]
 _SCHEMAS = {s["function"]["name"]: s["function"]["parameters"] for s in LLM_TOOL_SCHEMAS}
 _SPECS = {s["name"]: s for s in manual_tool_specs()}
 
@@ -72,9 +77,10 @@ def test_form_overrides_name_real_fields_and_options(name):
         assert set(ui.get(key, ())) <= set(fields), (name, key)
     for key in ("defaults", "app_defaults", "show_when"):
         assert set(ui.get(key, {})) <= set(fields), (name, key)
-    for field, conditions in ui.get("show_when", {}).items():
-        for controller, values in conditions.items():
-            assert set(values) <= set(fields[controller]["options"]), (name, field, controller)
+    for field, when in ui.get("show_when", {}).items():
+        for conditions in _alternatives(when):
+            for controller, values in conditions.items():
+                assert set(values) <= set(fields[controller]["options"]), (name, field, controller)
     for field, default in ui.get("defaults", {}).items():
         if fields[field]["widget"] == "select":
             assert default in fields[field]["options"], (name, field)
@@ -256,10 +262,23 @@ _PICKS = {
     "reduce_dimensions": {"columns": ["x1", "x2"]},
     "train_soft_sensor": {"target_column": "y", "feature_columns": ["x1", "x2"]},
     "list_trained_models": {},
+    "inspect_data": {},
+    "drop_rows": {"column": "x1", "operator": "greater_than", "value": "1.5"},
+    "drop_duplicates": {},
+    "convert_types": {"columns": ["hour"]},
+    "clean_text": {"columns": ["cat"]},
+    "select_k_best": {"target_column": "y", "k": 2},
 }
 _PER_OPTION = {
     ("feature_engineer", "datetime"): {"columns": ["ts"]},
     ("feature_engineer", "cyclical"): {"columns": ["hour"]},
+    ("remove_outliers", "clip"): {"upper_bound": 1.0},
+    ("drop_rows", "row_range"): {"end_row": 5},
+    ("convert_types", "string"): {"columns": ["cat"]},
+    ("convert_types", "category"): {"columns": ["cat"]},
+    ("convert_types", "boolean"): {"columns": ["label"]},
+    ("convert_types", "datetime"): {"columns": ["ts"]},
+    ("clean_text", "replace"): {"find": "a"},
 }
 
 
@@ -268,7 +287,10 @@ def _main_choice(spec):
 
 
 def _visible(field, values):
-    return all(values.get(k) in v for k, v in (field.get("show_when") or {}).items())
+    when = field.get("show_when")
+    if not when:
+        return True
+    return any(all(values.get(k) in v for k, v in c.items()) for c in _alternatives(when))
 
 
 def _form_arguments(spec, option=None):
@@ -347,6 +369,283 @@ def test_manual_runs_are_owner_only(client):  # noqa: F811
     assert _run(client, bob, version, "drop_columns", columns=["x1"]).status_code == 404
     assert _run(client, alice, version, "not_a_tool").status_code == 404
     assert _run(client, alice, version, "set_model_features").status_code == 404
+
+
+# ── EDA, data manipulation, feature selection and split options ──────────
+
+
+def _preview(client, user, version):  # noqa: F811
+    body = client.get(f"/datasets/versions/{version}/preview?limit=1000", headers=as_user(user)).json()
+    return pd.DataFrame(body["table_preview"], columns=body["columns"])
+
+
+def _messy_csv() -> bytes:
+    df = pd.DataFrame({
+        "x": [1.0, 2.0, 2.0, 50.0, 3.0, -40.0, 2.5, 2.0],
+        "y": [2.0, 4.1, 4.1, 9.0, 6.2, 1.0, 5.0, 4.1],
+        "name": ["  Alpha ", "beta", "beta", "GAMMA  ray", "NA", "delta", "Beta", "beta"],
+        "flag": ["yes", "no", "no", "Y", "n", "true", "?", "no"],
+        "when": ["2026-01-05", "2026-01-06", "2026-01-06", "05/01/2026", "2026-01-08", "bad", "2026-01-10", "2026-01-06"],
+        "level": ["low", "high", "high", "medium", "low", "medium", "high", "high"],
+    })
+    return df.to_csv(index=False).encode()
+
+
+def _ok(resp):
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_inspect_views_cover_pandas_eda(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+
+    def view(**kw):
+        body = _ok(_run(client, alice, version, "inspect_data", **kw))
+        assert not body["ui_update_required"] or body["table_preview"] is not None
+        assert body["active_dataset_version_id"] == version
+        return body["table_title"], body["table_preview"]
+
+    title, rows = view(view="head", n_rows=3)
+    assert title.startswith("head") and [r["row"] for r in rows] == [0, 1, 2] and rows[0]["x"] == 1.0
+    _, rows = view(view="tail", n_rows=2)
+    assert [r["row"] for r in rows] == [6, 7]
+    _, rows = view(view="shape")
+    assert rows == [{"rows": 8, "columns": 6}]
+    _, rows = view(view="info")
+    info = {r["column"]: r for r in rows}
+    assert info["name"]["missing"] == 1 and info["flag"]["missing"] == 1 and info["x"]["non_null"] == 8
+    _, rows = view(view="missing")
+    assert rows[0]["missing"] == 1 and {r["column"] for r in rows} == {"x", "y", "name", "flag", "when", "level"}
+    _, rows = view(view="value_counts", columns=["level"], top_n=2)
+    assert [(r["value"], r["count"]) for r in rows] == [("high", 4), ("low", 2)]
+    assert rows[0]["distinct_values"] == 3
+    _, rows = view(view="describe")
+    assert {r["column"] for r in rows} == {"x", "y", "name", "flag", "when", "level"}
+    _, rows = view(view="correlation", method="spearman")
+    assert [r["column"] for r in rows] == ["x", "y"] and rows[0]["x"] == 1.0
+    _, rows = view(view="profile")
+    assert len({frozenset(r) for r in rows}) == 1  # every row has every column of the report
+    profile = {r["column"]: r for r in rows}
+    assert profile["x"]["min"] == -40.0 and profile["name"]["mean"] is None and profile["level"]["top"] == "high"
+
+
+def test_drop_rows_by_condition_and_range(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+
+    gt = _ok(_run(client, alice, version, "drop_rows", mode="condition", column="x", operator="greater_than", value="10"))
+    assert _preview(client, alice, gt["active_dataset_version_id"])["x"].max() == 3.0
+    kept = _ok(_run(client, alice, version, "drop_rows", mode="condition", column="name",
+                    operator="contains", value="BETA", keep_matching=True))
+    assert len(_preview(client, alice, kept["active_dataset_version_id"])) == 4
+    missing = _ok(_run(client, alice, version, "drop_rows", mode="condition", column="name", operator="is_missing"))
+    assert len(_preview(client, alice, missing["active_dataset_version_id"])) == 7
+    ranged = _ok(_run(client, alice, version, "drop_rows", mode="row_range", start_row=2, end_row=5))
+    assert _preview(client, alice, ranged["active_dataset_version_id"])["x"].tolist() == [1.0, 2.0, -40.0, 2.5, 2.0]
+
+    assert "must be a number" in _run(client, alice, version, "drop_rows", mode="condition", column="x",
+                                  operator="less_than", value="abc").json()["detail"]
+    assert "all 8 rows" in _run(client, alice, version, "drop_rows", mode="row_range").json()["detail"]
+    assert _run(client, alice, version, "drop_rows", mode="condition", column="x").status_code == 422
+
+
+def test_drop_duplicates_keep_options(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+    first = _ok(_run(client, alice, version, "drop_duplicates"))
+    assert len(_preview(client, alice, first["active_dataset_version_id"])) == 6
+    by_name = _ok(_run(client, alice, version, "drop_duplicates", columns=["name"], keep="none"))
+    assert "beta" not in _preview(client, alice, by_name["active_dataset_version_id"])["name"].tolist()
+    last = _ok(_run(client, alice, version, "drop_duplicates", columns=["level"], keep="last"))
+    assert _preview(client, alice, last["active_dataset_version_id"])["x"].tolist() == [3.0, -40.0, 2.0]
+
+
+def test_convert_types_and_parse_dates(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+
+    flags = _ok(_run(client, alice, version, "convert_types", columns=["flag"], target_type="boolean"))
+    assert "flag (0)" not in flags["message"]  # "?" is a placeholder for missing, not a failure
+    assert _preview(client, alice, flags["active_dataset_version_id"])["flag"].tolist() == \
+        [True, False, False, True, False, True, None, False]
+
+    dates = _ok(_run(client, alice, version, "convert_types", columns=["when"], target_type="datetime"))
+    assert "when (1)" in dates["message"]
+    schema = client.get(f"/datasets/versions/{dates['active_dataset_version_id']}/schema", headers=as_user(alice)).json()
+    assert next(c["dtype"] for c in schema["columns"] if c["name"] == "when").startswith("timestamp")
+
+    strict = _run(client, alice, version, "convert_types", columns=["when"], target_type="datetime", errors="raise")
+    assert strict.status_code == 400 and "when" in strict.json()["detail"]
+    fmt = _ok(_run(client, alice, version, "convert_types", columns=["when"], target_type="datetime",
+                   datetime_format="%Y-%m-%d"))
+    assert "when (2)" in fmt["message"]
+
+    fractional = _run(client, alice, version, "convert_types", columns=["x"], target_type="integer")
+    assert fractional.status_code == 400 and "float" in fractional.json()["detail"]
+    as_text = _ok(_run(client, alice, version, "convert_types", columns=["x"], target_type="string"))
+    schema = client.get(f"/datasets/versions/{as_text['active_dataset_version_id']}/schema", headers=as_user(alice)).json()
+    assert not next(c["numeric"] for c in schema["columns"] if c["name"] == "x")
+
+
+def test_clean_text_operations(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+
+    stripped = _ok(_run(client, alice, version, "clean_text", columns=["name"], operation="strip"))
+    lowered = _ok(_run(client, alice, stripped["active_dataset_version_id"], "clean_text",
+                       columns=["name"], operation="lower"))
+    names = _preview(client, alice, lowered["active_dataset_version_id"])["name"].tolist()
+    assert names[0] == "alpha" and names[3] == "gamma  ray" and names[6] == "beta"
+    collapsed = _ok(_run(client, alice, lowered["active_dataset_version_id"], "clean_text",
+                         columns=["name"], operation="collapse_whitespace"))
+    assert _preview(client, alice, collapsed["active_dataset_version_id"])["name"][3] == "gamma ray"
+    replaced = _ok(_run(client, alice, version, "clean_text", columns=["level"], operation="replace",
+                        find="^(l|m)\\w+", replace_with="not high", use_regex=True))
+    assert set(_preview(client, alice, replaced["active_dataset_version_id"])["level"]) == {"high", "not high"}
+
+    assert "Not text columns" in _run(client, alice, version, "clean_text", columns=["x"], operation="lower").json()["detail"]
+    assert _run(client, alice, version, "clean_text", columns=["name"], operation="replace", find="(",
+                use_regex=True).status_code == 422
+
+
+def test_outliers_can_be_capped_or_clipped(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+    capped = _ok(_run(client, alice, version, "remove_outliers", columns=["x"], method="iqr", action="cap"))
+    x = _preview(client, alice, capped["active_dataset_version_id"])["x"]
+    assert len(x) == 8 and x.max() < 50 and x.min() > -40 and "Capped 2" in capped["message"]
+    clipped = _ok(_run(client, alice, version, "remove_outliers", columns=["x"], method="clip",
+                       lower_bound=0, upper_bound=10))
+    assert _preview(client, alice, clipped["active_dataset_version_id"])["x"].tolist() == \
+        [1.0, 2.0, 2.0, 10.0, 3.0, 0.0, 2.5, 2.0]
+    assert _run(client, alice, version, "remove_outliers", columns=["x"], method="clip").status_code == 422
+
+
+def test_label_and_ordered_encoding(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_messy_csv(), name="messy.csv")["dataset_version_id"]
+    label = _ok(_run(client, alice, version, "encode_categorical", columns=["level"], strategy="label"))
+    assert _preview(client, alice, label["active_dataset_version_id"])["level"].tolist()[:4] == [1.0, 0.0, 0.0, 2.0]
+    ordered = _ok(_run(client, alice, version, "encode_categorical", columns=["level"], strategy="ordinal",
+                       category_order=["low", "medium", "high"]))
+    assert _preview(client, alice, ordered["active_dataset_version_id"])["level"].tolist()[:4] == [1.0, 3.0, 3.0, 2.0]
+    incomplete = _run(client, alice, version, "encode_categorical", columns=["level"], strategy="ordinal",
+                      category_order=["low", "high"])
+    assert incomplete.status_code == 400 and "medium" in incomplete.json()["detail"]
+
+
+@pytest.mark.parametrize("score_func", ["f_regression", "mutual_info_regression"])
+def test_select_k_best_keeps_the_informative_features(client, score_func):  # noqa: F811
+    rng = np.random.default_rng(3)
+    n = 120
+    df = pd.DataFrame({f"noise{i}": rng.normal(size=n) for i in range(4)})
+    df["a"], df["b"] = rng.normal(size=n), rng.normal(size=n)
+    df["y"] = 3 * df["a"] - 2 * df["b"] + rng.normal(scale=0.1, size=n)
+    alice = new_user()
+    version = upload(client, alice, body=df.to_csv(index=False).encode(), name="kbest.csv")["dataset_version_id"]
+    body = _ok(_run(client, alice, version, "select_k_best", target_column="y", k=2, score_func=score_func))
+    assert sorted(_preview(client, alice, body["active_dataset_version_id"]).columns) == ["a", "b", "y"]
+
+
+def test_stratified_split_keeps_strata_proportions():
+    X = pd.DataFrame({"a": range(100)})
+    y = pd.Series(np.r_[np.zeros(80), np.ones(20)])
+    args = TrainSoftSensorArgs(dataset_version_id=_VID, algorithm="OLS", target_column="y",
+                               feature_columns=["a"], split_strategy="stratified", test_size=0.25)
+    strata = y.astype(int).astype(str)
+    _, X_test, _, y_test = _split(X, y, args, strata)
+    assert len(X_test) == 25 and int(y_test.sum()) == 5
+    binned = _strata(pd.Series(np.arange(100.0)), 4)
+    assert binned.value_counts().tolist() == [25, 25, 25, 25]
+    with pytest.raises(ValueError, match="at least 2 rows"):
+        _split(X, y, args, pd.Series(["a"] * 99 + ["b"]))
+
+
+@pytest.mark.parametrize(("alias", "expected"), [
+    ("chronological", "sequential"), ("time-series", "sequential"), ("Stratified", "stratified"),
+])
+def test_split_aliases(alias, expected):
+    args = TrainSoftSensorArgs(dataset_version_id=_VID, algorithm="OLS", target_column="y",
+                               feature_columns=["a"], split_strategy=alias)
+    assert args.split_strategy == expected
+
+
+@pytest.mark.parametrize(("cv", "folds", "splits"), [
+    ("kfold", 4, 4), ("stratified_kfold", 3, 3), ("time_series", 3, 3), ("leave_one_out", 5, 30), ("LOOCV", 5, 30),
+])
+def test_cross_validation_strategies(cv, folds, splits):
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame({"a": rng.normal(size=30), "b": rng.normal(size=30)})
+    y = pd.Series(2 * X["a"] - X["b"] + rng.normal(scale=0.05, size=30))
+    args = TrainSoftSensorArgs(dataset_version_id=_VID, algorithm="OLS", target_column="y",
+                               feature_columns=["a", "b"], cv_strategy=cv, cv_folds=folds, n_strata=3)
+    result = _cross_validate(args, X, y, None)
+    assert result["n_splits"] == splits and result["r2"] > 0.98
+    if cv == "time_series":
+        assert result["n_rows"] < 30  # the first block is never validated
+    else:
+        assert result["n_rows"] == 30
+    if splits > 20:
+        assert result["folds"] is None and result["fold_r2_mean"] is None
+    else:
+        assert len(result["folds"]) == splits and result["fold_rmse_std"] is not None
+
+
+def test_cross_validation_limits():
+    X = pd.DataFrame({"a": range(10)})
+    y = pd.Series(range(10), dtype=float)
+    kfold = TrainSoftSensorArgs(dataset_version_id=_VID, algorithm="OLS", target_column="y",
+                                feature_columns=["a"], cv_strategy="kfold", cv_folds=11)
+    with pytest.raises(ValueError, match="cv_folds"):
+        _cross_validate(kfold, X, y, None)
+    strat = TrainSoftSensorArgs(dataset_version_id=_VID, algorithm="OLS", target_column="y",
+                                feature_columns=["a"], cv_strategy="stratified_kfold", cv_folds=5, n_strata=5)
+    with pytest.raises(ValueError, match="every stratum"):
+        _cross_validate(strat, X, y, None)
+    assert _cross_validate(kfold.model_copy(update={"cv_strategy": "none"}), X, y, None) is None
+
+
+@pytest.mark.parametrize("split", ["random", "stratified", "sequential"])
+@pytest.mark.parametrize("cv", ["none", "kfold", "stratified_kfold", "leave_one_out", "time_series"])
+def test_every_split_and_cv_trains_from_the_form(client, split, cv):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_rich_csv(), name="rich.csv")["dataset_version_id"]
+    args = {**_form_arguments(_SPECS["train_soft_sensor"], "OLS"), "split_strategy": split, "cv_strategy": cv}
+    fields = {f["name"]: f for f in _SPECS["train_soft_sensor"]["fields"]}
+    args.update({f: fields[f]["default"] for f in ("cv_folds", "cv_shuffle", "n_strata", "random_state")
+                 if _visible(fields[f], args)})
+    metrics = _ok(_run(client, alice, version, "train_soft_sensor", **args))["model_metrics"]
+    assert metrics["hyperparameters"]["split_strategy"] == split
+    if cv == "none":
+        assert metrics["cv"] is None and "cv_strategy" not in metrics["hyperparameters"]
+    else:
+        assert metrics["cv"]["strategy"] == cv and metrics["hyperparameters"]["cv_strategy"] == cv
+        assert metrics["cv"]["rmse"] is not None
+    if "stratified" in (split, cv.split("_")[0]):
+        assert metrics["hyperparameters"]["stratify_column"] == "y"
+
+
+def test_stratify_by_another_column(client):  # noqa: F811
+    alice = new_user()
+    version = upload(client, alice, body=_rich_csv(), name="rich.csv")["dataset_version_id"]
+    metrics = _ok(_run(client, alice, version, "train_soft_sensor", algorithm="OLS", target_column="y",
+                       feature_columns=["x1", "x2"], split_strategy="stratified", stratify_column="cat",
+                       test_size=0.3))["model_metrics"]
+    assert metrics["hyperparameters"]["stratify_column"] == "cat"
+    missing = _run(client, alice, version, "train_soft_sensor", algorithm="OLS", target_column="y",
+                   feature_columns=["x1", "x2"], split_strategy="stratified", stratify_column="nope")
+    assert missing.status_code == 400 and "nope" in missing.json()["detail"]
+
+
+@pytest.mark.parametrize("text", [
+    "show the head of the data", "show the tail", "what is the shape", "drop duplicate rows",
+    "convert ts to datetime", "strip spaces in cat", "cap the outliers", "run 5-fold cross validation",
+    "use a stratified split", "selectkbest with k=3", "value counts of cat", "LOOCV please",
+])
+def test_router_sends_new_operations_to_the_tools(text):
+    from backend.agents.router import _rule_based_intent
+    assert _rule_based_intent(text) == "EXECUTE"
 
 
 def test_manual_runs_are_rate_limited(client, monkeypatch):  # noqa: F811

@@ -5,7 +5,7 @@ import { useDatasetSchema } from '../../hooks/useManualTools'
 import { buildArguments, formValues } from '../../lib/manualForm'
 
 const PREFERRED_TOOL = {
-  ingestion: 'get_column_statistics',
+  ingestion: 'inspect_data',
   quality: 'remove_missing_data',
   preprocessing: 'normalize_data',
   'feature-selection': 'select_features_rfe',
@@ -24,7 +24,7 @@ const RUN_LABELS = {
 
 const KIND_NOTES = {
   transform: 'Creates a new dataset version. Use History to go back.',
-  train: 'Trains on the active dataset version and evaluates on the held-out test rows.',
+  train: 'Trains on the active dataset version and evaluates on the held-out test rows. Cross-validation, if chosen, runs on the training rows only.',
 }
 
 /**

@@ -89,7 +89,11 @@ _ACTION_RE = re.compile(
     r"anomal\w*|outlier\w*|"
     r"quer\w*|sql|duckdb|select|unselect\w*|deselect\w*|feature\w*|"
     r"count|sum|average|mean|median|max|min|std|"
-    r"correlat\w*|describe|summar\w*|statistic\w*|null\w*|missing|dupli\w*|"
+    r"correlat\w*|describe|summar\w*|statistic\w*|null\w*|missing|dupli\w*|dedup\w*|"
+    r"head|tail|shape|dtypes?|value[\s_-]?counts?|isnull|isna|profil\w*|"
+    r"cast\w*|convert\w*|pars\w*|datetime|strip\w*|trim\w*|lowercase|uppercase|"
+    r"clip\w*|cap|capp\w*|winsori[sz]\w*|filter\w*|kbest|select[\s_-]?k[\s_-]?best|"
+    r"split\w*|stratif\w*|k[\s-]?fold\w*|folds?|loocv|leave[\s-]one[\s-]out|"
     r"column\w*|row\w*|dataset|undo|revert|snapshot"
     r")\b",
     re.IGNORECASE,

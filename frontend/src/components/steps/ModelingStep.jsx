@@ -1,3 +1,5 @@
+import { CV_LABELS, splitLabel } from '../../utils/splits'
+
 const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
 
 /**
@@ -47,12 +49,39 @@ export default function ModelingStep({ modelMetrics, datasetVersionId }) {
       {modelMetrics ? (
         <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            <MetricCard label="R²" value={formatMetric(modelMetrics.r2_score)} accent="signal" sub="Coefficient of determination" />
-            <MetricCard label="RMSE" value={formatMetric(modelMetrics.rmse)} accent="ember" sub="Root mean squared error" />
+            <MetricCard label="Test R²" value={formatMetric(modelMetrics.r2_score)} accent="signal" sub="On the held-out test rows" />
+            <MetricCard label="Test RMSE" value={formatMetric(modelMetrics.rmse)} accent="ember" sub="Root mean squared error" />
             {modelMetrics.algorithm && (
-              <MetricCard label="Algorithm" value={ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm} accent="mist" sub={`${modelMetrics.n_train ?? '?'} train · ${modelMetrics.n_test ?? '?'} test`} />
+              <MetricCard label="Algorithm" value={ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm} accent="mist" sub={[`${modelMetrics.n_train ?? '?'} train · ${modelMetrics.n_test ?? '?'} test`, modelMetrics.split_strategy && splitLabel(modelMetrics.split_strategy)].filter(Boolean).join(' · ')} />
             )}
           </div>
+
+          {modelMetrics.cv && (
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <MetricCard
+                label="CV R²"
+                value={formatMetric(modelMetrics.cv.r2)}
+                accent="signal"
+                sub={modelMetrics.cv.fold_r2_mean != null
+                  ? `Folds ${formatMetric(modelMetrics.cv.fold_r2_mean)} ± ${formatMetric(modelMetrics.cv.fold_r2_std)}`
+                  : 'Pooled over every left-out row'}
+              />
+              <MetricCard
+                label="CV RMSE"
+                value={formatMetric(modelMetrics.cv.rmse)}
+                accent="ember"
+                sub={modelMetrics.cv.fold_rmse_mean != null
+                  ? `Folds ${formatMetric(modelMetrics.cv.fold_rmse_mean)} ± ${formatMetric(modelMetrics.cv.fold_rmse_std)}`
+                  : 'Pooled over every left-out row'}
+              />
+              <MetricCard
+                label="Cross-validation"
+                value={CV_LABELS[modelMetrics.cv.strategy] ?? modelMetrics.cv.strategy}
+                accent="mist"
+                sub={`${modelMetrics.cv.n_splits} folds · ${modelMetrics.cv.n_rows} training rows scored`}
+              />
+            </div>
+          )}
 
           {modelMetrics.hyperparameters && Object.keys(modelMetrics.hyperparameters).length > 0 && (
             <div className="panel" style={{ borderRadius: '14px', padding: '12px 18px' }}>

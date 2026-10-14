@@ -5,14 +5,20 @@ const CATEGORIES = [
   {
     id: 'exploration',
     label: 'Data Exploration',
-    blurb: 'Inspect the dataset: summary statistics and ad-hoc SQL queries.',
-    tools: ['get_column_statistics', 'run_duckdb_query'],
+    blurb: 'Inspect the dataset: head, tail, info, shape, value counts, missing values, correlations, profile reports, statistics and SQL.',
+    tools: ['inspect_data', 'get_column_statistics', 'run_duckdb_query'],
   },
   {
     id: 'cleaning',
     label: 'Data Cleaning',
-    blurb: 'Fix missing values, outliers and anomalous rows.',
-    tools: ['remove_missing_data', 'remove_outliers', 'detect_anomalies'],
+    blurb: 'Fix missing values, duplicates, outliers (drop, cap or clip) and anomalous rows.',
+    tools: ['remove_missing_data', 'drop_duplicates', 'remove_outliers', 'detect_anomalies'],
+  },
+  {
+    id: 'types-text',
+    label: 'Types & Text',
+    blurb: 'Cast column types, parse dates and tidy text values.',
+    tools: ['convert_types', 'clean_text'],
   },
   {
     id: 'scaling',
@@ -23,8 +29,8 @@ const CATEGORIES = [
   {
     id: 'manipulation',
     label: 'Data Manipulation',
-    blurb: 'Add, drop and rename columns.',
-    tools: ['drop_columns', 'rename_columns', 'execute_formula'],
+    blurb: 'Add, drop and rename columns, and drop rows by condition or position.',
+    tools: ['drop_columns', 'drop_rows', 'rename_columns', 'execute_formula'],
   },
   {
     id: 'time-series',
@@ -35,14 +41,14 @@ const CATEGORIES = [
   {
     id: 'engineering',
     label: 'Feature Engineering & Encoding',
-    blurb: 'Derive new features and encode categorical columns.',
+    blurb: 'Derive new features and encode categorical columns (one-hot, label, ordinal and more).',
     tools: ['feature_engineer', 'encode_categorical'],
   },
   {
     id: 'selection',
     label: 'Feature Selection & Reduction',
     blurb: 'Choose the most useful inputs and remove redundancy.',
-    tools: ['select_features_rfe', 'drop_collinear_features', 'reduce_dimensions'],
+    tools: ['select_k_best', 'select_features_rfe', 'drop_collinear_features', 'reduce_dimensions'],
   },
   {
     id: 'sampling',
@@ -53,7 +59,7 @@ const CATEGORIES = [
   {
     id: 'modeling',
     label: 'Modeling',
-    blurb: 'Train soft-sensor regression models and list trained ones.',
+    blurb: 'Train soft-sensor regression models with random, stratified or chronological splits and K-Fold, stratified, leave-one-out or time-series cross-validation.',
     tools: ['train_soft_sensor', 'list_trained_models'],
   },
   {

@@ -73,8 +73,14 @@ _MUTATING_TOOLS = frozenset(
         "create_lag_features",
         # Advanced feature selection & data quality
         "select_features_rfe",
+        "select_k_best",
         "detect_anomalies",
         "drop_collinear_features",
+        # Rows, types and text
+        "drop_rows",
+        "drop_duplicates",
+        "convert_types",
+        "clean_text",
     }
 )
 _PLOT_TOOLS = frozenset({
@@ -84,12 +90,13 @@ _PLOT_TOOLS = frozenset({
     "generate_importance_plot",
     "generate_coefficients_plot",
 })
-_TABLE_TOOLS = frozenset({"run_duckdb_query", "get_column_statistics", "list_trained_models"})
+_TABLE_TOOLS = frozenset({"run_duckdb_query", "get_column_statistics", "inspect_data", "list_trained_models"})
 _METRIC_TOOLS = frozenset({"train_soft_sensor"})
 _MAX_TABLE_ROWS = 50
 _TABLE_TITLES = {
     "run_duckdb_query": "Query result",
     "get_column_statistics": "Column statistics",
+    "inspect_data": "Data inspection",
     "list_trained_models": "Trained models",
 }
 
@@ -107,7 +114,9 @@ def _execution_system_prompt(
 You solve data exploration, preprocessing, plotting, feature selection and
 soft-sensor modeling tasks by calling the provided tools. Never invent Python
 code or mutate data yourself. Answer questions about the user's data by
-computing them with run_duckdb_query, get_column_statistics or the plot tools.
+computing them with run_duckdb_query, get_column_statistics, inspect_data (head,
+tail, info, describe, shape, value_counts, missing, correlation, profile) or the
+plot tools.
 
 {render_dataset_context(ctx)}
 
@@ -183,9 +192,14 @@ def _summarize_tool_result(tool_name: str, result: Any) -> str:
         return _truncate(f"{result[1]} → version {str(result[0])[:8]}", _MAX_SUMMARY_CHARS)
     if isinstance(result, dict):
         if tool_name == "train_soft_sensor":
+            cv = result.get("cv") or {}
+            cv_text = (
+                f" · CV ({cv.get('strategy')}) R² {cv['r2']:.3f}"
+                if isinstance(cv.get("r2"), (int, float)) else ""
+            )
             return (
                 f"{result.get('algorithm')} · R² {result.get('r2_score', 0):.3f} · "
-                f"RMSE {result.get('rmse', 0):.3g} · model {str(result.get('model_id'))[:8]}"
+                f"RMSE {result.get('rmse', 0):.3g}{cv_text} · model {str(result.get('model_id'))[:8]}"
             )
         if tool_name == SET_MODEL_FEATURES:
             feats = result.get("selected_features") or []
@@ -193,7 +207,8 @@ def _summarize_tool_result(tool_name: str, result: Any) -> str:
         if tool_name == "list_trained_models":
             return f"{result.get('count', 0)} model(s) found"
         if isinstance(result.get("rows"), list):
-            return f"{len(result['rows'])} row(s) returned"
+            prefix = f"{result['title']} · " if result.get("title") else ""
+            return f"{prefix}{len(result['rows'])} row(s) returned"
     return _truncate(json.dumps(result, default=str), _MAX_SUMMARY_CHARS)
 
 
@@ -238,6 +253,7 @@ def _table_rows(tool_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
                 "features": ", ".join(m.get("feature_columns") or []),
                 "r2_score": m.get("r2_score"),
                 "rmse": m.get("rmse"),
+                "cv_r2": (m.get("cv") or {}).get("r2"),
                 "settings": _cell(m.get("hyperparameters") or None),
                 "trained_at": m.get("trained_at"),
             }
@@ -268,9 +284,10 @@ def _update_ui_state(
         rows = _table_rows(tool_name, result)
         # Cap preview size for the chat response payload.
         state["table_preview"] = rows[:_MAX_TABLE_ROWS]
+        title = result.get("title") or _TABLE_TITLES[tool_name]
         state["table_title"] = (
-            f"{_TABLE_TITLES[tool_name]} · first {_MAX_TABLE_ROWS} of {len(rows)} rows"
-            if len(rows) > _MAX_TABLE_ROWS else _TABLE_TITLES[tool_name]
+            f"{title} · first {_MAX_TABLE_ROWS} of {len(rows)} rows"
+            if len(rows) > _MAX_TABLE_ROWS else title
         )
         state["ui_update_required"] = True
         return
@@ -296,6 +313,7 @@ def _update_ui_state(
             "split_strategy": result.get("split_strategy"),
             "test_size": result.get("test_size"),
             "hyperparameters": result.get("hyperparameters"),
+            "cv": result.get("cv"),
         }
         if "new_version_id" in result:
             state["active_dataset_version_id"] = result["new_version_id"]

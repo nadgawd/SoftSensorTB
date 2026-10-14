@@ -24,7 +24,7 @@ from sklearn.decomposition import PCA
 from sklearn.pipeline import make_pipeline
 from sklearn.neighbors import KNeighborsRegressor
 from sklearn.metrics import mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold, LeaveOneOut, StratifiedKFold, TimeSeriesSplit, train_test_split
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.database import AsyncSessionLocal
@@ -46,6 +46,37 @@ from backend.storage import get_storage, model_key
 
 _RANDOM_STATE = 42
 _TEST_SIZE = 0.2
+_MAX_LOO_ROWS = 1000
+
+_SPLIT_STRATEGIES = ("random", "stratified", "sequential")
+_SPLIT_ALIASES = {
+    "shuffle": "random",
+    "shuffled": "random",
+    "stratify": "stratified",
+    "chronological": "sequential",
+    "time_series": "sequential",
+    "timeseries": "sequential",
+    "temporal": "sequential",
+    "ordered": "sequential",
+}
+_CV_STRATEGIES = ("none", "kfold", "stratified_kfold", "leave_one_out", "time_series")
+_CV_ALIASES = {
+    "": "none",
+    "no": "none",
+    "off": "none",
+    "k_fold": "kfold",
+    "stratified": "stratified_kfold",
+    "stratified_k_fold": "stratified_kfold",
+    "stratifiedkfold": "stratified_kfold",
+    "loo": "leave_one_out",
+    "loocv": "leave_one_out",
+    "leaveoneout": "leave_one_out",
+    "timeseries": "time_series",
+    "time_series_split": "time_series",
+    "chronological": "time_series",
+}
+_SHUFFLED_CV = frozenset({"kfold", "stratified_kfold"})
+_FOLDED_CV = frozenset({"kfold", "stratified_kfold", "time_series"})
 
 # ---------------------------------------------------------------------------
 # Input schemas (strict) — source of truth for LLM_TOOL_SCHEMAS
@@ -116,10 +147,13 @@ class TrainSoftSensorArgs(BaseModel):
         default="random",
         description=(
             "How to split data into train/test: "
-            "'random' (shuffled train_test_split) or "
-            "'sequential' (last test_size fraction of rows as test, preserving time order)."
+            "'random' (shuffled train_test_split), "
+            "'stratified' (shuffled, keeping each stratum's share equal in train and test; strata "
+            "are stratify_column, or the target binned into n_strata quantile bins), or "
+            "'sequential' (chronological / time-series split: the last test_size fraction of rows "
+            "is the test set, preserving time order)."
         ),
-        json_schema_extra={"enum": ["random", "sequential"]},
+        json_schema_extra={"enum": list(_SPLIT_STRATEGIES)},
     )
     test_size: float = Field(
         default=_TEST_SIZE,
@@ -129,7 +163,41 @@ class TrainSoftSensorArgs(BaseModel):
     )
     random_state: int = Field(
         default=_RANDOM_STATE,
-        description="Random seed of the random train/test split.",
+        description="Random seed of the shuffled splits (random and stratified split, shuffled K-Fold).",
+    )
+    stratify_column: Optional[str] = Field(
+        default=None,
+        description=(
+            "Column whose groups the stratified split and stratified K-Fold keep in proportion. "
+            "Omit to stratify on the target. A numeric column with more than n_strata distinct "
+            "values is binned into n_strata quantile bins."
+        ),
+    )
+    n_strata: int = Field(
+        default=5,
+        description="Quantile bins used to stratify a continuous target or column.",
+        ge=2,
+        le=20,
+    )
+    cv_strategy: str = Field(
+        default="none",
+        description=(
+            "Cross-validation on the training rows, reported next to the test-set scores: "
+            "'none', 'kfold' (K-Fold), 'stratified_kfold' (Stratified K-Fold on the same strata "
+            "as the stratified split), 'leave_one_out' (LOOCV: one fit per training row, at most "
+            f"{_MAX_LOO_ROWS} rows), or 'time_series' (expanding-window folds in row order)."
+        ),
+        json_schema_extra={"enum": list(_CV_STRATEGIES)},
+    )
+    cv_folds: int = Field(
+        default=5,
+        description="Number of folds for kfold, stratified_kfold and time_series cross-validation.",
+        ge=2,
+        le=20,
+    )
+    cv_shuffle: bool = Field(
+        default=True,
+        description="Shuffle the rows (with random_state) before cutting K-Fold / Stratified K-Fold folds.",
     )
     fit_intercept: bool = Field(
         default=True,
@@ -167,9 +235,25 @@ class TrainSoftSensorArgs(BaseModel):
     @field_validator("split_strategy")
     @classmethod
     def _valid_split_strategy(cls, v: str) -> str:
-        if v not in {"random", "sequential"}:
-            raise ValueError("split_strategy must be 'random' or 'sequential'")
-        return v
+        key = v.strip().lower().replace("-", "_").replace(" ", "_")
+        key = _SPLIT_ALIASES.get(key, key)
+        if key not in _SPLIT_STRATEGIES:
+            raise ValueError(f"split_strategy must be one of {list(_SPLIT_STRATEGIES)}")
+        return key
+
+    @field_validator("cv_strategy", mode="before")
+    @classmethod
+    def _valid_cv_strategy(cls, v: Any) -> str:
+        key = "none" if v is None else str(v).strip().lower().replace("-", "_").replace(" ", "_")
+        key = _CV_ALIASES.get(key, key)
+        if key not in _CV_STRATEGIES:
+            raise ValueError(f"cv_strategy must be one of {list(_CV_STRATEGIES)}")
+        return key
+
+    @field_validator("stratify_column", mode="before")
+    @classmethod
+    def _blank_stratify(cls, v: Any) -> Any:
+        return v.strip() or None if isinstance(v, str) else v
 
     @field_validator("knn_weights")
     @classmethod
@@ -378,18 +462,141 @@ def _predict(model: Any, X: pd.DataFrame) -> np.ndarray:
     return np.asarray(y_hat, dtype=float).reshape(-1)
 
 
+def _strata(source: pd.Series, n_strata: int) -> pd.Series:
+    """Group labels for stratifying: a continuous series is cut into equal-count quantile bins."""
+    if (
+        pd.api.types.is_numeric_dtype(source)
+        and not pd.api.types.is_bool_dtype(source)
+        and source.nunique() > n_strata
+    ):
+        labels = pd.qcut(source.rank(method="first"), q=n_strata, labels=False)
+    else:
+        labels = source
+    return labels.astype(object).where(labels.notna(), "missing").astype(str)
+
+
 def _split(
-    X: pd.DataFrame, y: pd.Series, args: TrainSoftSensorArgs
+    X: pd.DataFrame, y: pd.Series, args: TrainSoftSensorArgs, strata: Optional[pd.Series] = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
     if args.split_strategy == "sequential":
         # Time-order preserving: the last `test_size` fraction of rows is the test set.
         n_test = max(1, int(len(X) * args.test_size))
         n_train = len(X) - n_test
         return X.iloc[:n_train], X.iloc[n_train:], y.iloc[:n_train], y.iloc[n_train:]
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=args.test_size, random_state=args.random_state
-    )
+    stratify = None
+    if args.split_strategy == "stratified":
+        stratify = strata if strata is not None else _strata(y, args.n_strata)
+        smallest = int(stratify.value_counts().min())
+        if smallest < 2:
+            raise ValueError(
+                f"A stratified split needs at least 2 rows in every stratum; the smallest of "
+                f"{stratify.nunique()} strata has {smallest}. Lower n_strata or pick another stratify_column."
+            )
+    try:
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=args.test_size, random_state=args.random_state, stratify=stratify
+        )
+    except ValueError as exc:
+        if stratify is None:
+            raise
+        raise ValueError(f"The stratified split failed: {exc} Lower n_strata or raise test_size.") from exc
     return X_train, X_test, y_train, y_test
+
+
+def _fit(args: TrainSoftSensorArgs, X: pd.DataFrame, y: pd.Series) -> Any:
+    return _fit_estimator(
+        args.algorithm,
+        X,
+        y,
+        args.n_components,
+        args.alpha,
+        args.n_neighbors,
+        fit_intercept=args.fit_intercept,
+        pls_scale=args.pls_scale,
+        max_iter=args.max_iter,
+        knn_weights=args.knn_weights,
+    )
+
+
+def _finite(value: Any) -> Optional[float]:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if np.isfinite(f) else None
+
+
+def _cv_folds(
+    args: TrainSoftSensorArgs, X: pd.DataFrame, strata: Optional[pd.Series]
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    n = len(X)
+    if args.cv_strategy == "leave_one_out":
+        if n > _MAX_LOO_ROWS:
+            raise ValueError(
+                f"Leave-one-out would fit {n} models; it is limited to {_MAX_LOO_ROWS} training rows. "
+                "Use kfold instead."
+            )
+        return list(LeaveOneOut().split(X))
+    k = args.cv_folds
+    if args.cv_strategy == "time_series":
+        if k >= n:
+            raise ValueError(f"cv_folds={k} needs more than {k} training rows; there are {n}")
+        return list(TimeSeriesSplit(n_splits=k).split(X))
+    if k > n:
+        raise ValueError(f"cv_folds={k} is more than the {n} training rows")
+    seed = args.random_state if args.cv_shuffle else None
+    if args.cv_strategy == "stratified_kfold":
+        labels = strata
+        smallest = int(labels.value_counts().min())
+        if smallest < k:
+            raise ValueError(
+                f"Stratified K-Fold with {k} folds needs at least {k} training rows in every stratum; "
+                f"the smallest has {smallest}. Lower cv_folds or n_strata."
+            )
+        return list(StratifiedKFold(n_splits=k, shuffle=args.cv_shuffle, random_state=seed).split(X, labels))
+    return list(KFold(n_splits=k, shuffle=args.cv_shuffle, random_state=seed).split(X))
+
+
+def _cross_validate(
+    args: TrainSoftSensorArgs, X: pd.DataFrame, y: pd.Series, strata: Optional[pd.Series]
+) -> Optional[dict[str, Any]]:
+    """Scores on the training rows: pooled out-of-fold R² / RMSE plus per-fold spread."""
+    if args.cv_strategy == "none":
+        return None
+    if args.cv_strategy == "stratified_kfold" and strata is None:
+        strata = _strata(y, args.n_strata)
+    folds = _cv_folds(args, X, strata)
+    y_all = y.to_numpy(dtype=float)
+    out_of_fold = np.full(len(X), np.nan)
+    per_fold: list[dict[str, Any]] = []
+    for i, (train_idx, val_idx) in enumerate(folds, start=1):
+        model = _fit(args, X.iloc[train_idx], y.iloc[train_idx])
+        pred = _predict(model, X.iloc[val_idx])
+        out_of_fold[val_idx] = pred
+        true = y_all[val_idx]
+        per_fold.append({
+            "fold": i,
+            "n_train": int(len(train_idx)),
+            "n_val": int(len(val_idx)),
+            "r2": _finite(r2_score(true, pred)) if len(val_idx) >= 2 else None,
+            "rmse": _finite(np.sqrt(mean_squared_error(true, pred))),
+        })
+    scored = ~np.isnan(out_of_fold)
+    fold_r2 = [f["r2"] for f in per_fold if f["r2"] is not None]
+    fold_rmse = [f["rmse"] for f in per_fold if f["rmse"] is not None]
+    return {
+        "strategy": args.cv_strategy,
+        "n_splits": len(per_fold),
+        "n_rows": int(scored.sum()),
+        "r2": _finite(r2_score(y_all[scored], out_of_fold[scored])) if scored.sum() >= 2 else None,
+        "rmse": _finite(np.sqrt(mean_squared_error(y_all[scored], out_of_fold[scored]))),
+        "fold_r2_mean": _finite(np.mean(fold_r2)) if fold_r2 else None,
+        "fold_r2_std": _finite(np.std(fold_r2)) if fold_r2 else None,
+        "fold_rmse_mean": _finite(np.mean(fold_rmse)) if fold_rmse else None,
+        "fold_rmse_std": _finite(np.std(fold_rmse)) if fold_rmse else None,
+        # Leave-one-out has one fold per row; listing them would swamp the UI and the chat.
+        "folds": per_fold if len(per_fold) <= 20 else None,
+    }
 
 
 _ALGORITHM_HYPERPARAMETERS: dict[SoftSensorAlgorithm, tuple[str, ...]] = {
@@ -405,8 +612,18 @@ _ALGORITHM_HYPERPARAMETERS: dict[SoftSensorAlgorithm, tuple[str, ...]] = {
 def _hyperparameters(args: TrainSoftSensorArgs) -> dict[str, Any]:
     """The settings that shaped this model, for lineage and the model registry."""
     out: dict[str, Any] = {"split_strategy": args.split_strategy, "test_size": args.test_size}
-    if args.split_strategy == "random":
+    shuffled_cv = args.cv_strategy in _SHUFFLED_CV and args.cv_shuffle
+    if args.split_strategy in ("random", "stratified") or shuffled_cv:
         out["random_state"] = args.random_state
+    if args.split_strategy == "stratified" or args.cv_strategy == "stratified_kfold":
+        out["stratify_column"] = args.stratify_column or args.target_column
+        out["n_strata"] = args.n_strata
+    if args.cv_strategy != "none":
+        out["cv_strategy"] = args.cv_strategy
+        if args.cv_strategy in _FOLDED_CV:
+            out["cv_folds"] = args.cv_folds
+        if args.cv_strategy in _SHUFFLED_CV:
+            out["cv_shuffle"] = args.cv_shuffle
     for name in _ALGORITHM_HYPERPARAMETERS[args.algorithm]:
         out[name] = getattr(args, name)
     return out
@@ -432,11 +649,17 @@ async def train_soft_sensor(
     pls_scale: bool = True,
     max_iter: int = 1000,
     knn_weights: str = "uniform",
+    stratify_column: Optional[str] = None,
+    n_strata: int = 5,
+    cv_strategy: str = "none",
+    cv_folds: int = 5,
+    cv_shuffle: bool = True,
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
     """
-    Train a soft sensor on a train/test split (``test_size`` held out, 0.2 by default).
+    Train a soft sensor on a train/test split (``test_size`` held out, 0.2 by default),
+    optionally cross-validated on the training rows.
 
     Persists the ``.pkl`` artifact through storage and returns metrics plus
     feature coefficients for process interpretation.
@@ -456,6 +679,11 @@ async def train_soft_sensor(
         pls_scale=pls_scale,
         max_iter=max_iter,
         knn_weights=knn_weights,
+        stratify_column=stratify_column,
+        n_strata=n_strata,
+        cv_strategy=cv_strategy,
+        cv_folds=cv_folds,
+        cv_shuffle=cv_shuffle,
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
@@ -467,19 +695,18 @@ async def train_soft_sensor(
             target_column=args.target_column,
         )
 
-        X_train, X_test, y_train, y_test = _split(X, y, args)
-        model = _fit_estimator(
-            args.algorithm,
-            X_train,
-            y_train,
-            args.n_components,
-            args.alpha,
-            args.n_neighbors,
-            fit_intercept=args.fit_intercept,
-            pls_scale=args.pls_scale,
-            max_iter=args.max_iter,
-            knn_weights=args.knn_weights,
+        strata = None
+        if args.split_strategy == "stratified" or args.cv_strategy == "stratified_kfold":
+            if args.stratify_column and args.stratify_column not in df.columns:
+                raise ValueError(f"stratify_column {args.stratify_column!r} is not a column of this dataset")
+            source = df.loc[X.index, args.stratify_column] if args.stratify_column else y
+            strata = _strata(source, args.n_strata)
+
+        X_train, X_test, y_train, y_test = _split(X, y, args, strata)
+        cv = _cross_validate(
+            args, X_train, y_train, strata.loc[X_train.index] if strata is not None else None
         )
+        model = _fit(args, X_train, y_train)
         hyperparameters = _hyperparameters(args)
         y_pred = _predict(model, X_test)
         r2 = float(r2_score(y_test, y_pred))
@@ -526,6 +753,7 @@ async def train_soft_sensor(
             "dataset_version_id": args.dataset_version_id,
             "new_version_id": new_version_id,
             "metrics": {"r2_score": r2, "rmse": rmse},
+            "cv": cv,
             "coefficients": coefficients,
             "train_size": int(len(X_train)),
             "test_size": int(len(X_test)),
@@ -551,6 +779,7 @@ async def train_soft_sensor(
             "split_strategy": args.split_strategy,
             "test_size": args.test_size,
             "hyperparameters": hyperparameters,
+            "cv": cv,
             "n_train": int(len(X_train)),
             "n_test": int(len(X_test)),
             "target_column": args.target_column,
@@ -883,7 +1112,9 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Train a soft-sensor regression model (linear regression / OLS, PLS, "
             "Ridge, Lasso, PCR or k-NN) on a dataset version. test_size sets the held-out "
             "fraction (default 0.2, i.e. an 80/20 train/test split); split_strategy picks a "
-            "shuffled (random_state) or time-ordered split. "
+            "random, stratified or sequential (chronological / time-series) split. cv_strategy "
+            "adds cross-validation on the training rows: kfold, stratified_kfold, leave_one_out "
+            "(LOOCV) or time_series, with cv_folds folds. "
             "Reports test-set R² and RMSE, saves a .pkl artifact under "
             "data_storage/models/, and returns model_id, metrics, and feature "
             "coefficients/importances."

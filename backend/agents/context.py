@@ -136,6 +136,12 @@ def render_ui_state(ui: dict[str, Any]) -> str:
             f"  model shown in UI: {metrics['model_id']} ({metrics.get('algorithm')}, "
             f"R² {_fmt_metric(metrics.get('r2_score'))}, RMSE {_fmt_metric(metrics.get('rmse'))})"
         )
+        cv = metrics.get("cv") if isinstance(metrics.get("cv"), dict) else None
+        if cv:
+            lines.append(
+                f"  its cross-validation: {cv.get('strategy')} over {cv.get('n_splits')} fold(s) — "
+                f"R² {_fmt_metric(cv.get('r2'))}, RMSE {_fmt_metric(cv.get('rmse'))}"
+            )
     if ui.get("activePlot"):
         lines.append(f"  plot on canvas: {ui['activePlot']}")
     manual = render_manual_actions(ui.get("manualActions"))

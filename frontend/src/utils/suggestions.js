@@ -16,10 +16,11 @@ export function getSuggestions(step, ctx = {}) {
     case 'ingestion':
       return hasCols
         ? [
-            'Show me a statistical profile of all columns',
-            'Check the data types of all columns',
+            'Show me a profile report of all columns',
+            'Show the info of the dataset: data types and missing values',
             `Show me the first 10 rows`,
             hasTarget ? `How many missing values are in ${targetVariable}?` : 'Which column should be my target variable?',
+            'Show the value counts of the text columns',
             'Generate a correlation heatmap to see broad relationships',
           ]
         : [
@@ -34,8 +35,11 @@ export function getSuggestions(step, ctx = {}) {
             'Which columns have more than 10% missing data?',
             'Drop columns with more than 50% missing data',
             'Remove missing data using the drop strategy',
+            'Drop duplicate rows',
+            'Cap outliers at the IQR fences instead of dropping them',
             'Detect and remove multivariate anomalies using Isolation Forest',
             'Find and remove outliers using the IQR method',
+            'Convert text columns that hold dates to datetime',
           ]
         : ['What data quality checks should I run?']
 
@@ -60,6 +64,7 @@ export function getSuggestions(step, ctx = {}) {
             'Run a correlation analysis between all columns',
             'Drop highly collinear features (correlation > 0.95)',
             hasTarget ? `Use RFE (Recursive Feature Elimination) to pick the best 5 features for ${targetVariable}` : 'Select features using RFE',
+            hasTarget ? `Keep the 5 best features for ${targetVariable} with SelectKBest` : 'Select the 5 best features with SelectKBest',
             'Generate a pair plot (scatter matrix) of the top features',
             numFeatures > 0
               ? `Show a scatter plot of features vs ${targetVariable}`
@@ -77,6 +82,7 @@ export function getSuggestions(step, ctx = {}) {
               ? `Train a Ridge regression model to predict ${targetVariable}`
               : 'Train a Ridge regression model',
             hasModel ? 'Retrain using Lasso to force sparsity' : 'What is the difference between PLS and PCR?',
+            hasModel ? 'Retrain with 5-fold cross-validation' : 'Train a PLS model with a chronological split and time-series cross-validation',
             hasModel ? 'Show the feature coefficients plot' : 'Train a k-NN model with 5 neighbors',
             hasModel
               ? 'Show the variable importance plot (VIP)'

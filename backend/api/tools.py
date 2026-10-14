@@ -37,7 +37,7 @@ router = APIRouter(tags=["tools"])
 STEPS = ("ingestion", "quality", "preprocessing", "feature-selection", "modeling", "validation", "export")
 
 MULTI_COLUMN_FIELDS = frozenset({"columns", "y_columns", "feature_columns"})
-SINGLE_COLUMN_FIELDS = frozenset({"x_column", "z_column", "color_column", "target_column"})
+SINGLE_COLUMN_FIELDS = frozenset({"x_column", "z_column", "color_column", "target_column", "column", "stratify_column"})
 CODE_FIELDS = frozenset({"sql_query", "formula"})
 
 _LABELS = {
@@ -75,7 +75,30 @@ _LABELS = {
     "feature_max": "Range max",
     "quantile_low": "Lower percentile",
     "quantile_high": "Upper percentile",
+    "lower_bound": "Lower bound",
+    "upper_bound": "Upper bound",
+    "category_order": "Category order (low → high)",
+    "stratify_column": "Stratify by",
+    "n_strata": "Strata (quantile bins)",
+    "cv_strategy": "Cross-validation",
+    "cv_folds": "Folds (k)",
+    "cv_shuffle": "Shuffle before folding",
+    "view": "View",
+    "n_rows": "Rows to show",
+    "top_n": "Values per column",
+    "start_row": "From row (0-based)",
+    "end_row": "To row (exclusive)",
+    "keep_matching": "Keep only matching rows (filter)",
+    "target_type": "Convert to",
+    "errors": "Unconvertible values",
+    "datetime_format": "Date format",
+    "replace_with": "Replace with",
+    "use_regex": "Regular expression",
+    "score_func": "Score function",
+    "k": "Features to keep (k)",
 }
+
+_STRATIFIED = [{"split_strategy": ["stratified"]}, {"cv_strategy": ["stratified_kfold"]}]
 
 _TRAIN_SHOW_WHEN = {
     "n_components": {"algorithm": ["PLS", "PCR"]},
@@ -85,18 +108,38 @@ _TRAIN_SHOW_WHEN = {
     "fit_intercept": {"algorithm": ["OLS", "RIDGE", "LASSO"]},
     "n_neighbors": {"algorithm": ["KNN"]},
     "knn_weights": {"algorithm": ["KNN"]},
-    "random_state": {"split_strategy": ["random"]},
+    "random_state": [{"split_strategy": ["random", "stratified"]}, {"cv_strategy": ["kfold", "stratified_kfold"]}],
+    "stratify_column": _STRATIFIED,
+    "n_strata": _STRATIFIED,
+    "cv_folds": {"cv_strategy": ["kfold", "stratified_kfold", "time_series"]},
+    "cv_shuffle": {"cv_strategy": ["kfold", "stratified_kfold"]},
 }
+
+_VALUE_OPERATORS = [
+    "equals", "not_equals", "greater_than", "greater_or_equal", "less_than", "less_or_equal", "contains",
+]
+_REPLACE_ONLY = {"operation": ["replace"]}
 
 _PLOT_X_TYPES = ["scatter", "time_series", "histogram", "box_plot", "violin_plot", "scatter_3d"]
 
 _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 
 # label, steps, and optional: numeric (column pickers limited to numeric
-# columns), show_when ({field: {other_field: [values]}}), defaults (form
+# columns), show_when ({field: {other_field: [values]}}, all of which must
+# hold, or a list of such dicts of which any may hold), defaults (form
 # defaults for required fields), app_defaults (fill from the workbench:
 # "target" or "features"), advanced (fields folded under "Advanced").
 MANUAL_TOOLS: dict[str, dict[str, Any]] = {
+    "inspect_data": {
+        "label": "Inspect data (head, info, describe…)",
+        "steps": ("ingestion", "quality", "preprocessing", "feature-selection"),
+        "defaults": {"view": "head"},
+        "show_when": {
+            "n_rows": {"view": ["head", "tail"]},
+            "top_n": {"view": ["value_counts"]},
+            "method": {"view": ["correlation"]},
+        },
+    },
     "get_column_statistics": {
         "label": "Column statistics",
         "steps": ("ingestion", "quality", "feature-selection"),
@@ -105,6 +148,34 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "label": "SQL query",
         "steps": ("ingestion", "quality", "export"),
         "defaults": {"sql_query": "SELECT * FROM dataset LIMIT 10"},
+    },
+    "convert_types": {
+        "label": "Convert types / parse dates",
+        "steps": ("ingestion", "quality", "preprocessing"),
+        "defaults": {"target_type": "float"},
+        "show_when": {"datetime_format": {"target_type": ["datetime"]}},
+    },
+    "clean_text": {
+        "label": "Clean text (strip, case, replace)",
+        "steps": ("ingestion", "quality", "preprocessing"),
+        "defaults": {"operation": "strip"},
+        "show_when": {"find": _REPLACE_ONLY, "replace_with": _REPLACE_ONLY, "use_regex": _REPLACE_ONLY},
+    },
+    "drop_rows": {
+        "label": "Drop / filter rows",
+        "steps": ("quality", "preprocessing"),
+        "defaults": {"mode": "condition"},
+        "show_when": {
+            "column": {"mode": ["condition"]},
+            "operator": {"mode": ["condition"]},
+            "value": {"mode": ["condition"], "operator": _VALUE_OPERATORS},
+            "start_row": {"mode": ["row_range"]},
+            "end_row": {"mode": ["row_range"]},
+        },
+    },
+    "drop_duplicates": {
+        "label": "Drop duplicates",
+        "steps": ("quality",),
     },
     "remove_missing_data": {
         "label": "Missing values",
@@ -118,10 +189,16 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "advanced": ("max_iter", "random_state"),
     },
     "remove_outliers": {
-        "label": "Outliers",
+        "label": "Outliers (drop, cap, clip)",
         "steps": ("quality",),
         "numeric": ("columns",),
         "defaults": {"method": "iqr"},
+        "show_when": {
+            "threshold": {"method": ["z_score", "iqr", "winsorize"]},
+            "action": {"method": ["z_score", "iqr"]},
+            "lower_bound": {"method": ["clip"]},
+            "upper_bound": {"method": ["clip"]},
+        },
     },
     "detect_anomalies": {
         "label": "Anomaly detection (Isolation Forest)",
@@ -169,6 +246,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
             "target_column": {"strategy": ["target"]},
             "smoothing": {"strategy": ["target"]},
             "drop_first": {"strategy": ["one_hot"]},
+            "category_order": {"strategy": ["ordinal"]},
         },
     },
     "rolling_aggregate": {
@@ -224,6 +302,14 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "show_when": {"alpha": {"estimator": ["ridge", "lasso"]}},
         "advanced": ("step",),
     },
+    "select_k_best": {
+        "label": "SelectKBest",
+        "steps": ("feature-selection",),
+        "numeric": ("target_column", "feature_columns"),
+        "app_defaults": {"target_column": "target"},
+        "show_when": {"random_state": {"score_func": ["mutual_info_regression"]}},
+        "advanced": ("random_state",),
+    },
     "drop_collinear_features": {
         "label": "Drop collinear features",
         "steps": ("feature-selection",),
@@ -248,7 +334,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "defaults": {"algorithm": "PLS"},
         "app_defaults": {"target_column": "target", "feature_columns": "features"},
         "show_when": _TRAIN_SHOW_WHEN,
-        "advanced": ("random_state", "fit_intercept", "pls_scale", "max_iter"),
+        "advanced": ("random_state", "fit_intercept", "pls_scale", "max_iter", "n_strata", "cv_shuffle"),
     },
     "list_trained_models": {
         "label": "Trained models",
