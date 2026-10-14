@@ -229,8 +229,10 @@ def _summarize_tool_result(tool_name: str, result: Any) -> str:
             )
             val = result.get("validation") or {}
             val_text = f" · validation R² {val['r2']:.3f}" if isinstance(val.get("r2"), (int, float)) else ""
+            train = result.get("train") or {}
+            train_text = f"train R² {train['r2']:.3f} · " if isinstance(train.get("r2"), (int, float)) else ""
             return (
-                f"{result.get('algorithm')} · R² {result.get('r2_score', 0):.3f} · "
+                f"{result.get('algorithm')} · {train_text}test R² {result.get('r2_score', 0):.3f} · "
                 f"RMSE {result.get('rmse', 0):.3g}{val_text}{cv_text} · model {str(result.get('model_id'))[:8]}"
             )
         if tool_name == SET_MODEL_FEATURES:
@@ -347,6 +349,7 @@ def _update_ui_state(
             "test_size": result.get("test_size"),
             "hyperparameters": result.get("hyperparameters"),
             "cv": result.get("cv"),
+            "train": result.get("train"),
             "validation": result.get("validation"),
             "n_validation": result.get("n_validation"),
         }

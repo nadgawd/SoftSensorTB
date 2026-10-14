@@ -1019,6 +1019,12 @@ async def train_soft_sensor(
         y_pred = _predict(model, X_test)
         r2 = float(r2_score(y_test, y_pred))
         rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
+        train_pred = _predict(model, X_train)
+        train = {
+            "n_rows": int(len(X_train)),
+            "r2": _finite(r2_score(y_train, train_pred)),
+            "rmse": _finite(np.sqrt(mean_squared_error(y_train, train_pred))),
+        }
         validation = None
         if X_val is not None:
             val_pred = _predict(model, X_val)
@@ -1070,6 +1076,7 @@ async def train_soft_sensor(
             "new_version_id": new_version_id,
             "metrics": {"r2_score": r2, "rmse": rmse},
             "cv": cv,
+            "train": train,
             "validation": validation,
             "coefficients": coefficients,
             "train_size": int(len(X_train)),
@@ -1098,6 +1105,7 @@ async def train_soft_sensor(
             "test_size": args.test_size,
             "hyperparameters": hyperparameters,
             "cv": cv,
+            "train": train,
             "validation": validation,
             "n_train": int(len(X_train)),
             "n_validation": int(len(X_val)) if X_val is not None else 0,

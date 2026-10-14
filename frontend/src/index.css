@@ -850,6 +850,34 @@
 .manual-dataset select { width: 100%; }
 .manual-upload { cursor: pointer; }
 .manual-mapping-row { display: grid; grid-template-columns: minmax(140px, 1fr) auto minmax(140px, 1fr) auto; gap: 8px; align-items: center; width: 100%; max-width: 560px; }
+.manual-section {
+  margin: 0 0 14px;
+  padding: 12px 14px 14px;
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  min-width: 0;
+}
+.manual-section-title {
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-signal);
+}
+.manual-section-note { margin: 0 0 10px; }
+.manual-field.with-help { grid-column: 1 / -1; }
+.manual-field.with-help > select { max-width: 320px; }
+.manual-option-help {
+  margin: 2px 0 0;
+  padding: 6px 9px;
+  border-left: 2px solid var(--color-signal);
+  border-radius: 4px;
+  background: var(--code-bg);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-foam);
+}
 .manual-advanced summary { cursor: pointer; font-size: 12px; color: var(--color-mist); margin: 2px 0 10px; }
 .manual-advanced summary:hover { color: var(--color-foam); }
 .manual-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }

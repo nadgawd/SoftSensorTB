@@ -14,8 +14,41 @@ const PREFERRED_TOOL = {
   export: 'run_duckdb_query',
 }
 
+const TOOL_LAYOUTS = {
+  train_soft_sensor: {
+    sections: [
+      {
+        title: 'Model',
+        note: 'Pick a model; its parameters appear below it.',
+        fields: ['algorithm', 'n_components', 'pls_scale', 'alpha', 'max_iter', 'fit_intercept', 'n_neighbors', 'knn_weights'],
+      },
+      { title: 'Data', fields: ['target_column', 'feature_columns'] },
+      {
+        title: 'Train / test split',
+        note: 'The test rows are held out from training and used to score the model.',
+        fields: ['split_strategy', 'test_size', 'validation_size', 'stratify_column', 'n_strata', 'group_column', 'random_state'],
+      },
+      {
+        title: 'Cross-validation (optional)',
+        note: 'Repeatedly re-trains on parts of the training rows to check that the score is stable.',
+        fields: ['cv_strategy', 'cv_folds', 'cv_repeats', 'cv_test_size', 'cv_window', 'n_bootstrap', 'cv_shuffle'],
+      },
+    ],
+    optionHelp: {
+      algorithm: {
+        OLS: 'Ordinary least squares linear regression. Fast and easy to interpret; nothing to tune except the intercept.',
+        PLS: 'Partial least squares: regresses on a few latent components built from the inputs and the target. Suits many correlated sensors. Tune the number of components.',
+        RIDGE: 'Linear regression with an L2 penalty that shrinks the coefficients, which steadies correlated inputs. Tune alpha (larger means more shrinkage).',
+        LASSO: 'Linear regression with an L1 penalty that can set coefficients to zero, so it also selects features. Tune alpha.',
+        PCR: 'Principal component regression: PCA on the inputs, then linear regression on the first components. Tune the number of components.',
+        KNN: 'k-nearest neighbours: predicts the average target of the k most similar training rows, so it can follow non-linear behaviour. Tune k and the weighting.',
+      },
+    },
+  },
+}
+
 const RUN_LABELS = {
-  train: 'Train model',
+  train: 'Train & test',
   transform: 'Apply',
   plot: 'Plot',
   table: 'Run',
@@ -24,7 +57,7 @@ const RUN_LABELS = {
 
 const KIND_NOTES = {
   transform: 'Creates a new dataset version. Use History to go back.',
-  train: 'Trains on the active dataset version and evaluates on the held-out test rows (and the validation rows, if a validation fraction is set). Cross-validation, if chosen, runs on the training rows only.',
+  train: 'Fits the model on the training rows, then tests it on the held-out test rows (and the validation rows, if a validation fraction is set). Results appear below.',
 }
 
 /**
@@ -152,7 +185,7 @@ export default function ManualTools({
             run()
           }}
         >
-          <ToolForm tool={tool} values={values} onChange={setField} schema={schema} errors={toolErrors} />
+          <ToolForm tool={tool} values={values} onChange={setField} schema={schema} errors={toolErrors} layout={TOOL_LAYOUTS[tool.name]} />
           <div className="manual-actions">
             <button type="submit" className="btn-signal" disabled={isRunning || assistantBusy || !schema}>
               {running === tool.name ? 'Running…' : RUN_LABELS[tool.kind] || 'Run'}

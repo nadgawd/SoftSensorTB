@@ -565,13 +565,12 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "advanced": ("n_estimators", "alpha", "random_state"),
     },
     "train_soft_sensor": {
-        "label": "Train soft sensor",
+        "label": "Train & test a model",
         "steps": ("modeling",),
         "numeric": ("target_column", "feature_columns"),
         "defaults": {"algorithm": "PLS"},
         "app_defaults": {"target_column": "target", "feature_columns": "features"},
         "show_when": _TRAIN_SHOW_WHEN,
-        "advanced": ("random_state", "fit_intercept", "pls_scale", "max_iter", "n_strata", "cv_shuffle"),
     },
     "list_trained_models": {
         "label": "Trained models",

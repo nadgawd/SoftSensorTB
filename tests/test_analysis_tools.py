@@ -431,6 +431,8 @@ def test_training_with_validation_set_and_groups(client):  # noqa: F811
     m = body["model_metrics"]
     assert m["validation"]["n_rows"] == m["n_validation"] == 20 and m["n_test"] == 20 and m["n_train"] == 40
     assert m["hyperparameters"]["group_column"] == "g" and m["cv"]["n_splits"] == 2
+    assert m["train"]["n_rows"] == 40 and 0 < m["train"]["r2"] <= 1 and m["train"]["rmse"] > 0
+    assert f"train R² {m['train']['r2']:.3f} · test R² {m['r2_score']:.3f}" in body["message"]
     models = _ok(_run(client, user, body["active_dataset_version_id"], "list_trained_models"))["table_preview"]
     assert models[0]["validation_r2"] == m["validation"]["r2"]
 

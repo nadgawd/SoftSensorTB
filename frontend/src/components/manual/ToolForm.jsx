@@ -286,12 +286,13 @@ function FieldControl({ field, value, onChange, schema, values, id }) {
   }
 }
 
-function Field({ tool, field, value, values, onChange, schema, error }) {
+function Field({ tool, field, value, values, onChange, schema, error, optionHelp }) {
   const id = `manual-${tool.name}-${field.name}`
   const wide = ['columns', 'mapping', 'value_mapping', 'code'].includes(field.widget)
   const hint = rangeHint(field)
+  const note = optionHelp?.[field.name]?.[value]
   return (
-    <div className={`manual-field${wide ? ' wide' : ''}`}>
+    <div className={`manual-field${wide ? ' wide' : ''}${optionHelp?.[field.name] ? ' with-help' : ''}`}>
       {field.widget !== 'checkbox' && (
         <label htmlFor={id} className="manual-label">
           {field.label}
@@ -300,14 +301,21 @@ function Field({ tool, field, value, values, onChange, schema, error }) {
         </label>
       )}
       <FieldControl field={field} value={value} onChange={onChange} schema={schema} values={values} id={id} />
-      {field.description && <p className="manual-hint manual-desc" title={field.description}>{field.description}</p>}
+      {note ? (
+        <p className="manual-option-help">{note}</p>
+      ) : (
+        field.description && <p className="manual-hint manual-desc" title={field.description}>{field.description}</p>
+      )}
       {error && <p className="manual-error">{error}</p>}
     </div>
   )
 }
 
-/** The controls for one tool's parameters; hidden fields depend on the options chosen. */
-export default function ToolForm({ tool, values, onChange, schema, errors }) {
+/**
+ * The controls for one tool's parameters; hidden fields depend on the options chosen.
+ * With `layout.sections`, fields are grouped under titled sections and none are collapsed.
+ */
+export default function ToolForm({ tool, values, onChange, schema, errors, layout }) {
   const visible = tool.fields.filter((f) => isVisible(f, values))
   const basic = visible.filter((f) => !f.advanced)
   const advanced = visible.filter((f) => f.advanced)
@@ -323,11 +331,26 @@ export default function ToolForm({ tool, values, onChange, schema, errors }) {
       onChange={(v) => onChange(field.name, v)}
       schema={schema}
       error={errors[field.name]}
+      optionHelp={layout?.optionHelp}
     />
   )
 
   if (!visible.length) {
     return <p className="manual-hint">This tool has no parameters.</p>
+  }
+  if (layout?.sections) {
+    const placed = new Set(layout.sections.flatMap((s) => s.fields))
+    const sections = [
+      ...layout.sections.map((s) => ({ ...s, shown: s.fields.map((n) => visible.find((f) => f.name === n)).filter(Boolean) })),
+      { title: 'Other settings', shown: visible.filter((f) => !placed.has(f.name)) },
+    ].filter((s) => s.shown.length)
+    return sections.map((s) => (
+      <fieldset key={s.title} className="manual-section">
+        <legend className="manual-section-title">{s.title}</legend>
+        {s.note && <p className="manual-hint manual-section-note">{s.note}</p>}
+        <div className="manual-grid">{s.shown.map(render)}</div>
+      </fieldset>
+    ))
   }
   return (
     <>

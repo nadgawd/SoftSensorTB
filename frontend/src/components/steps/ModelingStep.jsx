@@ -6,70 +6,51 @@ const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
  * Step 5 — Modeling
  */
 export default function ModelingStep({ modelMetrics, datasetVersionId }) {
-  const hasDataset = Boolean(datasetVersionId)
-
   function formatMetric(value) {
     if (value === null || value === undefined || Number.isNaN(Number(value))) return '—'
     return Number(value).toFixed(4)
   }
 
+  const train = modelMetrics?.train
+
   return (
     <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Algorithm display */}
-      <div className="panel" style={{ borderRadius: '14px', padding: '16px 18px' }}>
-        <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: '0 0 10px' }}>
-          Model Type
-        </p>
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          {['OLS', 'RIDGE', 'LASSO', 'PCR', 'PLS', 'KNN'].map((alg) => (
-            <div
-              key={alg}
-              style={{
-                padding: '7px 20px',
-                borderRadius: '99px',
-                border: `1px solid ${modelMetrics?.algorithm === alg ? 'var(--color-ember)' : 'var(--color-line-2)'}`,
-                background: modelMetrics?.algorithm === alg ? 'rgba(212,165,53,0.12)' : 'transparent',
-                color: modelMetrics?.algorithm === alg ? 'var(--color-ember)' : 'var(--color-mist)',
-                fontSize: '0.875rem',
-                fontWeight: 500,
-              }}
-            >
-              {ALGORITHM_LABELS[alg] ?? alg}
-            </div>
-          ))}
-        </div>
-        {!hasDataset && (
-          <p style={{ margin: '10px 0 0', fontSize: '12px', color: 'var(--color-alert)' }}>
-            ⚠ Upload a dataset first to enable model training.
-          </p>
-        )}
-      </div>
-
-      {/* Metrics scorecard */}
       {modelMetrics ? (
         <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: 0 }}>
+            Results · {ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm}
+            {modelMetrics.target_column ? ` → ${modelMetrics.target_column}` : ''}
+          </p>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-            <MetricCard label="Test R²" value={formatMetric(modelMetrics.r2_score)} accent="signal" sub="On the held-out test rows" />
+            {train && (
+              <MetricCard label="Train R²" value={formatMetric(train.r2)} accent="mist" sub={`On the ${train.n_rows} training rows`} />
+            )}
+            <MetricCard label="Test R²" value={formatMetric(modelMetrics.r2_score)} accent="signal" sub={`On the ${modelMetrics.n_test ?? '?'} held-out test rows`} />
+            {train && (
+              <MetricCard label="Train RMSE" value={formatMetric(train.rmse)} accent="mist" sub="Fit error on the training rows" />
+            )}
             <MetricCard label="Test RMSE" value={formatMetric(modelMetrics.rmse)} accent="ember" sub="Root mean squared error" />
-            {modelMetrics.algorithm && (
-              <MetricCard
-                label="Algorithm"
-                value={ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm}
-                accent="mist"
-                sub={[
-                  `${modelMetrics.n_train ?? '?'} train${modelMetrics.validation ? ` · ${modelMetrics.validation.n_rows} validation` : ''} · ${modelMetrics.n_test ?? '?'} test`,
-                  modelMetrics.split_strategy && splitLabel(modelMetrics.split_strategy),
-                ].filter(Boolean).join(' · ')}
-              />
+          </div>
+          {train && Number.isFinite(train.r2) && Number.isFinite(modelMetrics.r2_score) && train.r2 - modelMetrics.r2_score > 0.1 && (
+            <p style={{ margin: 0, fontSize: '12px', color: 'var(--color-alert)' }}>
+              ⚠ Train R² is {formatMetric(train.r2 - modelMetrics.r2_score)} higher than test R²: the model may be overfitting.
+              Try fewer components, a larger alpha, more neighbours or fewer features.
+            </p>
+          )}
+          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+            <MetricCard
+              label="Split"
+              value={modelMetrics.split_strategy ? splitLabel(modelMetrics.split_strategy) : '—'}
+              accent="mist"
+              sub={`${modelMetrics.n_train ?? '?'} train${modelMetrics.validation ? ` · ${modelMetrics.validation.n_rows} validation` : ''} · ${modelMetrics.n_test ?? '?'} test`}
+            />
+            {modelMetrics.validation && (
+              <>
+                <MetricCard label="Validation R²" value={formatMetric(modelMetrics.validation.r2)} accent="signal" sub="On the separate validation rows" />
+                <MetricCard label="Validation RMSE" value={formatMetric(modelMetrics.validation.rmse)} accent="ember" sub="On the separate validation rows" />
+              </>
             )}
           </div>
-
-          {modelMetrics.validation && (
-            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-              <MetricCard label="Validation R²" value={formatMetric(modelMetrics.validation.r2)} accent="signal" sub="On the separate validation rows" />
-              <MetricCard label="Validation RMSE" value={formatMetric(modelMetrics.validation.rmse)} accent="ember" sub="On the separate validation rows" />
-            </div>
-          )}
 
           {modelMetrics.cv && (
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -153,7 +134,9 @@ export default function ModelingStep({ modelMetrics, datasetVersionId }) {
         <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
           <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>⚙️</p>
           <p style={{ fontSize: '0.875rem' }}>
-            Set the algorithm, features and split in the Tools panel above and press Train model, or ask the Assistant.
+            {datasetVersionId
+              ? 'Choose a model and its parameters above, set the train/test split, then press Train & test. Or ask the Assistant.'
+              : 'Upload a dataset first to train and test a model.'}
           </p>
         </div>
       )}
