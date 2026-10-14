@@ -36,9 +36,19 @@ router = APIRouter(tags=["tools"])
 
 STEPS = ("ingestion", "quality", "preprocessing", "feature-selection", "modeling", "validation", "export")
 
-MULTI_COLUMN_FIELDS = frozenset({"columns", "y_columns", "feature_columns"})
-SINGLE_COLUMN_FIELDS = frozenset({"x_column", "z_column", "color_column", "target_column", "column", "stratify_column"})
-CODE_FIELDS = frozenset({"sql_query", "formula"})
+MULTI_COLUMN_FIELDS = frozenset({
+    "columns", "y_columns", "feature_columns", "group_by", "value_columns", "id_columns", "by",
+    "descending_columns", "path_columns", "on",
+})
+SINGLE_COLUMN_FIELDS = frozenset({
+    "x_column", "z_column", "color_column", "target_column", "column", "stratify_column", "group_column",
+    "pivot_column", "column_b", "value_column", "lat_column", "lon_column", "lat2_column", "lon2_column",
+    "location_column", "time_column", "condition_column",
+})
+CODE_FIELDS = frozenset({"sql_query", "formula", "query"})
+# Widgets a JSON schema cannot express: another of the user's datasets, and a
+# value → value table whose keys are typed rather than picked from the columns.
+SPECIAL_WIDGETS = {"other_dataset": "dataset", "value_mapping": "value_mapping"}
 
 _LABELS = {
     "sql_query": "SQL query",
@@ -96,9 +106,72 @@ _LABELS = {
     "use_regex": "Regular expression",
     "score_func": "Score function",
     "k": "Features to keep (k)",
+    "validation_size": "Validation fraction",
+    "group_column": "Group column",
+    "cv_repeats": "Repeats",
+    "cv_test_size": "Validation fraction per split",
+    "cv_window": "Training window (rows)",
+    "n_bootstrap": "Bootstrap resamples",
+    "interpolation_method": "Interpolation method",
+    "interpolation_order": "Spline / polynomial order",
+    "limit_direction": "Fill direction",
+    "time_column": "Time column",
+    "window_type": "Window type",
+    "span": "Span (EWM)",
+    "positive_class": "Event class",
+    "pair_operation": "Pair operation",
+    "holiday_country": "Holiday country (ISO code)",
+    "perplexity": "Perplexity (t-SNE)",
+    "hidden_units": "Hidden units",
+    "group_by": "Group by",
+    "pivot_column": "Pivot column",
+    "value_columns": "Value columns",
+    "normalize": "Normalize (crosstab)",
+    "margins": "Add totals",
+    "column_b": "Second column",
+    "mu": "Hypothesised mean (μ)",
+    "equal_var": "Assume equal variances",
+    "adf_regression": "ADF regression",
+    "by": "Sort by",
+    "descending_columns": "Descending columns",
+    "na_position": "Missing values",
+    "id_columns": "ID columns",
+    "var_name": "Variable column name",
+    "value_name": "Value column name",
+    "other_dataset": "Other dataset",
+    "on": "Key columns",
+    "join_type": "Join type",
+    "add_source_column": "Add source column",
+    "condition_column": "Condition column",
+    "value_mapping": "Value mapping",
+    "unmapped": "Unmapped values",
+    "in_place": "Replace the columns",
+    "max_features": "Max features",
+    "ngram_max": "Longest n-gram",
+    "stop_words": "Remove English stop words",
+    "binary": "Binary counts",
+    "drop_original": "Drop the text column",
+    "lat_column": "Latitude column",
+    "lon_column": "Longitude column",
+    "lat2_column": "Second latitude column",
+    "lon2_column": "Second longitude column",
+    "ref_lat": "Reference latitude",
+    "ref_lon": "Reference longitude",
+    "n_features": "Features to keep",
+    "n_repeats": "Permutation repeats",
+    "value_column": "Value column",
+    "path_columns": "Path / hierarchy columns",
+    "location_column": "Location column",
+    "location_mode": "Location codes",
+    "n_clusters": "Clusters (k)",
+    "positive_when": "Event when target is",
+    "rows": "Rows evaluated",
+    "n_points": "Training sizes",
 }
 
-_STRATIFIED = [{"split_strategy": ["stratified"]}, {"cv_strategy": ["stratified_kfold"]}]
+_STRATIFIED_CV = ["stratified_kfold", "repeated_stratified_kfold", "stratified_shuffle_split"]
+_STRATIFIED = [{"split_strategy": ["stratified"]}, {"cv_strategy": _STRATIFIED_CV}]
+_RANDOM_CV = ["repeated_kfold", "repeated_stratified_kfold", "shuffle_split", "stratified_shuffle_split", "bootstrap"]
 
 _TRAIN_SHOW_WHEN = {
     "n_components": {"algorithm": ["PLS", "PCR"]},
@@ -108,19 +181,68 @@ _TRAIN_SHOW_WHEN = {
     "fit_intercept": {"algorithm": ["OLS", "RIDGE", "LASSO"]},
     "n_neighbors": {"algorithm": ["KNN"]},
     "knn_weights": {"algorithm": ["KNN"]},
-    "random_state": [{"split_strategy": ["random", "stratified"]}, {"cv_strategy": ["kfold", "stratified_kfold"]}],
+    "random_state": [
+        {"split_strategy": ["random", "stratified", "group"]},
+        {"cv_strategy": ["kfold", "stratified_kfold", *_RANDOM_CV]},
+    ],
     "stratify_column": _STRATIFIED,
     "n_strata": _STRATIFIED,
-    "cv_folds": {"cv_strategy": ["kfold", "stratified_kfold", "time_series"]},
+    "group_column": [{"split_strategy": ["group"]}, {"cv_strategy": ["group_kfold", "leave_one_group_out"]}],
+    "cv_folds": {"cv_strategy": [
+        "kfold", "stratified_kfold", "time_series", "group_kfold", "repeated_kfold",
+        "repeated_stratified_kfold", "shuffle_split", "stratified_shuffle_split", "walk_forward",
+    ]},
     "cv_shuffle": {"cv_strategy": ["kfold", "stratified_kfold"]},
+    "cv_repeats": {"cv_strategy": ["repeated_kfold", "repeated_stratified_kfold"]},
+    "cv_test_size": {"cv_strategy": ["shuffle_split", "stratified_shuffle_split"]},
+    "cv_window": {"cv_strategy": ["walk_forward"]},
+    "n_bootstrap": {"cv_strategy": ["bootstrap"]},
 }
+
+# Which generate_custom_plot fields each plot type reads.
+_PLOT_FIELDS: dict[str, tuple[str, ...]] = {
+    "x_column": (
+        "scatter", "time_series", "histogram", "box_plot", "violin_plot", "scatter_3d", "bar", "count", "swarm",
+        "strip", "point", "lollipop", "pie", "donut", "joint", "hexbin", "bubble", "contour", "histogram_2d",
+        "line", "area", "candlestick", "waterfall",
+    ),
+    "color_column": (
+        "scatter", "time_series", "histogram", "box_plot", "violin_plot", "scatter_3d", "pair_plot", "kde",
+        "ridgeline", "ecdf", "bar", "count", "strip", "point", "joint", "bubble", "contour",
+        "parallel_coordinates", "radviz", "andrews_curves", "network", "dendrogram", "chord", "bubble_map",
+        "silhouette",
+    ),
+    "trendline": ("scatter",),
+    "z_column": ("scatter_3d",),
+    "value_column": (
+        "pie", "donut", "bubble", "histogram_2d", "treemap", "sunburst", "sankey", "network", "chord",
+        "choropleth", "bubble_map", "density_map",
+    ),
+    "path_columns": ("treemap", "sunburst", "sankey", "network", "chord"),
+    "agg_func": ("bar", "lollipop", "pie", "donut", "histogram_2d", "choropleth"),
+    "lat_column": ("bubble_map", "density_map"),
+    "lon_column": ("bubble_map", "density_map"),
+    "location_column": ("choropleth",),
+    "location_mode": ("choropleth",),
+    "bins": ("hexbin", "contour", "histogram_2d", "candlestick"),
+    "lags": ("acf", "pacf"),
+    "n_clusters": ("silhouette",),
+    "threshold": ("network", "chord"),
+}
+_PLOT_SHOW_WHEN = {field: {"plot_type": list(types)} for field, types in _PLOT_FIELDS.items()}
+
+_STAT_TESTS_ONE_COLUMN = ["t_test_one_sample", "t_test_independent", "anova", "chi_square", "shapiro", "kolmogorov_smirnov", "adf"]
 
 _VALUE_OPERATORS = [
     "equals", "not_equals", "greater_than", "greater_or_equal", "less_than", "less_or_equal", "contains",
 ]
 _REPLACE_ONLY = {"operation": ["replace"]}
-
-_PLOT_X_TYPES = ["scatter", "time_series", "histogram", "box_plot", "violin_plot", "scatter_3d"]
+_PATTERN_OPERATIONS = ["replace", "contains", "extract"]
+_PROJECTIONS = ["pca", "truncated_svd", "lda", "tsne", "autoencoder"]
+_COLUMN_FUNCTIONS = [
+    "cumsum", "cumprod", "cummax", "cummin", "rank", "pct_rank", "zscore", "minmax", "demean",
+    "group_mean", "group_sum", "group_count", "group_min", "group_max", "group_std", "group_median",
+]
 
 _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 
@@ -138,6 +260,58 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
             "n_rows": {"view": ["head", "tail"]},
             "top_n": {"view": ["value_counts"]},
             "method": {"view": ["correlation"]},
+            "quantiles": {"view": ["distribution"]},
+        },
+    },
+    "aggregate_data": {
+        "label": "Group by / pivot table / crosstab",
+        "steps": ("ingestion", "quality", "preprocessing", "feature-selection"),
+        "show_when": {
+            "pivot_column": {"mode": ["pivot_table", "crosstab"]},
+            "normalize": {"mode": ["crosstab"]},
+            "margins": {"mode": ["pivot_table", "crosstab"]},
+        },
+    },
+    "statistical_test": {
+        "label": "Statistical tests (t-test, ANOVA, χ², normality, ADF)",
+        "steps": ("quality", "preprocessing", "feature-selection"),
+        "defaults": {"test": "shapiro"},
+        "show_when": {
+            "column": {"test": ["t_test_one_sample", "t_test_independent", "t_test_paired", "anova", "chi_square"]},
+            "column_b": {"test": ["t_test_paired", "chi_square"]},
+            "group_column": {"test": ["t_test_independent", "anova"]},
+            "columns": {"test": ["shapiro", "kolmogorov_smirnov", "adf"]},
+            "mu": {"test": ["t_test_one_sample"]},
+            "equal_var": {"test": ["t_test_independent"]},
+            "adf_regression": {"test": ["adf"]},
+        },
+    },
+    "list_datasets": {
+        "label": "Your uploaded datasets",
+        "steps": ("ingestion", "preprocessing"),
+    },
+    "sort_data": {
+        "label": "Sort rows",
+        "steps": ("ingestion", "quality", "preprocessing"),
+    },
+    "combine_datasets": {
+        "label": "Combine datasets (merge, join, concat)",
+        "steps": ("ingestion", "preprocessing"),
+        "show_when": {
+            "on": {"mode": ["merge"]},
+            "suffix": {"mode": ["merge", "join"]},
+            "add_source_column": {"mode": ["concat"]},
+        },
+    },
+    "reshape_data": {
+        "label": "Reshape (melt, stack, pivot, unstack)",
+        "steps": ("preprocessing",),
+        "defaults": {"mode": "melt"},
+        "show_when": {
+            "pivot_column": {"mode": ["pivot", "unstack"]},
+            "var_name": {"mode": ["melt", "stack", "unstack"]},
+            "value_name": {"mode": ["melt", "stack", "unstack"]},
+            "agg_func": {"mode": ["pivot"]},
         },
     },
     "get_column_statistics": {
@@ -156,22 +330,37 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "show_when": {"datetime_format": {"target_type": ["datetime"]}},
     },
     "clean_text": {
-        "label": "Clean text (strip, case, replace)",
+        "label": "Text & regex (strip, case, replace, contains, extract)",
         "steps": ("ingestion", "quality", "preprocessing"),
         "defaults": {"operation": "strip"},
-        "show_when": {"find": _REPLACE_ONLY, "replace_with": _REPLACE_ONLY, "use_regex": _REPLACE_ONLY},
+        "show_when": {
+            "find": {"operation": _PATTERN_OPERATIONS},
+            "replace_with": _REPLACE_ONLY,
+            "use_regex": {"operation": ["replace", "contains"]},
+            "ignore_case": {"operation": _PATTERN_OPERATIONS},
+        },
     },
     "drop_rows": {
-        "label": "Drop / filter rows",
+        "label": "Drop / filter rows (condition, range, query)",
         "steps": ("quality", "preprocessing"),
         "defaults": {"mode": "condition"},
         "show_when": {
+            "query": {"mode": ["query"]},
             "column": {"mode": ["condition"]},
             "operator": {"mode": ["condition"]},
             "value": {"mode": ["condition"], "operator": _VALUE_OPERATORS},
             "start_row": {"mode": ["row_range"]},
             "end_row": {"mode": ["row_range"]},
         },
+    },
+    "mask_values": {
+        "label": "Replace where a condition holds (mask / where)",
+        "steps": ("quality", "preprocessing"),
+        "show_when": {"value": {"operator": _VALUE_OPERATORS}},
+    },
+    "map_values": {
+        "label": "Map / recode values",
+        "steps": ("quality", "preprocessing"),
     },
     "drop_duplicates": {
         "label": "Drop duplicates",
@@ -185,6 +374,10 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
             "n_neighbors": {"strategy": ["knn"]},
             "max_iter": {"strategy": ["iterative"]},
             "random_state": {"strategy": ["iterative"]},
+            "interpolation_method": {"strategy": ["interpolate"]},
+            "interpolation_order": {"strategy": ["interpolate"], "interpolation_method": ["spline", "polynomial"]},
+            "limit_direction": {"strategy": ["interpolate"]},
+            "time_column": {"strategy": ["interpolate"], "interpolation_method": ["time"]},
         },
         "advanced": ("max_iter", "random_state"),
     },
@@ -237,61 +430,87 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "encode_categorical": {
-        "label": "Encode categorical",
+        "label": "Encode categorical (one-hot, target, LOO, WoE…)",
         "steps": ("preprocessing",),
-        "numeric": ("target_column",),
         "defaults": {"strategy": "one_hot"},
         "app_defaults": {"target_column": "target"},
         "show_when": {
-            "target_column": {"strategy": ["target"]},
+            "target_column": {"strategy": ["target", "leave_one_out", "woe"]},
+            "positive_class": {"strategy": ["woe"]},
             "smoothing": {"strategy": ["target"]},
             "drop_first": {"strategy": ["one_hot"]},
             "category_order": {"strategy": ["ordinal"]},
         },
     },
     "rolling_aggregate": {
-        "label": "Rolling window",
+        "label": "Window functions (rolling, expanding, EWM)",
         "steps": ("preprocessing",),
         "numeric": ("columns",),
         "defaults": {"window": 5},
+        "show_when": {
+            "window": {"window_type": ["rolling"]},
+            "span": {"window_type": ["ewm"]},
+            "min_periods": {"window_type": ["rolling", "expanding"]},
+            "center": {"window_type": ["rolling"]},
+        },
         "advanced": ("min_periods", "center"),
     },
     "create_lag_features": {
-        "label": "Lag features",
+        "label": "Lag / lead / diff (shift, diff, pct_change)",
         "steps": ("preprocessing",),
         "defaults": {"lag_periods": [1, 2, 3]},
     },
+    "apply_function": {
+        "label": "Apply function (map / transform)",
+        "steps": ("preprocessing",),
+        "numeric": ("columns",),
+        "defaults": {"function": "zscore"},
+        "show_when": {
+            "decimals": {"function": ["round"]},
+            "group_by": {"function": _COLUMN_FUNCTIONS},
+        },
+    },
     "feature_engineer": {
-        "label": "Feature engineering",
+        "label": "Feature engineering (polynomial, dates, pairs…)",
         "steps": ("preprocessing",),
         "defaults": {"strategy": "polynomial"},
         "show_when": {
             "degree": {"strategy": ["polynomial"]},
             "interaction_only": {"strategy": ["polynomial"]},
             "period": {"strategy": ["cyclical"]},
+            "pair_operation": {"strategy": ["pairwise"]},
+            "holiday_country": {"strategy": ["datetime"]},
         },
+    },
+    "vectorize_text": {
+        "label": "Text vectorization (TF-IDF, counts, hashing, LSA)",
+        "steps": ("preprocessing",),
+        "show_when": {
+            "n_components": {"method": ["lsa"]},
+            "binary": {"method": ["count"]},
+        },
+    },
+    "geo_features": {
+        "label": "Geospatial distance (haversine)",
+        "steps": ("preprocessing",),
+        "numeric": ("lat_column", "lon_column", "lat2_column", "lon2_column"),
     },
     "execute_formula": {
         "label": "Formula column",
         "steps": ("preprocessing",),
     },
     "balance_data": {
-        "label": "Balance classes",
+        "label": "Balance classes (SMOTE, ADASYN, over/undersampling)",
         "steps": ("preprocessing",),
         "defaults": {"strategy": "smote"},
-        "show_when": {"k_neighbors": {"strategy": ["smote"]}},
+        "show_when": {"k_neighbors": {"strategy": ["smote", "adasyn"]}},
         "advanced": ("random_state",),
     },
     "generate_custom_plot": {
         "label": "Plot",
-        "steps": ("preprocessing",),
+        "steps": ("ingestion", "quality", "preprocessing", "feature-selection"),
         "defaults": {"plot_type": "correlation_heatmap"},
-        "show_when": {
-            "x_column": {"plot_type": _PLOT_X_TYPES},
-            "trendline": {"plot_type": ["scatter"]},
-            "z_column": {"plot_type": ["scatter_3d"]},
-            "color_column": {"plot_type": [*_PLOT_X_TYPES, "pair_plot"]},
-        },
+        "show_when": _PLOT_SHOW_WHEN,
         "advanced": ("max_points",),
     },
     "select_features_rfe": {
@@ -322,10 +541,28 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "numeric": ("columns",),
         "defaults": {"strategy": "pca"},
         "show_when": {
-            "n_components": {"strategy": ["pca"]},
-            "keep_original": {"strategy": ["pca"]},
+            "n_components": {"strategy": _PROJECTIONS},
+            "keep_original": {"strategy": _PROJECTIONS},
             "threshold": {"strategy": ["variance_threshold"]},
+            "target_column": {"strategy": ["lda"]},
+            "perplexity": {"strategy": ["tsne"]},
+            "hidden_units": {"strategy": ["autoencoder"]},
+            "max_iter": {"strategy": ["tsne", "autoencoder"]},
+            "random_state": {"strategy": ["truncated_svd", "tsne", "autoencoder"]},
         },
+        "advanced": ("max_iter", "random_state"),
+    },
+    "select_features_model": {
+        "label": "Model-based selection (importance, permutation, SHAP)",
+        "steps": ("feature-selection",),
+        "numeric": ("target_column", "feature_columns"),
+        "app_defaults": {"target_column": "target"},
+        "show_when": {
+            "n_estimators": {"method": ["tree_importance", "permutation"]},
+            "n_repeats": {"method": ["permutation"]},
+            "test_size": {"method": ["permutation"]},
+        },
+        "advanced": ("n_estimators", "alpha", "random_state"),
     },
     "train_soft_sensor": {
         "label": "Train soft sensor",
@@ -344,6 +581,9 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     "generate_residuals_plot": {"label": "Residuals plot", **_DIAGNOSTIC},
     "generate_importance_plot": {"label": "Feature importance", **_DIAGNOSTIC},
     "generate_coefficients_plot": {"label": "Coefficients plot", **_DIAGNOSTIC},
+    "generate_roc_curve": {"label": "ROC curve", **_DIAGNOSTIC},
+    "generate_pr_curve": {"label": "Precision-recall curve", **_DIAGNOSTIC},
+    "generate_learning_curve": {"label": "Learning curve", **_DIAGNOSTIC, "advanced": ("random_state",)},
 }
 
 
@@ -387,6 +627,8 @@ def _label(name: str) -> str:
 
 
 def _widget(name: str, node: dict[str, Any]) -> str:
+    if name in SPECIAL_WIDGETS:
+        return SPECIAL_WIDGETS[name]
     if "enum" in node:
         return "select"
     kind = node.get("type")

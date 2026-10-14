@@ -17,6 +17,7 @@ from backend.auth import User, get_current_user
 from backend.database import AsyncSessionLocal
 from backend.limits import max_upload_bytes
 from backend.mcp_server.eda_tools import _load_dataframe, _resolve_storage_path, _write_parquet
+from backend.mcp_server.manipulation_tools import owner_datasets
 from backend.mcp_server.model_registry import lineage_models
 from backend.models import Dataset
 from backend.services.lineage_service import (
@@ -98,9 +99,22 @@ def _schema_payload(df: pd.DataFrame) -> dict[str, Any]:
     }
 
 
+async def _protected_dataset(session: Any, version_id: Optional[str], user: User) -> Optional[uuid.UUID]:
+    """The dataset of ``version_id`` when the user owns it; anything else protects nothing."""
+    if not version_id:
+        return None
+    try:
+        return (await owned_version(session, version_id, user)).dataset_id
+    except HTTPException:
+        return None
+
+
 @router.post("/datasets/upload", response_model=UploadResponse)
 async def upload_dataset(
     file: UploadFile = File(...),
+    keep_version_id: Optional[str] = Query(
+        None, description="Active version whose dataset must survive eviction (uploading a file to combine with it)."
+    ),
     user: User = Depends(get_current_user),
 ) -> UploadResponse:
     """Ingest CSV/Parquet, persist root Dataset + Version, return table preview."""
@@ -130,7 +144,7 @@ async def upload_dataset(
     schema = _schema_payload(df)
 
     async with AsyncSessionLocal() as session:
-        await evict_old_datasets(session, user)
+        await evict_old_datasets(session, user, protect=await _protected_dataset(session, keep_version_id, user))
         dataset = Dataset(
             owner_id=user.id,
             file_name=Path(file.filename).name,
@@ -251,7 +265,7 @@ async def version_schema(
     dataset_version_id: str,
     user: User = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Columns (name, dtype, numeric) and trained models, for the manual tool forms."""
+    """Columns (name, dtype, numeric), trained models and the user's other datasets, for the manual tool forms."""
     async with AsyncSessionLocal() as session:
         version = await owned_version(session, dataset_version_id, user)
         try:
@@ -259,6 +273,15 @@ async def version_schema(
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         models = await lineage_models(session, str(version.id))
+        datasets = [
+            {
+                "dataset_id": str(dataset.id),
+                "file_name": dataset.file_name,
+                "latest_version_id": str(latest.id),
+                "current": dataset.id == version.dataset_id,
+            }
+            for dataset, latest in await owner_datasets(session, user.id)
+        ]
         return {
             "dataset_version_id": str(version.id),
             "row_count": parquet.metadata.num_rows,
@@ -268,6 +291,7 @@ async def version_schema(
                 if not f.name.startswith("__index_level")
             ],
             "models": models,
+            "datasets": datasets,
         }
 
 

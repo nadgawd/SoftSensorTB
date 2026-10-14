@@ -87,7 +87,7 @@ def test_form_overrides_name_real_fields_and_options(name):
 
 
 def test_every_required_field_has_a_default_or_is_a_user_choice():
-    choices = {"column", "columns", "mapping", "text", "code"}
+    choices = {"column", "columns", "mapping", "text", "code", "dataset", "value_mapping"}
     for spec in _SPECS.values():
         for f in spec["fields"]:
             if f["required"] and "default" not in f and "app_default" not in f:
@@ -234,6 +234,11 @@ def _rich_csv() -> bytes:
         "label": [1 if i % 6 == 0 else 0 for i in range(n)],
         "hour": [i % 24 for i in range(n)],
         "ts": pd.date_range("2026-01-01", periods=n, freq="h").astype(str),
+        "country": [["IND", "USA", "FRA", "BRA"][i % 4] for i in range(n)],
+        "lat": 19.0 + rng.normal(scale=0.5, size=n),
+        "lon": 72.8 + rng.normal(scale=0.5, size=n),
+        "note": [["pump running smoothly today", "valve leak detected near inlet",
+                  "sensor drift observed after cleaning", "pump vibration high near valve"][i % 4] for i in range(n)],
     })
     df.loc[[3, 7], "x2"] = np.nan
     return df.to_csv(index=False).encode()
@@ -268,8 +273,51 @@ _PICKS = {
     "convert_types": {"columns": ["hour"]},
     "clean_text": {"columns": ["cat"]},
     "select_k_best": {"target_column": "y", "k": 2},
+    "aggregate_data": {"group_by": ["cat"]},
+    "statistical_test": {"column": "x1"},
+    "list_datasets": {},
+    "sort_data": {"by": ["x1"]},
+    "combine_datasets": {"other_dataset": "rich.csv", "on": ["hour"]},
+    "reshape_data": {"id_columns": ["cat"], "value_columns": ["x1", "x2"]},
+    "mask_values": {"columns": ["x1"], "value": "0"},
+    "map_values": {"columns": ["cat"], "value_mapping": {"a": "alpha", "b": "beta"}},
+    "apply_function": {"columns": ["x1"], "group_by": ["cat"]},
+    "vectorize_text": {"column": "note"},
+    "geo_features": {"lat_column": "lat", "lon_column": "lon", "ref_lat": 19.07, "ref_lon": 72.88},
+    "select_features_model": {"target_column": "y", "feature_columns": ["x1", "x2", "hour"], "n_features": 2},
 }
+_CATEGORY_PLOTS = ("bar", "count", "swarm", "strip", "point", "lollipop", "pie", "donut", "waterfall")
+_MANY_COLUMN_PLOTS = ("parallel_coordinates", "radviz", "andrews_curves", "dendrogram", "network", "chord", "silhouette")
 _PER_OPTION = {
+    **{("generate_custom_plot", t): {"x_column": "cat"} for t in _CATEGORY_PLOTS},
+    **{("generate_custom_plot", t): {"y_columns": ["x1", "x2", "y"]} for t in _MANY_COLUMN_PLOTS},
+    ("generate_custom_plot", "bubble"): {"value_column": "hour"},
+    ("generate_custom_plot", "treemap"): {"path_columns": ["cat", "country"]},
+    ("generate_custom_plot", "sunburst"): {"path_columns": ["cat", "country"], "value_column": "hour"},
+    ("generate_custom_plot", "sankey"): {"path_columns": ["cat", "country"]},
+    ("generate_custom_plot", "choropleth"): {"location_column": "country", "value_column": "y"},
+    ("generate_custom_plot", "bubble_map"): {"lat_column": "lat", "lon_column": "lon", "value_column": "hour"},
+    ("generate_custom_plot", "density_map"): {"lat_column": "lat", "lon_column": "lon"},
+    ("clean_text", "contains"): {"find": "a"},
+    ("clean_text", "extract"): {"find": "([a-c])"},
+    ("drop_rows", "query"): {"query": "x1 > 0 and hour < 20"},
+    ("encode_categorical", "woe"): {"target_column": "label"},
+    ("reduce_dimensions", "truncated_svd"): {"columns": ["x1", "x2", "y"]},
+    ("reduce_dimensions", "autoencoder"): {"columns": ["x1", "x2", "y"]},
+    ("reduce_dimensions", "lda"): {"target_column": "cat"},
+    ("statistical_test", "t_test_independent"): {"column": "y", "group_column": "label"},
+    ("statistical_test", "t_test_paired"): {"column_b": "x2"},
+    ("statistical_test", "anova"): {"column": "y", "group_column": "cat"},
+    ("statistical_test", "chi_square"): {"column": "cat", "column_b": "country"},
+    ("reshape_data", "pivot"): {"id_columns": ["hour"], "pivot_column": "cat", "value_columns": ["y"]},
+    ("reshape_data", "unstack"): {"id_columns": ["ts"], "pivot_column": "cat", "value_columns": ["y"]},
+    ("apply_function", "sqrt"): {"columns": ["hour"]},
+    ("apply_function", "log"): {"columns": ["lat"]},
+    ("apply_function", "log10"): {"columns": ["lat"]},
+    ("apply_function", "reciprocal"): {"columns": ["lat"]},
+    ("apply_function", "cumprod"): {"columns": ["lat"]},
+    ("apply_function", "exp"): {"columns": ["x1"]},
+
     ("feature_engineer", "datetime"): {"columns": ["ts"]},
     ("feature_engineer", "cyclical"): {"columns": ["hour"]},
     ("remove_outliers", "clip"): {"upper_bound": 1.0},

@@ -18,6 +18,7 @@ from backend.agents.context import (
     render_ui_state,
 )
 from backend.agents.llm_client import get_llm_client
+from backend.agents.tool_selection import select_schemas
 from backend.agents.ui_tools import SET_MODEL_FEATURES, UI_TOOL_SCHEMAS, apply_feature_selection
 from backend.mcp_server import LLM_TOOL_SCHEMAS, TOOL_FUNCTIONS
 
@@ -81,6 +82,17 @@ _MUTATING_TOOLS = frozenset(
         "drop_duplicates",
         "convert_types",
         "clean_text",
+        # Sorting, reshaping, combining and mapping
+        "sort_data",
+        "reshape_data",
+        "combine_datasets",
+        "mask_values",
+        "map_values",
+        "apply_function",
+        # Text, geospatial and model-based features
+        "vectorize_text",
+        "geo_features",
+        "select_features_model",
     }
 )
 _PLOT_TOOLS = frozenset({
@@ -89,8 +101,14 @@ _PLOT_TOOLS = frozenset({
     "generate_residuals_plot",
     "generate_importance_plot",
     "generate_coefficients_plot",
+    "generate_roc_curve",
+    "generate_pr_curve",
+    "generate_learning_curve",
 })
-_TABLE_TOOLS = frozenset({"run_duckdb_query", "get_column_statistics", "inspect_data", "list_trained_models"})
+_TABLE_TOOLS = frozenset({
+    "run_duckdb_query", "get_column_statistics", "inspect_data", "list_trained_models",
+    "aggregate_data", "statistical_test", "list_datasets",
+})
 _METRIC_TOOLS = frozenset({"train_soft_sensor"})
 _MAX_TABLE_ROWS = 50
 _TABLE_TITLES = {
@@ -98,6 +116,9 @@ _TABLE_TITLES = {
     "get_column_statistics": "Column statistics",
     "inspect_data": "Data inspection",
     "list_trained_models": "Trained models",
+    "aggregate_data": "Aggregation",
+    "statistical_test": "Statistical test",
+    "list_datasets": "Your datasets",
 }
 
 
@@ -106,17 +127,26 @@ def _execution_system_prompt(
     ui: dict[str, Any],
     step_hint: Optional[str] = None,
     tool_history: str = "",
+    omitted_tools: Iterable[str] = (),
 ) -> str:
     step_ctx = f"\nCURRENT PIPELINE STEP: {step_hint}" if step_hint else ""
     if tool_history:
         step_ctx += f"\n{tool_history}"
+    omitted = list(omitted_tools)
+    if omitted:
+        step_ctx += (
+            "\nMORE TOOLS (not attached to save space; call any of them by name with the "
+            f"arguments you expect and its full schema is attached from the next round): {', '.join(omitted)}"
+        )
     return f"""You are the Soft Sensor Toolbox execution agent.
 You solve data exploration, preprocessing, plotting, feature selection and
 soft-sensor modeling tasks by calling the provided tools. Never invent Python
 code or mutate data yourself. Answer questions about the user's data by
 computing them with run_duckdb_query, get_column_statistics, inspect_data (head,
-tail, info, describe, shape, value_counts, missing, correlation, profile) or the
-plot tools.
+tail, info, describe, shape, value_counts, missing, correlation, profile,
+nunique, distribution with skew / kurtosis / quantiles, alerts), aggregate_data
+(groupby, pivot_table, crosstab), statistical_test (t-tests, ANOVA, chi-square,
+normality, ADF stationarity) or the plot tools.
 
 {render_dataset_context(ctx)}
 
@@ -197,9 +227,11 @@ def _summarize_tool_result(tool_name: str, result: Any) -> str:
                 f" · CV ({cv.get('strategy')}) R² {cv['r2']:.3f}"
                 if isinstance(cv.get("r2"), (int, float)) else ""
             )
+            val = result.get("validation") or {}
+            val_text = f" · validation R² {val['r2']:.3f}" if isinstance(val.get("r2"), (int, float)) else ""
             return (
                 f"{result.get('algorithm')} · R² {result.get('r2_score', 0):.3f} · "
-                f"RMSE {result.get('rmse', 0):.3g}{cv_text} · model {str(result.get('model_id'))[:8]}"
+                f"RMSE {result.get('rmse', 0):.3g}{val_text}{cv_text} · model {str(result.get('model_id'))[:8]}"
             )
         if tool_name == SET_MODEL_FEATURES:
             feats = result.get("selected_features") or []
@@ -254,6 +286,7 @@ def _table_rows(tool_name: str, result: dict[str, Any]) -> list[dict[str, Any]]:
                 "r2_score": m.get("r2_score"),
                 "rmse": m.get("rmse"),
                 "cv_r2": (m.get("cv") or {}).get("r2"),
+                "validation_r2": (m.get("validation") or {}).get("r2"),
                 "settings": _cell(m.get("hyperparameters") or None),
                 "trained_at": m.get("trained_at"),
             }
@@ -314,6 +347,8 @@ def _update_ui_state(
             "test_size": result.get("test_size"),
             "hyperparameters": result.get("hyperparameters"),
             "cv": result.get("cv"),
+            "validation": result.get("validation"),
+            "n_validation": result.get("n_validation"),
         }
         if "new_version_id" in result:
             state["active_dataset_version_id"] = result["new_version_id"]
@@ -400,6 +435,24 @@ def _run_ui_tool(
     )
 
 
+def _history_tools(history: list[Any]) -> list[str]:
+    out: list[str] = []
+    for turn in history:
+        tools = turn.get("tools") if isinstance(turn, dict) else getattr(turn, "tools", None)
+        out.extend(t for t in tools or [] if isinstance(t, str))
+    return out
+
+
+def _recent_user_texts(history: list[Any], n: int = 2) -> list[str]:
+    texts = []
+    for turn in history:
+        role = turn.get("role") if isinstance(turn, dict) else getattr(turn, "role", None)
+        content = turn.get("content") if isinstance(turn, dict) else getattr(turn, "content", None)
+        if role == "user" and isinstance(content, str):
+            texts.append(content)
+    return texts[-n:]
+
+
 def _reasoning_delta(delta: Any) -> Optional[str]:
     # vLLM >= 0.13 names the field `reasoning`; older servers use `reasoning_content`.
     return getattr(delta, "reasoning", None) or getattr(delta, "reasoning_content", None)
@@ -411,6 +464,7 @@ async def _stream_completion(
     max_tokens: int,
     sink: dict[str, Any],
     think: bool = False,
+    tools: Optional[list[dict[str, Any]]] = None,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """Stream one model turn.
 
@@ -420,7 +474,7 @@ async def _stream_completion(
     stream = await client.chat.completions.create(
         temperature=0.1,
         max_tokens=max_tokens,
-        tools=_ALL_TOOL_SCHEMAS,
+        tools=tools if tools is not None else _ALL_TOOL_SCHEMAS,
         tool_choice="auto",
         messages=messages,
         stream=True,
@@ -487,6 +541,8 @@ async def run_execution_agent(
 
     history = list(history or [])
     tool_history = render_tool_history(history)
+    earlier_tools = _history_tools(history)
+    request_text = " ".join([*_recent_user_texts(history), user_input])
     user_msg = {"role": "user", "content": user_input}
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": ""},
@@ -501,18 +557,22 @@ async def run_execution_agent(
     for round_no in range(MAX_TOOL_ROUNDS):
         if ctx is None or ctx.version_id != ui_state["active_dataset_version_id"]:
             ctx = await load_dataset_context(ui_state["active_dataset_version_id"])
+        tools, omitted = select_schemas(
+            _ALL_TOOL_SCHEMAS, user_input=request_text, step_hint=step_hint,
+            used=[*earlier_tools, *tool_calls_made],
+        )
         messages[0] = {
             "role": "system",
             "content": _execution_system_prompt(
                 ctx, {**ui, "selectedFeatures": ui_state["selected_features"],
-                      "targetVariable": ui_state["target_variable"]}, step_hint, tool_history,
+                      "targetVariable": ui_state["target_variable"]}, step_hint, tool_history, omitted,
             ),
         }
         yield {"event": "status", "data": "Reviewing tool results" if tool_calls_made else "Planning"}
 
         sink: dict[str, Any] = {"content": "", "reasoning": "", "tool_calls": {}}
         try:
-            async for kind, text in _stream_completion(client, messages, 4096, sink, think):
+            async for kind, text in _stream_completion(client, messages, 4096, sink, think, tools):
                 yield {"event": kind, "data": text}
         except Exception as api_err:  # noqa: BLE001
             if not _is_recoverable(api_err):
@@ -527,7 +587,7 @@ async def run_execution_agent(
             messages = [messages[0], user_msg]
             sink = {"content": "", "reasoning": "", "tool_calls": {}}
             try:
-                async for kind, text in _stream_completion(client, messages, 2048, sink, think):
+                async for kind, text in _stream_completion(client, messages, 2048, sink, think, tools):
                     yield {"event": kind, "data": text}
             except Exception as retry_err:  # noqa: BLE001
                 final_message = (

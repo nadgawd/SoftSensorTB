@@ -1,4 +1,4 @@
-import { CV_LABELS, splitLabel } from '../../utils/splits'
+import { CV_LABELS, cvUnit, splitLabel } from '../../utils/splits'
 
 const ALGORITHM_LABELS = { OLS: 'LINEAR (OLS)' }
 
@@ -52,9 +52,24 @@ export default function ModelingStep({ modelMetrics, datasetVersionId }) {
             <MetricCard label="Test R²" value={formatMetric(modelMetrics.r2_score)} accent="signal" sub="On the held-out test rows" />
             <MetricCard label="Test RMSE" value={formatMetric(modelMetrics.rmse)} accent="ember" sub="Root mean squared error" />
             {modelMetrics.algorithm && (
-              <MetricCard label="Algorithm" value={ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm} accent="mist" sub={[`${modelMetrics.n_train ?? '?'} train · ${modelMetrics.n_test ?? '?'} test`, modelMetrics.split_strategy && splitLabel(modelMetrics.split_strategy)].filter(Boolean).join(' · ')} />
+              <MetricCard
+                label="Algorithm"
+                value={ALGORITHM_LABELS[modelMetrics.algorithm] ?? modelMetrics.algorithm}
+                accent="mist"
+                sub={[
+                  `${modelMetrics.n_train ?? '?'} train${modelMetrics.validation ? ` · ${modelMetrics.validation.n_rows} validation` : ''} · ${modelMetrics.n_test ?? '?'} test`,
+                  modelMetrics.split_strategy && splitLabel(modelMetrics.split_strategy),
+                ].filter(Boolean).join(' · ')}
+              />
             )}
           </div>
+
+          {modelMetrics.validation && (
+            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+              <MetricCard label="Validation R²" value={formatMetric(modelMetrics.validation.r2)} accent="signal" sub="On the separate validation rows" />
+              <MetricCard label="Validation RMSE" value={formatMetric(modelMetrics.validation.rmse)} accent="ember" sub="On the separate validation rows" />
+            </div>
+          )}
 
           {modelMetrics.cv && (
             <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
@@ -78,7 +93,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId }) {
                 label="Cross-validation"
                 value={CV_LABELS[modelMetrics.cv.strategy] ?? modelMetrics.cv.strategy}
                 accent="mist"
-                sub={`${modelMetrics.cv.n_splits} folds · ${modelMetrics.cv.n_rows} training rows scored`}
+                sub={`${modelMetrics.cv.n_splits} ${cvUnit(modelMetrics.cv.strategy)} · ${modelMetrics.cv.n_rows} training rows scored`}
               />
             </div>
           )}

@@ -60,6 +60,7 @@ export function fieldDefault(field, schema, app) {
     case 'int_list':
       return Array.isArray(d) ? d.join(', ') : ''
     case 'mapping':
+    case 'value_mapping':
       return [{ from: '', to: '' }]
     case 'integer':
     case 'number':
@@ -156,6 +157,13 @@ export function buildArguments(tool, values) {
         parsed = rows.length ? { value: Object.fromEntries(rows.map((r) => [r.from, r.to.trim()])) } : { empty: true }
         break
       }
+      case 'value_mapping': {
+        const rows = (raw || []).filter((r) => r.from.trim() && r.to.trim())
+        parsed = rows.length
+          ? { value: Object.fromEntries(rows.map((r) => [r.from.trim(), r.to.trim()])) }
+          : { empty: true }
+        break
+      }
       default: {
         const text = String(raw ?? '').trim()
         parsed = text ? { value: text } : { empty: true }
@@ -182,6 +190,7 @@ function editValue(field, value) {
     case 'text_list':
       return (Array.isArray(value) ? value : [value]).map(String)
     case 'mapping':
+    case 'value_mapping':
       return value && typeof value === 'object'
         ? Object.entries(value).map(([from, to]) => ({ from, to: String(to) }))
         : [{ from: '', to: '' }]

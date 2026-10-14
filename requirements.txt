@@ -34,6 +34,8 @@ duckdb==1.5.5
 scikit-learn==1.9.0
 joblib==1.6.0                 # model artifact serialization
 plotly==7.0.0
+statsmodels==0.15.0           # ADF / Lilliefors tests, ACF / PACF plots, OLS trendlines
+holidays==0.106               # is_holiday date feature
 
 # --- LLM providers (OpenAI-compatible clients) ---
 openai==3.11.0

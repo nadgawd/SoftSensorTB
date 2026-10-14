@@ -24,7 +24,7 @@ const RUN_LABELS = {
 
 const KIND_NOTES = {
   transform: 'Creates a new dataset version. Use History to go back.',
-  train: 'Trains on the active dataset version and evaluates on the held-out test rows. Cross-validation, if chosen, runs on the training rows only.',
+  train: 'Trains on the active dataset version and evaluates on the held-out test rows (and the validation rows, if a validation fraction is set). Cross-validation, if chosen, runs on the training rows only.',
 }
 
 /**

@@ -1,11 +1,12 @@
 import PlotCanvas from '../PlotCanvas'
-import { CV_LABELS, splitLabel } from '../../utils/splits'
+import { CV_LABELS, cvUnit, splitLabel } from '../../utils/splits'
 
 /**
  * Step 6 — Validation
  */
 export default function ValidationStep({ modelMetrics, plotHistory }) {
   const cv = modelMetrics?.cv
+  const validation = modelMetrics?.validation
   function fmt(v) {
     if (v === null || v === undefined || Number.isNaN(Number(v))) return '—'
     return Number(v).toFixed(4)
@@ -42,7 +43,14 @@ export default function ValidationStep({ modelMetrics, plotHistory }) {
             <tbody>
               <MetricRow label="Test R²" value={fmt(modelMetrics.r2_score)} note="Coefficient of determination on the held-out rows" />
               <MetricRow label="Test RMSE" value={fmt(modelMetrics.rmse)} note="Root mean squared error on the held-out rows" />
+              {validation && (
+                <>
+                  <MetricRow label="Validation R²" value={fmt(validation.r2)} note="On the separate validation rows" />
+                  <MetricRow label="Validation RMSE" value={fmt(validation.rmse)} note="On the separate validation rows" />
+                </>
+              )}
               <MetricRow label="Training samples" value={modelMetrics.n_train ?? '—'} note="" />
+              {validation && <MetricRow label="Validation samples" value={validation.n_rows ?? '—'} note="" />}
               <MetricRow label="Test samples" value={modelMetrics.n_test ?? '—'} note="" />
               {modelMetrics.split_strategy && (
                 <MetricRow
@@ -56,7 +64,7 @@ export default function ValidationStep({ modelMetrics, plotHistory }) {
                   <MetricRow
                     label="Cross-validation"
                     value={CV_LABELS[cv.strategy] ?? cv.strategy}
-                    note={`${cv.n_splits} folds over ${cv.n_rows} training rows`}
+                    note={`${cv.n_splits} ${cvUnit(cv.strategy)} over ${cv.n_rows} training rows`}
                   />
                   <MetricRow
                     label="CV R²"

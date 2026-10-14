@@ -1,11 +1,21 @@
 import { useMemo, useState } from 'react'
+import { errorDetail, uploadDataset } from '../../api/client'
 import { columnChoices, isVisible } from '../../lib/manualForm'
+
+const OPTION_WORDS = {
+  acf: 'ACF', adasyn: 'ADASYN', adf: 'ADF', anova: 'ANOVA', ecdf: 'ECDF', f: 'F', iqr: 'IQR',
+  kde: 'KDE', kfold: 'K-fold', knn: 'KNN', lda: 'LDA', lsa: 'LSA', mi: 'MI', pacf: 'PACF',
+  pca: 'PCA', pchip: 'PCHIP', qq: 'Q-Q', r2: 'R²', rmse: 'RMSE', shap: 'SHAP', smote: 'SMOTE',
+  svd: 'SVD', 't-test': 't-test', tfidf: 'TF-IDF', tsne: 't-SNE', woe: 'WoE', '2d': '2D', '3d': '3D',
+}
 
 function optionLabel(value) {
   const text = String(value)
   if (text === text.toUpperCase()) return text
-  const spaced = text.replace(/_/g, ' ')
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+  const words = text.replace(/^t_test/, 't-test').split('_')
+  const first = OPTION_WORDS[words[0]]
+  const label = words.map((w) => OPTION_WORDS[w] ?? w).join(' ')
+  return first ? label : label.charAt(0).toUpperCase() + label.slice(1)
 }
 
 function rangeHint(field) {
@@ -107,7 +117,8 @@ function ColumnPicker({ field, value, onChange, choices }) {
   )
 }
 
-function MappingInput({ value, onChange, choices }) {
+/** Rows of from → to: a column → its new name, or (`freeKeys`) a typed value → its replacement. */
+function MappingInput({ value, onChange, choices, freeKeys = false }) {
   const rows = value?.length ? value : [{ from: '', to: '' }]
   function update(i, patch) {
     onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)))
@@ -116,14 +127,23 @@ function MappingInput({ value, onChange, choices }) {
     <div className="manual-mapping">
       {rows.map((row, i) => (
         <div key={i} className="manual-mapping-row">
-          <select className="input-base manual-input" value={row.from} onChange={(e) => update(i, { from: e.target.value })}>
-            <option value="">Column…</option>
-            {choices.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
+          {freeKeys ? (
+            <input
+              className="input-base manual-input"
+              placeholder="Value"
+              value={row.from}
+              onChange={(e) => update(i, { from: e.target.value })}
+            />
+          ) : (
+            <select className="input-base manual-input" value={row.from} onChange={(e) => update(i, { from: e.target.value })}>
+              <option value="">Column…</option>
+              {choices.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          )}
           <span className="manual-hint">→</span>
           <input
             className="input-base manual-input"
-            placeholder="New name"
+            placeholder={freeKeys ? 'Becomes' : 'New name'}
             value={row.to}
             onChange={(e) => update(i, { to: e.target.value })}
           />
@@ -137,7 +157,58 @@ function MappingInput({ value, onChange, choices }) {
           </button>
         </div>
       ))}
-      <button type="button" className="manual-link" onClick={() => onChange([...rows, { from: '', to: '' }])}>+ Add column</button>
+      <button type="button" className="manual-link" onClick={() => onChange([...rows, { from: '', to: '' }])}>
+        {freeKeys ? '+ Add value' : '+ Add column'}
+      </button>
+    </div>
+  )
+}
+
+/** Another of the user's datasets, by id; a file can be uploaded here without opening it. */
+function DatasetSelect({ value, onChange, schema, id }) {
+  const [uploaded, setUploaded] = useState([])
+  const [uploading, setUploading] = useState(false)
+  const [error, setError] = useState(null)
+  const known = [...(schema?.datasets || []).filter((d) => !d.current), ...uploaded]
+  const options = known.filter((d, i) => known.findIndex((o) => o.dataset_id === d.dataset_id) === i)
+  const missing = value && !options.some((d) => d.dataset_id === value)
+
+  async function upload(file) {
+    if (!file) return
+    setUploading(true)
+    setError(null)
+    try {
+      const data = await uploadDataset(file, { keepVersionId: schema?.dataset_version_id })
+      setUploaded((prev) => [...prev, { dataset_id: data.dataset_id, file_name: data.file_name }])
+      onChange(data.dataset_id)
+    } catch (err) {
+      setError(errorDetail(err, 'Upload failed.'))
+    } finally {
+      setUploading(false)
+    }
+  }
+
+  return (
+    <div className="manual-dataset">
+      <select id={id} className="input-base manual-input" value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{options.length ? 'Choose a dataset…' : 'No other datasets yet'}</option>
+        {missing && <option value={value}>{value}</option>}
+        {options.map((d) => <option key={d.dataset_id} value={d.dataset_id}>{d.file_name}</option>)}
+      </select>
+      <label className="manual-link manual-upload">
+        {uploading ? 'Uploading…' : 'Upload another file…'}
+        <input
+          type="file"
+          accept=".csv,.txt,.parquet,.pq"
+          hidden
+          disabled={uploading}
+          onChange={(e) => {
+            upload(e.target.files?.[0])
+            e.target.value = ''
+          }}
+        />
+      </label>
+      {error && <p className="manual-error">{error}</p>}
     </div>
   )
 }
@@ -157,7 +228,7 @@ function ModelSelect({ value, onChange, models, id }) {
 }
 
 function FieldControl({ field, value, onChange, schema, values, id }) {
-  if (!schema && ['column', 'columns', 'mapping'].includes(field.widget)) {
+  if (!schema && ['column', 'columns', 'mapping', 'dataset'].includes(field.widget)) {
     return <p className="manual-hint">Columns appear once a dataset is loaded.</p>
   }
   switch (field.widget) {
@@ -179,6 +250,10 @@ function FieldControl({ field, value, onChange, schema, values, id }) {
       return <ColumnPicker field={field} value={value} onChange={onChange} choices={columnChoices(field, schema, values)} />
     case 'mapping':
       return <MappingInput value={value} onChange={onChange} choices={columnChoices(field, schema)} />
+    case 'value_mapping':
+      return <MappingInput value={value} onChange={onChange} choices={[]} freeKeys />
+    case 'dataset':
+      return <DatasetSelect value={value} onChange={onChange} schema={schema} id={id} />
     case 'model':
       return <ModelSelect value={value} onChange={onChange} models={schema?.models} id={id} />
     case 'int_list':
@@ -213,7 +288,7 @@ function FieldControl({ field, value, onChange, schema, values, id }) {
 
 function Field({ tool, field, value, values, onChange, schema, error }) {
   const id = `manual-${tool.name}-${field.name}`
-  const wide = ['columns', 'mapping', 'code'].includes(field.widget)
+  const wide = ['columns', 'mapping', 'value_mapping', 'code'].includes(field.widget)
   const hint = rangeHint(field)
   return (
     <div className={`manual-field${wide ? ' wide' : ''}`}>

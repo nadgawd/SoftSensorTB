@@ -37,7 +37,10 @@ _CONCEPT_TERMS = (
     r"pls|pca|pcr|ols|mlr|knn|ridge|lasso|rfe|smote|vif|r2|rmse|mae|"
     r"soft[\s-]?sensors?|regression|collinearity|multi\w*|"
     r"overfitting|underfitting|normali[sz]ation|standardi[sz]ation|"
-    r"cross[\s-]?validation|dimensionality\s+reduction|feature\s+engineering"
+    r"cross[\s-]?validation|dimensionality\s+reduction|feature\s+engineering|"
+    r"anova|t[\s-]?tests?|chi[\s-]?squared?(?:\s+tests?)?|shap(?:\s+values?)?|tf[\s-]?idf|"
+    r"stationarity|bootstrap\w*|learning\s+curves?|roc(?:\s+curves?)?|auc|"
+    r"(?:holdout|walk[\s-]forward)\s+validation|t[\s-]?sne|umap|adasyn|kurtosis|skewness"
 )
 
 # Discourse lead-ins, skipped so they cannot push a theory question past the
@@ -94,6 +97,13 @@ _ACTION_RE = re.compile(
     r"cast\w*|convert\w*|pars\w*|datetime|strip\w*|trim\w*|lowercase|uppercase|"
     r"clip\w*|cap|capp\w*|winsori[sz]\w*|filter\w*|kbest|select[\s_-]?k[\s_-]?best|"
     r"split\w*|stratif\w*|k[\s-]?fold\w*|folds?|loocv|leave[\s-]one[\s-]out|"
+    r"group[\s_-]?by|groupby|pivot\w*|crosstab\w*|aggregat\w*|nunique|skew\w*|kurtosis|quantiles?|"
+    r"t[\s-]?test\w*|anova|chi[\s-]?squared?|shapiro|kolmogorov|adf|dickey[\s-]fuller|stationar\w*|normality|"
+    r"sort\w*|melt|stack|unstack|reshape\w*|merge\w*|join\w*|concat\w*|combine|append|"
+    r"mask\w*|recode\w*|apply|cumsum|rank\w*|interpolat\w*|vectori[sz]\w*|tf[\s-]?idf|"
+    r"haversine|shap|permutation|smote|adasyn|oversampl\w*|undersampl\w*|ewm|expanding|shift|diff|"
+    r"roc|auc|precision[\s-]recall|learning[\s-]curve|kde|ecdf|q[\s-]?q|treemap|sunburst|sankey|"
+    r"dendrogram|hexbin|choropleth|acf|pacf|bootstrap\w*|holdout|walk[\s-]forward|"
     r"column\w*|row\w*|dataset|undo|revert|snapshot"
     r")\b",
     re.IGNORECASE,

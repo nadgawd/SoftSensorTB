@@ -106,6 +106,10 @@ def render_dataset_context(ctx: Optional[DatasetContext]) -> str:
                 f"  - {m['model_id']}: {m.get('algorithm')} predicting {m.get('target_column')} "
                 f"from {m.get('feature_columns')} — R² {_fmt_metric(m.get('r2_score'))}, "
                 f"RMSE {_fmt_metric(m.get('rmse'))}"
+                + (
+                    f", validation R² {_fmt_metric(m['validation'].get('r2'))}"
+                    if isinstance(m.get("validation"), dict) else ""
+                )
             )
     else:
         lines.append("TRAINED MODELS: none yet on this lineage.")
@@ -141,6 +145,12 @@ def render_ui_state(ui: dict[str, Any]) -> str:
             lines.append(
                 f"  its cross-validation: {cv.get('strategy')} over {cv.get('n_splits')} fold(s) — "
                 f"R² {_fmt_metric(cv.get('r2'))}, RMSE {_fmt_metric(cv.get('rmse'))}"
+            )
+        validation = metrics.get("validation") if isinstance(metrics.get("validation"), dict) else None
+        if validation:
+            lines.append(
+                f"  its validation set ({validation.get('n_rows')} rows): "
+                f"R² {_fmt_metric(validation.get('r2'))}, RMSE {_fmt_metric(validation.get('rmse'))}"
             )
     if ui.get("activePlot"):
         lines.append(f"  plot on canvas: {ui['activePlot']}")

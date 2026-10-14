@@ -83,11 +83,13 @@ export async function postChat({ message, history, datasetVersionId, stepHint, u
   }
 }
 
-export async function uploadDataset(file) {
+/** `keepVersionId`: the open dataset, which must survive the per-user dataset limit (uploading a file to combine with it). */
+export async function uploadDataset(file, { keepVersionId } = {}) {
   const form = new FormData()
   form.append('file', file)
   const { data } = await api.post('/datasets/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    params: keepVersionId ? { keep_version_id: keepVersionId } : undefined,
   })
   return data
 }

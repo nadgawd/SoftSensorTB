@@ -90,8 +90,18 @@ def max_datasets_per_user() -> int:
         return default
 
 
-async def evict_old_datasets(session: AsyncSession, user: User, keep: Optional[int] = None) -> int:
-    """Keep only the newest ``keep`` datasets of the user (before a new upload is added)."""
+async def evict_old_datasets(
+    session: AsyncSession,
+    user: User,
+    keep: Optional[int] = None,
+    protect: Optional[uuid.UUID] = None,
+) -> int:
+    """Keep only the newest ``keep`` datasets of the user (before a new upload is added).
+
+    ``protect`` (a dataset id, e.g. the one open in the workbench while a second
+    file is uploaded to combine with it) is never evicted; it takes one of the
+    ``keep`` places.
+    """
     keep = max_datasets_per_user() if keep is None else keep
     if keep <= 0:
         return 0
@@ -100,7 +110,11 @@ async def evict_old_datasets(session: AsyncSession, user: User, keep: Optional[i
             select(Dataset).where(Dataset.owner_id == user.id).order_by(Dataset.created_at.desc())
         )
     ).scalars().all()
-    stale = list(datasets[keep - 1 :])
+    if protect is not None and any(d.id == protect for d in datasets):
+        others = [d for d in datasets if d.id != protect]
+        stale = others[max(keep - 2, 0):]
+    else:
+        stale = list(datasets[keep - 1 :])
     await _delete_datasets(session, stale)
     return len(stale)
 

@@ -22,6 +22,8 @@ export function getSuggestions(step, ctx = {}) {
             hasTarget ? `How many missing values are in ${targetVariable}?` : 'Which column should be my target variable?',
             'Show the value counts of the text columns',
             'Generate a correlation heatmap to see broad relationships',
+            'Show the data quality alerts for every column',
+            'Show skew, kurtosis and quantiles of the numeric columns',
           ]
         : [
             'What format should my data be in for a soft sensor?',
@@ -40,6 +42,8 @@ export function getSuggestions(step, ctx = {}) {
             'Detect and remove multivariate anomalies using Isolation Forest',
             'Find and remove outliers using the IQR method',
             'Convert text columns that hold dates to datetime',
+            'Fill missing values by linear interpolation',
+            'Test every numeric column for normality (Shapiro-Wilk)',
           ]
         : ['What data quality checks should I run?']
 
@@ -52,6 +56,9 @@ export function getSuggestions(step, ctx = {}) {
             'Apply a log transform to heavily skewed columns',
             hasTarget ? `Plot a time series of ${targetVariable} vs index` : `Plot a time series of ${firstCol}`,
             hasTarget ? `Create a box plot of ${targetVariable} to check distributions` : `Show a violin plot of ${firstCol}`,
+            hasTarget ? `Is ${targetVariable} stationary? Run an ADF test` : 'Run an ADF stationarity test on the numeric columns',
+            hasTarget ? `Plot the autocorrelation (ACF) of ${targetVariable}` : `Plot the autocorrelation (ACF) of ${firstCol}`,
+            'Add an exponentially weighted mean (span 10) of the numeric columns',
           ]
         : ['What preprocessing steps are recommended before modeling?']
 
@@ -65,6 +72,7 @@ export function getSuggestions(step, ctx = {}) {
             'Drop highly collinear features (correlation > 0.95)',
             hasTarget ? `Use RFE (Recursive Feature Elimination) to pick the best 5 features for ${targetVariable}` : 'Select features using RFE',
             hasTarget ? `Keep the 5 best features for ${targetVariable} with SelectKBest` : 'Select the 5 best features with SelectKBest',
+            hasTarget ? `Keep the 5 features with the highest permutation importance for ${targetVariable}` : 'Rank features by permutation importance',
             'Generate a pair plot (scatter matrix) of the top features',
             numFeatures > 0
               ? `Show a scatter plot of features vs ${targetVariable}`
@@ -83,6 +91,7 @@ export function getSuggestions(step, ctx = {}) {
               : 'Train a Ridge regression model',
             hasModel ? 'Retrain using Lasso to force sparsity' : 'What is the difference between PLS and PCR?',
             hasModel ? 'Retrain with 5-fold cross-validation' : 'Train a PLS model with a chronological split and time-series cross-validation',
+            hasModel ? 'Retrain with a 20% validation set and repeated K-Fold' : 'Train a PLS model with walk-forward validation',
             hasModel ? 'Show the feature coefficients plot' : 'Train a k-NN model with 5 neighbors',
             hasModel
               ? 'Show the variable importance plot (VIP)'
@@ -99,6 +108,8 @@ export function getSuggestions(step, ctx = {}) {
             'Generate a residuals diagnostic plot',
             'Show the feature importance bar chart',
             'Show the signed regression coefficients plot',
+            'Show the learning curve of the model',
+            hasTarget ? `Show the ROC curve for ${targetVariable} above its median` : 'Show the ROC curve of the model',
             r2Score !== null && r2Score < 0.7
               ? 'How can I improve the model R² score?'
               : 'What are the next steps for deployment?',

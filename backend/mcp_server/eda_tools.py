@@ -32,6 +32,8 @@ from backend.services.lineage_service import (
     LineageService,
     build_parquet_path,
 )
+from backend.mcp_server.plots import EXTRA_PLOT_TYPES, build_extra_figure
+from backend.mcp_server.safe_expr import assert_safe_expression
 from backend.storage import get_storage
 
 # ---------------------------------------------------------------------------
@@ -48,6 +50,25 @@ class MissingStrategy(str, Enum):
     backward_fill = "backward_fill"
     knn = "knn"
     iterative = "iterative"
+    interpolate = "interpolate"
+
+
+class InterpolationMethod(str, Enum):
+    linear = "linear"
+    time = "time"
+    nearest = "nearest"
+    quadratic = "quadratic"
+    cubic = "cubic"
+    spline = "spline"
+    polynomial = "polynomial"
+    pchip = "pchip"
+    akima = "akima"
+
+
+class LimitDirection(str, Enum):
+    forward = "forward"
+    backward = "backward"
+    both = "both"
 
 
 class OutlierMethod(str, Enum):
@@ -69,15 +90,32 @@ class NormalizeStrategy(str, Enum):
     maxabs = "maxabs"
 
 
-class PlotType(str, Enum):
-    scatter = "scatter"
-    time_series = "time_series"
-    histogram = "histogram"
-    correlation_heatmap = "correlation_heatmap"
-    box_plot = "box_plot"
-    violin_plot = "violin_plot"
-    pair_plot = "pair_plot"
-    scatter_3d = "scatter_3d"
+PlotType = Enum(  # type: ignore[misc]
+    "PlotType",
+    {
+        name: name
+        for name in (
+            "scatter", "time_series", "histogram", "correlation_heatmap",
+            "box_plot", "violin_plot", "pair_plot", "scatter_3d", *EXTRA_PLOT_TYPES,
+        )
+    },
+    type=str,
+)
+
+
+class PlotAggregation(str, Enum):
+    count = "count"
+    sum = "sum"
+    mean = "mean"
+    median = "median"
+    min = "min"
+    max = "max"
+
+
+class LocationMode(str, Enum):
+    iso3 = "ISO-3"
+    country_names = "country names"
+    usa_states = "USA-states"
 
 
 class RunDuckDBQueryArgs(BaseModel):
@@ -115,7 +153,11 @@ class RemoveMissingDataArgs(BaseModel):
     )
     strategy: MissingStrategy = Field(
         ...,
-        description="Technique to handle missing data (e.g., drop_rows, knn, iterative).",
+        description=(
+            "Technique to handle missing data: drop_rows, fill_mean/median/mode, forward_fill, "
+            "backward_fill, knn (KNN imputer), iterative (MICE-style iterative imputer) or "
+            "interpolate (pandas interpolation along the row order)."
+        ),
     )
     columns: Optional[list[str]] = Field(
         default=None,
@@ -143,6 +185,27 @@ class RemoveMissingDataArgs(BaseModel):
         default=42,
         description="Random seed for the iterative strategy.",
     )
+    interpolation_method: InterpolationMethod = Field(
+        default=InterpolationMethod.linear,
+        description=(
+            "For interpolate: linear and the scipy methods (nearest, quadratic, cubic, spline, "
+            "polynomial, pchip, akima) treat rows as equally spaced; time uses the time_column timestamps."
+        ),
+    )
+    interpolation_order: int = Field(
+        default=3,
+        description="For interpolate with spline or polynomial: the order of the curve.",
+        ge=1,
+        le=5,
+    )
+    limit_direction: LimitDirection = Field(
+        default=LimitDirection.both,
+        description="For interpolate: fill gaps forward, backward or in both directions from known values.",
+    )
+    time_column: Optional[str] = Field(
+        default=None,
+        description="For interpolate with method time: the datetime column (rows must be in time order).",
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -153,6 +216,21 @@ class RemoveMissingDataArgs(BaseModel):
     @classmethod
     def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
         return _clean_optional_names(value)
+
+    @field_validator("time_column")
+    @classmethod
+    def _blank_time(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _time_needs_column(self) -> "RemoveMissingDataArgs":
+        if (
+            self.strategy == MissingStrategy.interpolate
+            and self.interpolation_method == InterpolationMethod.time
+            and not self.time_column
+        ):
+            raise ValueError("interpolation_method time needs time_column")
+        return self
 
 
 _DEFAULT_OUTLIER_THRESHOLDS = {
@@ -343,6 +421,11 @@ class ExecuteFormulaArgs(BaseModel):
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
 
+    @field_validator("formula")
+    @classmethod
+    def _safe_formula(cls, value: str) -> str:
+        return assert_safe_expression(value, kind="formula")
+
 
 class RenameColumnsArgs(BaseModel):
     """Arguments for renaming columns."""
@@ -384,15 +467,37 @@ class RollingAggFunc(str, Enum):
     median = "median"
 
 
+class WindowType(str, Enum):
+    rolling = "rolling"
+    expanding = "expanding"
+    ewm = "ewm"
+
+
+_EWM_FUNCS = {RollingAggFunc.mean, RollingAggFunc.std, RollingAggFunc.sum}
+
+
 class RollingAggregateArgs(BaseModel):
     """Arguments for computing rolling window aggregates."""
 
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
     columns: list[str] = Field(..., description="Numeric columns to compute rolling aggregates for.", min_length=1)
-    window: int = Field(..., description="Rolling window size (number of rows).", ge=2)
+    window_type: WindowType = Field(
+        WindowType.rolling,
+        description=(
+            "rolling: a fixed window of the last `window` rows (pandas rolling); expanding: every row "
+            "from the start up to the current one (expanding); ewm: exponentially weighted with the "
+            "given span (ewm; mean, std or sum only)."
+        ),
+    )
+    window: int = Field(5, description="For rolling: window size in rows.", ge=2)
+    span: Optional[float] = Field(
+        None,
+        description="For ewm: span of the exponential weights (decay alpha = 2 / (span + 1)); defaults to window.",
+        ge=1,
+    )
     agg_func: RollingAggFunc = Field(RollingAggFunc.mean, description="Aggregation function: mean, std, min, max, sum, or median.")
     min_periods: int = Field(1, description="Minimum number of observations required to produce a value.", ge=1)
-    center: bool = Field(False, description="If True, centre the window on each row instead of looking back only.")
+    center: bool = Field(False, description="For rolling: centre the window on each row instead of looking back only.")
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -405,9 +510,18 @@ class RollingAggregateArgs(BaseModel):
 
     @model_validator(mode="after")
     def _periods_fit_window(self) -> "RollingAggregateArgs":
-        if self.min_periods > self.window:
+        if self.window_type == WindowType.rolling and self.min_periods > self.window:
             raise ValueError("min_periods cannot be larger than window")
+        if self.window_type == WindowType.ewm and self.agg_func not in _EWM_FUNCS:
+            raise ValueError("ewm supports agg_func mean, std or sum")
         return self
+
+
+class LagOperation(str, Enum):
+    lag = "lag"
+    lead = "lead"
+    diff = "diff"
+    pct_change = "pct_change"
 
 
 class CreateLagFeaturesArgs(BaseModel):
@@ -416,6 +530,14 @@ class CreateLagFeaturesArgs(BaseModel):
     dataset_version_id: str = Field(..., description="UUID of the dataset version.", min_length=36, max_length=36)
     columns: list[str] = Field(..., description="Columns to create lag features for.", min_length=1)
     lag_periods: list[int] = Field(..., description="List of lag periods (positive integers, e.g. [1, 5, 10]).", min_length=1)
+    operation: LagOperation = Field(
+        LagOperation.lag,
+        description=(
+            "lag: the value n rows earlier (shift(n)); lead: the value n rows later (shift(-n)); "
+            "diff: change from n rows earlier (diff(n)); pct_change: relative change from n rows "
+            "earlier (numeric columns only for diff and pct_change)."
+        ),
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -545,28 +667,43 @@ class GenerateCustomPlotArgs(BaseModel):
     plot_type: PlotType = Field(
         ...,
         description=(
-            "Figure type: scatter, time_series, histogram, correlation_heatmap, "
-            "box_plot, violin_plot, pair_plot, or scatter_3d."
+            "Figure type. Basic: scatter, time_series, histogram, correlation_heatmap, box_plot, "
+            "violin_plot, pair_plot, scatter_3d. Distribution: kde, rug, ridgeline, ecdf, qq_plot. "
+            "Categorical: bar, count, swarm, strip, point (mean ± 95% CI), lollipop, pie, donut. "
+            "Multivariate: joint, hexbin, bubble, contour, histogram_2d, parallel_coordinates, "
+            "radviz, andrews_curves. Sequential: line, area, candlestick, waterfall, acf, pacf. "
+            "Relational: treemap, sunburst, sankey, network, dendrogram, chord. Geospatial: "
+            "choropleth, bubble_map, density_map (spatial heatmap). Clustering: silhouette (KMeans)."
         ),
     )
     x_column: Optional[str] = Field(
         None,
         description=(
-            "X-axis / primary column. Required for scatter, time_series and scatter_3d; "
-            "ignored for correlation_heatmap and pair_plot."
+            "X-axis / primary column: required for scatter, time_series, scatter_3d, joint, hexbin, "
+            "bubble, contour, histogram_2d; the categories for bar, count, point, lollipop, pie, "
+            "donut, waterfall (optional for swarm and strip); the order for line, area and "
+            "candlestick (row order when omitted)."
         ),
     )
     y_columns: list[str] = Field(
         default_factory=list,
         description=(
-            "Y-axis columns for scatter/time_series/box_plot/violin_plot; "
-            "columns for histogram when x_column is unused; "
-            "columns included in correlation_heatmap and pair_plot."
+            "Value columns: the y axis for scatter, time_series, line, area, joint, hexbin, bubble, "
+            "contour, histogram_2d, swarm, strip, point; the aggregated value for bar and lollipop "
+            "(omit to count rows) and the change for waterfall; the columns of histogram, box_plot, "
+            "violin_plot, kde, rug, ridgeline, ecdf, qq_plot, acf, pacf; the columns compared by "
+            "correlation_heatmap, pair_plot, parallel_coordinates, radviz, andrews_curves, "
+            "dendrogram, silhouette and the correlation network/chord; 4 columns (open, high, low, "
+            "close) or 1 column for candlestick."
         ),
     )
     color_column: Optional[str] = Field(
         None,
-        description="Optional column to color-code points in scatter and time_series plots.",
+        description=(
+            "Optional grouping / colour column (scatter, time_series, kde, ridgeline, ecdf, bar, "
+            "count, strip, point, joint, bubble, contour, parallel_coordinates, radviz, "
+            "andrews_curves, bubble_map)."
+        ),
     )
     trendline: bool = Field(
         False,
@@ -575,6 +712,49 @@ class GenerateCustomPlotArgs(BaseModel):
     z_column: Optional[str] = Field(
         None,
         description="Z-axis column for scatter_3d plots.",
+    )
+    value_column: Optional[str] = Field(
+        None,
+        description=(
+            "Numeric size / weight column: bubble size (bubble, bubble_map), slice or area size "
+            "(pie, donut, treemap, sunburst), flow (sankey, network, chord), value per location "
+            "(choropleth), cell value (histogram_2d) or weight (density_map). Omit to count rows."
+        ),
+    )
+    path_columns: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Category columns from outer to inner level for treemap, sunburst and sankey; the "
+            "source and target columns for network and chord (omit for a correlation network)."
+        ),
+    )
+    agg_func: PlotAggregation = Field(
+        PlotAggregation.mean,
+        description="How bar, lollipop, pie, donut, histogram_2d and choropleth combine values per category.",
+    )
+    lat_column: Optional[str] = Field(None, description="Latitude column (degrees) for bubble_map and density_map.")
+    lon_column: Optional[str] = Field(None, description="Longitude column (degrees) for bubble_map and density_map.")
+    location_column: Optional[str] = Field(
+        None,
+        description="For choropleth: column of country ISO-3 codes, country names or US state codes.",
+    )
+    location_mode: LocationMode = Field(
+        LocationMode.iso3,
+        description="For choropleth: what location_column holds (ISO-3, country names or USA-states).",
+    )
+    bins: int = Field(
+        30,
+        description="Grid size for hexbin, contour and histogram_2d; number of candles when candlestick summarises one column.",
+        ge=5,
+        le=200,
+    )
+    lags: int = Field(30, description="For acf and pacf: the largest lag shown.", ge=1, le=200)
+    n_clusters: int = Field(3, description="For silhouette: KMeans clusters.", ge=2, le=20)
+    threshold: float = Field(
+        0.5,
+        description="For network and chord without path_columns: smallest |correlation| drawn as a link.",
+        ge=0,
+        le=1,
     )
     max_points: int = Field(
         10000,
@@ -588,12 +768,14 @@ class GenerateCustomPlotArgs(BaseModel):
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
 
-    @field_validator("x_column", "color_column", "z_column")
+    @field_validator(
+        "x_column", "color_column", "z_column", "value_column", "lat_column", "lon_column", "location_column",
+    )
     @classmethod
     def _blank_is_none(cls, value: Optional[str]) -> Optional[str]:
         return value.strip() or None if isinstance(value, str) else value
 
-    @field_validator("y_columns")
+    @field_validator("y_columns", "path_columns")
     @classmethod
     def _clean_y(cls, value: list[str]) -> list[str]:
         return [c.strip() for c in value if c and c.strip()]
@@ -1026,14 +1208,16 @@ async def rename_columns(
 async def rolling_aggregate(
     dataset_version_id: str,
     columns: list[str],
-    window: int,
+    window: int = 5,
     agg_func: str = "mean",
     min_periods: int = 1,
     center: bool = False,
+    window_type: str = "rolling",
+    span: Optional[float] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    """Compute rolling window aggregates and add as new columns.
+    """Compute rolling, expanding or exponentially weighted aggregates as new columns.
 
     Returns:
         (new_version_id, summary_message)
@@ -1041,12 +1225,16 @@ async def rolling_aggregate(
     args = RollingAggregateArgs(
         dataset_version_id=dataset_version_id,
         columns=columns,
+        window_type=window_type,  # type: ignore[arg-type]
         window=window,
+        span=span,
         agg_func=agg_func,  # type: ignore[arg-type]
         min_periods=min_periods,
         center=center,
     )
     func = args.agg_func.value
+    kind = args.window_type
+    span_value = args.span if args.span is not None else float(args.window)
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
@@ -1056,24 +1244,39 @@ async def rolling_aggregate(
         result = df.copy()
         created: list[str] = []
         for col in args.columns:
-            new_col_name = f"{col}_rolling{args.window}_{func}"
-            roller = result[col].rolling(window=args.window, min_periods=args.min_periods, center=args.center)
+            if kind == WindowType.rolling:
+                new_col_name = f"{col}_rolling{args.window}_{func}"
+                roller = result[col].rolling(window=args.window, min_periods=args.min_periods, center=args.center)
+            elif kind == WindowType.expanding:
+                new_col_name = f"{col}_expanding_{func}"
+                roller = result[col].expanding(min_periods=args.min_periods)
+            else:
+                new_col_name = f"{col}_ewm{span_value:g}_{func}"
+                roller = result[col].ewm(span=span_value, min_periods=args.min_periods)
             result[new_col_name] = getattr(roller, func)()
             created.append(new_col_name)
 
+        parameters: dict[str, Any] = {
+            "columns": args.columns,
+            "window_type": kind.value,
+            "agg_func": func,
+            "min_periods": args.min_periods,
+        }
+        if kind == WindowType.rolling:
+            parameters.update(window=args.window, center=args.center)
+            described = f"rolling {func}(window={args.window})"
+        elif kind == WindowType.expanding:
+            described = f"expanding {func}"
+        else:
+            parameters["span"] = span_value
+            described = f"exponentially weighted {func}(span={span_value:g})"
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="rolling_aggregate",
-            parameters_used={
-                "columns": args.columns,
-                "window": args.window,
-                "agg_func": func,
-                "min_periods": args.min_periods,
-                "center": args.center,
-            },
-            summary_message=f"Created {len(created)} rolling {func}(window={args.window}) column(s): {', '.join(created)}",
+            parameters_used=parameters,
+            summary_message=f"Created {len(created)} {described} column(s): {', '.join(created)}",
         )
 
     if session is not None:
@@ -1086,10 +1289,11 @@ async def create_lag_features(
     dataset_version_id: str,
     columns: list[str],
     lag_periods: list[int],
+    operation: str = "lag",
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    """Create lagged versions of columns for time-series modeling.
+    """Create lag, lead, difference or percent-change columns for time-series modeling.
 
     Returns:
         (new_version_id, summary_message)
@@ -1098,28 +1302,47 @@ async def create_lag_features(
         dataset_version_id=dataset_version_id,
         columns=columns,
         lag_periods=lag_periods,
+        operation=operation,  # type: ignore[arg-type]
     )
+    op = args.operation
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
-        _assert_columns_exist(df, args.columns)
+        if op in (LagOperation.diff, LagOperation.pct_change):
+            _assert_numeric_columns(df, args.columns)
+        else:
+            _assert_columns_exist(df, args.columns)
 
         result = df.copy()
         created: list[str] = []
         for col in args.columns:
             for lag in args.lag_periods:
-                new_col_name = f"{col}_lag{lag}"
-                result[new_col_name] = result[col].shift(lag)
+                if op == LagOperation.lag:
+                    values = result[col].shift(lag)
+                elif op == LagOperation.lead:
+                    values = result[col].shift(-lag)
+                elif op == LagOperation.diff:
+                    values = result[col].diff(lag)
+                else:
+                    values = result[col].pct_change(lag, fill_method=None).replace([np.inf, -np.inf], np.nan)
+                new_col_name = f"{col}_{op.value}{lag}"
+                result[new_col_name] = values
                 created.append(new_col_name)
 
+        noun = {
+            LagOperation.lag: "lag feature",
+            LagOperation.lead: "lead feature",
+            LagOperation.diff: "difference",
+            LagOperation.pct_change: "percent-change",
+        }[op]
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
             action_performed="create_lag_features",
-            parameters_used={"columns": args.columns, "lag_periods": args.lag_periods},
-            summary_message=f"Created {len(created)} lag feature column(s) for lags {args.lag_periods}.",
+            parameters_used={"columns": args.columns, "lag_periods": args.lag_periods, "operation": op.value},
+            summary_message=f"Created {len(created)} {noun} column(s) for periods {args.lag_periods}: {', '.join(created)}.",
         )
 
     if session is not None:
@@ -1451,6 +1674,48 @@ async def get_column_statistics(
         return await _run(db)
 
 
+_ORDERED_INTERPOLATION = {InterpolationMethod.spline, InterpolationMethod.polynomial}
+_MIN_INTERPOLATION_POINTS = {
+    InterpolationMethod.nearest: 2,
+    InterpolationMethod.quadratic: 3,
+    InterpolationMethod.cubic: 4,
+    InterpolationMethod.pchip: 2,
+    InterpolationMethod.akima: 3,
+}
+
+
+def _interpolate(df: pd.DataFrame, columns: list[str], args: RemoveMissingDataArgs) -> pd.DataFrame:
+    method = args.interpolation_method
+    kwargs: dict[str, Any] = {"method": method.value, "limit_direction": args.limit_direction.value}
+    if method in _ORDERED_INTERPOLATION:
+        kwargs["order"] = args.interpolation_order
+    frame = df[columns].astype("float64")
+    if method == InterpolationMethod.time:
+        _assert_columns_exist(df, [args.time_column])
+        stamps = df[args.time_column]
+        if not pd.api.types.is_datetime64_any_dtype(stamps):
+            stamps = pd.to_datetime(stamps, errors="coerce", format="mixed")
+        if stamps.isna().any():
+            raise ValueError(f"time_column {args.time_column!r} has missing or unparseable timestamps")
+        if not stamps.is_monotonic_increasing:
+            raise ValueError(f"Rows must be in time order for time interpolation; sort by {args.time_column!r} first")
+        frame.index = pd.DatetimeIndex(stamps)
+    minimum = args.interpolation_order + 1 if method in _ORDERED_INTERPOLATION else _MIN_INTERPOLATION_POINTS.get(method, 2)
+    result = df.copy()
+    for col in columns:
+        known = int(frame[col].notna().sum())
+        if not frame[col].isna().any():
+            continue
+        if known < minimum:
+            raise ValueError(f"{method.value} interpolation needs at least {minimum} known values; {col!r} has {known}")
+        try:
+            filled = frame[col].interpolate(**kwargs)
+        except ValueError as exc:
+            raise ValueError(f"{method.value} interpolation failed on {col!r}: {exc}") from exc
+        result[col] = filled.to_numpy()
+    return result
+
+
 async def remove_missing_data(
     dataset_version_id: str,
     strategy: str,
@@ -1459,6 +1724,10 @@ async def remove_missing_data(
     n_neighbors: int = 5,
     max_iter: int = 10,
     random_state: int = 42,
+    interpolation_method: str = "linear",
+    interpolation_order: int = 3,
+    limit_direction: str = "both",
+    time_column: Optional[str] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -1471,6 +1740,10 @@ async def remove_missing_data(
         n_neighbors=n_neighbors,
         max_iter=max_iter,
         random_state=random_state,
+        interpolation_method=interpolation_method,  # type: ignore[arg-type]
+        interpolation_order=interpolation_order,
+        limit_direction=limit_direction,  # type: ignore[arg-type]
+        time_column=time_column,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -1516,6 +1789,8 @@ async def remove_missing_data(
             else:
                 imputer = IterativeImputer(max_iter=args.max_iter, random_state=args.random_state)
             result[numeric_cols] = imputer.fit_transform(result[numeric_cols])
+        elif args.strategy == MissingStrategy.interpolate and numeric_cols:
+            result = _interpolate(result, numeric_cols, args)
 
         final_rows = len(result)
         rows_dropped = initial_rows - final_rows
@@ -1536,6 +1811,15 @@ async def remove_missing_data(
             parameters["n_neighbors"] = args.n_neighbors
         if args.strategy == MissingStrategy.iterative:
             parameters.update(max_iter=args.max_iter, random_state=args.random_state)
+        if args.strategy == MissingStrategy.interpolate:
+            method = args.interpolation_method
+            parameters.update(interpolation_method=method.value, limit_direction=args.limit_direction.value)
+            if method in _ORDERED_INTERPOLATION:
+                parameters["interpolation_order"] = args.interpolation_order
+            if method == InterpolationMethod.time:
+                parameters["time_column"] = args.time_column
+            if after_na:
+                summary += " Gaps outside the range of known values stay empty for this method."
         return await _persist_new_version(
             db,
             parent=parent,
@@ -1728,6 +2012,17 @@ async def generate_custom_plot(
     trendline: bool = False,
     z_column: Optional[str] = None,
     max_points: int = 10000,
+    value_column: Optional[str] = None,
+    path_columns: Optional[list[str]] = None,
+    agg_func: str = "mean",
+    lat_column: Optional[str] = None,
+    lon_column: Optional[str] = None,
+    location_column: Optional[str] = None,
+    location_mode: str = "ISO-3",
+    bins: int = 30,
+    lags: int = 30,
+    n_clusters: int = 3,
+    threshold: float = 0.5,
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
@@ -1735,8 +2030,10 @@ async def generate_custom_plot(
     Build a Plotly figure and return ``json.loads(fig.to_json())`` for
     ``react-plotly.js`` rendering. Does not mutate dataset lineage.
 
-    Supports: scatter, time_series, histogram, correlation_heatmap,
-              box_plot, violin_plot, pair_plot, scatter_3d.
+    Supports the basic types (scatter, time_series, histogram,
+    correlation_heatmap, box_plot, violin_plot, pair_plot, scatter_3d) and
+    the distribution, categorical, multivariate, sequential, relational,
+    geospatial and clustering types built in ``plots.py``.
     Large datasets are automatically subsampled to max_points rows.
     """
     args = GenerateCustomPlotArgs(
@@ -1748,15 +2045,27 @@ async def generate_custom_plot(
         trendline=trendline,
         z_column=z_column,
         max_points=max_points,
+        value_column=value_column,
+        path_columns=path_columns or [],
+        agg_func=agg_func,  # type: ignore[arg-type]
+        lat_column=lat_column,
+        lon_column=lon_column,
+        location_column=location_column,
+        location_mode=location_mode,  # type: ignore[arg-type]
+        bins=bins,
+        lags=lags,
+        n_clusters=n_clusters,
+        threshold=threshold,
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
         version = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(version)
-        # Subsample large datasets to prevent browser crashes
+        # Subsample large datasets to prevent browser crashes; order-dependent
+        # plots keep the sampled rows in their original order.
         if len(df) > args.max_points:
-            df = df.sample(n=args.max_points, random_state=42).reset_index(drop=True)
-        fig = _build_figure(df, args)
+            df = df.sample(n=args.max_points, random_state=42).sort_index().reset_index(drop=True)
+        fig = build_extra_figure(df, args) if args.plot_type.value in EXTRA_PLOT_TYPES else _build_figure(df, args)
         return json.loads(fig.to_json())
 
     if session is not None:
@@ -1955,6 +2264,8 @@ class TransformStrategy(str, Enum):
     box_cox = "box_cox"
     yeo_johnson = "yeo_johnson"
     sqrt = "sqrt"
+    reciprocal = "reciprocal"
+    square = "square"
     bin_equal_width = "bin_equal_width"
     bin_equal_freq = "bin_equal_freq"
     binarize = "binarize"
@@ -1964,7 +2275,10 @@ class TransformFeaturesArgs(BaseModel):
     columns: list[str] = Field(..., min_length=1, description="Numeric columns to transform; results are added as new columns.")
     strategy: TransformStrategy = Field(
         ...,
-        description="log, box_cox, yeo_johnson, sqrt, bin_equal_width, bin_equal_freq, or binarize.",
+        description=(
+            "log (log1p; values ≤ -1 become missing), box_cox, yeo_johnson, sqrt (negatives clipped to 0), reciprocal (1/x; "
+            "zero becomes missing), square (x²), bin_equal_width, bin_equal_freq, or binarize."
+        ),
     )
     n_bins: int = Field(5, description="Number of bins for bin_equal_width and bin_equal_freq.", ge=2, le=100)
     threshold: float = Field(0.0, description="Values above this become 1 for binarize, the rest 0.")
@@ -1988,7 +2302,13 @@ class EncodeStrategy(str, Enum):
     ordinal = "ordinal"
     frequency = "frequency"
     target = "target"
+    leave_one_out = "leave_one_out"
+    woe = "woe"
     binary = "binary"
+
+
+_TARGET_ENCODINGS = frozenset({EncodeStrategy.target, EncodeStrategy.leave_one_out, EncodeStrategy.woe})
+
 
 class EncodeCategoricalArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
@@ -1998,10 +2318,24 @@ class EncodeCategoricalArgs(BaseModel):
         description=(
             "one_hot (dummy columns), label (codes 0..n-1 in sorted order, like scikit-learn's "
             "LabelEncoder), ordinal (codes 1..n in sorted order or in category_order), frequency, "
-            "target (needs target_column), or binary."
+            "target (smoothed category mean of a numeric target_column), leave_one_out (category "
+            "mean of the target without the row's own value), woe (weight of evidence for a "
+            "two-class target_column), or binary."
         ),
     )
-    target_column: Optional[str] = Field(None, description="Numeric target column; required by the target strategy.")
+    target_column: Optional[str] = Field(
+        None,
+        description=(
+            "Target column for target, leave_one_out (numeric) and woe (exactly two classes)."
+        ),
+    )
+    positive_class: Optional[str] = Field(
+        None,
+        description=(
+            "For woe: the target value counted as the event. Omit to use 1/True, or else the "
+            "last of the two values in sorted order."
+        ),
+    )
     drop_first: bool = Field(True, description="For one_hot: drop the first category of each column to avoid redundant dummies.")
     smoothing: float = Field(
         1.0,
@@ -2036,11 +2370,16 @@ class EncodeCategoricalArgs(BaseModel):
             raise ValueError("category_order lists a category more than once")
         return cleaned or None
 
+    @field_validator("target_column", "positive_class")
+    @classmethod
+    def _blank_is_none(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() or None if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _target_needed(self) -> "EncodeCategoricalArgs":
-        if self.strategy == EncodeStrategy.target:
-            if not (self.target_column or "").strip():
-                raise ValueError("The target strategy needs target_column")
+        if self.strategy in _TARGET_ENCODINGS:
+            if not self.target_column:
+                raise ValueError(f"The {self.strategy.value} strategy needs target_column")
             if self.target_column in self.columns:
                 raise ValueError("target_column cannot also be one of the columns to encode")
         return self
@@ -2048,14 +2387,42 @@ class EncodeCategoricalArgs(BaseModel):
 class ReduceDimensionsStrategy(str, Enum):
     pca = "pca"
     variance_threshold = "variance_threshold"
+    truncated_svd = "truncated_svd"
+    lda = "lda"
+    tsne = "tsne"
+    autoencoder = "autoencoder"
+
+
+_COMPONENT_PREFIX = {
+    ReduceDimensionsStrategy.truncated_svd: "svd",
+    ReduceDimensionsStrategy.lda: "lda",
+    ReduceDimensionsStrategy.tsne: "tsne",
+    ReduceDimensionsStrategy.autoencoder: "ae",
+}
+_MAX_TSNE_ROWS = 5000
+
 
 class ReduceDimensionsArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
     columns: list[str] = Field(..., min_length=1, description="Numeric columns to reduce.")
-    strategy: ReduceDimensionsStrategy = Field(..., description="pca or variance_threshold.")
-    n_components: int = Field(2, description="Number of principal components to keep (pca).", ge=1)
-    keep_original: bool = Field(False, description="For pca: keep the original columns next to the components.")
+    strategy: ReduceDimensionsStrategy = Field(
+        ...,
+        description=(
+            "pca (principal components), variance_threshold (drop near-constant columns), "
+            "truncated_svd (SVD without centring), lda (linear discriminant analysis; supervised, "
+            "needs a class target_column), tsne (t-SNE embedding for visualisation, at most "
+            f"{_MAX_TSNE_ROWS} rows, 1–3 components) or autoencoder (bottleneck of a small neural "
+            "network trained to reconstruct the columns)."
+        ),
+    )
+    n_components: int = Field(2, description="Number of components to keep (every strategy except variance_threshold).", ge=1)
+    keep_original: bool = Field(False, description="Keep the original columns next to the components.")
     threshold: float = Field(0.0, description="Drop columns whose variance is not above this (variance_threshold).", ge=0)
+    target_column: Optional[str] = Field(None, description="For lda: the class label column the components separate.")
+    perplexity: float = Field(30.0, description="For tsne: roughly the number of neighbours each point attends to.", ge=2, le=100)
+    hidden_units: int = Field(16, description="For autoencoder: neurons in the layers around the bottleneck.", ge=2, le=256)
+    max_iter: int = Field(500, description="For tsne and autoencoder: training iterations.", ge=250, le=5000)
+    random_state: int = Field(42, description="Random seed for truncated_svd, tsne and autoencoder.")
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -2067,18 +2434,118 @@ class ReduceDimensionsArgs(BaseModel):
     def _non_empty_names(cls, value: list[str]) -> list[str]:
         return _clean_names(value)
 
+    @field_validator("target_column", mode="before")
+    @classmethod
+    def _blank_target(cls, value: Any) -> Any:
+        return value.strip() or None if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _strategy_needs(self) -> "ReduceDimensionsArgs":
+        if self.strategy == ReduceDimensionsStrategy.lda:
+            if not self.target_column:
+                raise ValueError("lda needs target_column (the class labels)")
+            if self.target_column in self.columns:
+                raise ValueError("target_column cannot also be one of the columns to reduce")
+        if self.strategy == ReduceDimensionsStrategy.tsne and self.n_components > 3:
+            raise ValueError("tsne supports at most 3 components")
+        return self
+
+
+def _embed(X: np.ndarray, labels: Optional[pd.Series], args: ReduceDimensionsArgs) -> tuple[np.ndarray, str]:
+    """Components of the complete rows for the SVD, LDA, t-SNE and autoencoder strategies, and a summary detail."""
+    from sklearn.preprocessing import StandardScaler as _Scaler
+
+    k = args.n_components
+    strategy = args.strategy
+    if strategy == ReduceDimensionsStrategy.truncated_svd:
+        from sklearn.decomposition import TruncatedSVD
+
+        if k >= X.shape[1]:
+            raise ValueError(f"truncated_svd needs n_components below the number of columns ({X.shape[1]})")
+        svd = TruncatedSVD(n_components=k, random_state=args.random_state)
+        out = svd.fit_transform(X)
+        return out, f"explaining {100 * float(np.sum(svd.explained_variance_ratio_)):.1f}% of the variance"
+    if strategy == ReduceDimensionsStrategy.lda:
+        from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+        n_classes = int(labels.nunique())
+        if n_classes < 2:
+            raise ValueError("lda needs at least 2 classes in target_column")
+        if n_classes > _MAX_BALANCE_CLASSES:
+            raise ValueError(f"target_column has {n_classes} distinct values; lda needs class labels, not a continuous target")
+        limit = min(n_classes - 1, X.shape[1])
+        if k > limit:
+            raise ValueError(f"lda gives at most min(classes - 1, columns) = {limit} component(s)")
+        lda = LinearDiscriminantAnalysis(n_components=k)
+        out = lda.fit_transform(_Scaler().fit_transform(X), labels.astype(str).to_numpy())
+        return out, f"separating {n_classes} classes ({100 * float(np.sum(lda.explained_variance_ratio_)):.1f}% of the between-class variance)"
+    if strategy == ReduceDimensionsStrategy.tsne:
+        from sklearn.manifold import TSNE
+
+        if len(X) > _MAX_TSNE_ROWS:
+            raise ValueError(f"tsne is limited to {_MAX_TSNE_ROWS} complete rows; this data has {len(X)}")
+        if len(X) <= args.perplexity:
+            raise ValueError(f"perplexity ({args.perplexity:g}) must be below the number of complete rows ({len(X)})")
+        tsne = TSNE(
+            n_components=k, perplexity=args.perplexity, max_iter=args.max_iter,
+            init="pca", random_state=args.random_state,
+        )
+        out = tsne.fit_transform(_Scaler().fit_transform(X))
+        return out, f"t-SNE with perplexity {args.perplexity:g} (KL divergence {float(tsne.kl_divergence_):.3f})"
+    import warnings
+
+    from sklearn.exceptions import ConvergenceWarning
+    from sklearn.neural_network import MLPRegressor
+
+    if k >= X.shape[1]:
+        raise ValueError(f"autoencoder needs n_components below the number of columns ({X.shape[1]})")
+    scaled = _Scaler().fit_transform(X)
+    net = MLPRegressor(
+        hidden_layer_sizes=(args.hidden_units, k, args.hidden_units),
+        activation="tanh", max_iter=args.max_iter, random_state=args.random_state,
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        net.fit(scaled, scaled)
+    hidden = np.tanh(scaled @ net.coefs_[0] + net.intercepts_[0])
+    out = np.tanh(hidden @ net.coefs_[1] + net.intercepts_[1])
+    r2 = float(net.score(scaled, scaled))
+    return out, f"reconstructing the standardised columns with R² {r2:.3f}"
+
 class FeatureEngineerStrategy(str, Enum):
     polynomial = "polynomial"
     datetime = "datetime"
     cyclical = "cyclical"
     ratio = "ratio"
+    pairwise = "pairwise"
+
+
+class PairOperation(str, Enum):
+    product = "product"
+    sum = "sum"
+    difference = "difference"
+    ratio = "ratio"
+
+
+_PAIR_SYMBOLS = {
+    PairOperation.product: "x",
+    PairOperation.sum: "plus",
+    PairOperation.difference: "minus",
+    PairOperation.ratio: "div",
+}
+_MAX_PAIRWISE_COLUMNS = 20
+
 
 class FeatureEngineerArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
     columns: list[str] = Field(..., min_length=1, description="Columns to build features from (exactly 2 for ratio).")
     strategy: FeatureEngineerStrategy = Field(
         ...,
-        description="polynomial, datetime (year/month/day/hour/weekday parts), cyclical (sin/cos), or ratio (first / second column).",
+        description=(
+            "polynomial, datetime (year, quarter, month, week, day, day of year, hour, day of week, "
+            "is_weekend and, with holiday_country, is_holiday), cyclical (sin/cos), ratio (first / "
+            "second column), or pairwise (feature interactions: pair_operation on every pair of columns)."
+        ),
     )
     degree: int = Field(2, description="Polynomial degree.", ge=2, le=5)
     interaction_only: bool = Field(False, description="For polynomial: only products of different columns, no powers.")
@@ -2087,6 +2554,18 @@ class FeatureEngineerArgs(BaseModel):
         description="For cyclical: length of one cycle (e.g. 24 for hours). Omit to use each column's maximum.",
         gt=0,
     )
+    pair_operation: PairOperation = Field(
+        PairOperation.product,
+        description="For pairwise: product (a_x_b), sum (a_plus_b), difference (a_minus_b) or ratio (a_div_b) of each pair.",
+    )
+    holiday_country: Optional[str] = Field(
+        None,
+        description=(
+            "For datetime: ISO country code (e.g. IN, US, GB, DE) whose public holidays set an "
+            "<col>_is_holiday column. Omit to skip it."
+        ),
+        max_length=3,
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -2098,11 +2577,52 @@ class FeatureEngineerArgs(BaseModel):
     def _non_empty_names(cls, value: list[str]) -> list[str]:
         return _clean_names(value)
 
+    @field_validator("holiday_country", mode="before")
+    @classmethod
+    def _country_code(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        code = value.strip().upper()
+        if not code:
+            return None
+        import holidays
+
+        if code not in holidays.list_supported_countries():
+            raise ValueError(f"holiday_country {code!r} is not a supported ISO country code")
+        return code
+
     @model_validator(mode="after")
     def _ratio_pair(self) -> "FeatureEngineerArgs":
         if self.strategy == FeatureEngineerStrategy.ratio and len(self.columns) != 2:
             raise ValueError("The ratio strategy needs exactly 2 columns (numerator, denominator)")
+        if self.strategy == FeatureEngineerStrategy.pairwise:
+            if len(self.columns) < 2:
+                raise ValueError("The pairwise strategy needs at least 2 columns")
+            if len(self.columns) > _MAX_PAIRWISE_COLUMNS:
+                raise ValueError(f"The pairwise strategy takes at most {_MAX_PAIRWISE_COLUMNS} columns")
         return self
+
+
+def _datetime_parts(stamps: pd.Series, col: str, country: Optional[str]) -> dict[str, pd.Series]:
+    parts = {
+        f"{col}_year": stamps.dt.year,
+        f"{col}_quarter": stamps.dt.quarter,
+        f"{col}_month": stamps.dt.month,
+        f"{col}_week": stamps.dt.isocalendar().week.astype("Float64").astype(float),
+        f"{col}_day": stamps.dt.day,
+        f"{col}_dayofyear": stamps.dt.dayofyear,
+        f"{col}_hour": stamps.dt.hour,
+        f"{col}_dayofweek": stamps.dt.dayofweek,
+        f"{col}_is_weekend": (stamps.dt.dayofweek >= 5).astype(float).where(stamps.notna()),
+    }
+    if country:
+        import holidays
+
+        years = sorted({int(y) for y in stamps.dt.year.dropna().unique()})
+        calendar = holidays.country_holidays(country, years=years) if years else {}
+        dates = stamps.dt.date
+        parts[f"{col}_is_holiday"] = dates.map(lambda d: float(d in calendar) if pd.notna(d) else np.nan)
+    return parts
 
 
 async def transform_features(
@@ -2135,12 +2655,21 @@ async def transform_features(
         df = _load_dataframe(parent)
         _assert_numeric_columns(df, args.columns)
         result = df.copy()
+        out_of_domain: dict[str, int] = {}
 
         for col in args.columns:
             if args.strategy == TransformStrategy.log:
-                result[f"{col}_log"] = np.log1p(result[col])
+                val = result[col].astype(float)
+                invalid = val <= -1
+                if invalid.any():
+                    out_of_domain[col] = int(invalid.sum())
+                result[f"{col}_log"] = np.log1p(val.mask(invalid))
             elif args.strategy == TransformStrategy.sqrt:
                 result[f"{col}_sqrt"] = np.sqrt(result[col].clip(lower=0))
+            elif args.strategy == TransformStrategy.reciprocal:
+                result[f"{col}_reciprocal"] = 1.0 / result[col].astype(float).replace(0, np.nan)
+            elif args.strategy == TransformStrategy.square:
+                result[f"{col}_square"] = result[col].astype(float) ** 2
             elif args.strategy == TransformStrategy.box_cox:
                 val = result[col]
                 if (val <= 0).any():
@@ -2157,6 +2686,9 @@ async def transform_features(
                 result[f"{col}_binned"] = kb.fit_transform(result[[col]])
 
         summary = f"Applied {args.strategy.value} transformation to {len(args.columns)} column(s)."
+        if out_of_domain:
+            listed = ", ".join(f"{c} ({n})" for c, n in out_of_domain.items())
+            summary += f" Values ≤ -1 have no log1p and became missing: {listed}."
         return await _persist_new_version(
             db,
             parent=parent,
@@ -2221,6 +2753,61 @@ def _target_encode(series: pd.Series, y: pd.Series, smoothing: float) -> pd.Seri
     return series.map(encoded).astype(float).fillna(overall)
 
 
+def _leave_one_out_encode(series: pd.Series, y: pd.Series) -> pd.Series:
+    """Mean of ``y`` over the other rows of the same category.
+
+    A row whose category has no other labelled row, or whose category is
+    missing, gets the overall mean; a row with a missing target gets the plain
+    category mean.
+    """
+    overall = float(y.mean())
+    labelled = y.notna()
+    sums = y.where(labelled, 0.0).groupby(series).transform("sum")
+    counts = labelled.astype(float).groupby(series).transform("sum")
+    own = y.where(labelled, 0.0)
+    others = counts - labelled.astype(float)
+    encoded = (sums - own) / others.replace(0, np.nan)
+    return encoded.where(series.notna()).astype(float).fillna(overall)
+
+
+def _binary_target(y: pd.Series, positive_class: Optional[str]) -> tuple[pd.Series, str]:
+    """1 where the target is the event class, 0 for the other class, missing stays missing."""
+    values = list(pd.unique(y.dropna()))
+    if len(values) != 2:
+        raise ValueError(f"woe needs a target with exactly two classes; '{y.name}' has {len(values)}")
+    as_text = {str(v): v for v in values}
+    if positive_class is not None:
+        event = as_text.get(positive_class)
+        if event is None:
+            number = _num(positive_class)
+            event = next((v for v in values if _is_number(v) and number is not None and float(v) == number), None)
+        if event is None:
+            raise ValueError(f"positive_class {positive_class!r} is not one of the target values {sorted(as_text)}")
+    elif set(values) <= {0, 1}:
+        event = 1
+    else:
+        event = as_text[sorted(as_text)[-1]]
+    return y.map(lambda v: np.nan if pd.isna(v) else float(v == event)), str(event)
+
+
+def _woe_encode(series: pd.Series, event: pd.Series, regularization: float = 1.0) -> tuple[pd.Series, float]:
+    """Weight of evidence ln(P(category | event) / P(category | non-event)) and information value.
+
+    Laplace regularization keeps categories with no events (or no non-events)
+    finite; missing or unseen categories get 0, the neutral value.
+    """
+    labelled = event.notna()
+    cats, y = series[labelled], event[labelled]
+    total_events = float(y.sum())
+    total_non = float(len(y) - total_events)
+    stats = y.groupby(cats).agg(["sum", "count"])
+    share_event = (stats["sum"] + regularization) / (total_events + 2 * regularization)
+    share_non = (stats["count"] - stats["sum"] + regularization) / (total_non + 2 * regularization)
+    woe = np.log(share_event / share_non)
+    iv = float(((share_event - share_non) * woe).sum())
+    return series.map(woe).astype(float).fillna(0.0), iv
+
+
 async def encode_categorical(
     dataset_version_id: str,
     columns: list[str],
@@ -2229,6 +2816,7 @@ async def encode_categorical(
     drop_first: bool = True,
     smoothing: float = 1.0,
     category_order: Optional[list[str]] = None,
+    positive_class: Optional[str] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -2240,15 +2828,20 @@ async def encode_categorical(
         drop_first=drop_first,
         smoothing=smoothing,
         category_order=category_order,
+        positive_class=positive_class,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
         _assert_columns_exist(df, args.columns)
-        if args.strategy == EncodeStrategy.target and args.target_column:
+        if args.strategy in (EncodeStrategy.target, EncodeStrategy.leave_one_out):
             _assert_numeric_columns(df, [args.target_column])
-        
+        elif args.strategy == EncodeStrategy.woe:
+            _assert_columns_exist(df, [args.target_column])
+        information_values: dict[str, float] = {}
+        event_label: Optional[str] = None
+
         result = df.copy()
 
         if args.strategy == EncodeStrategy.one_hot:
@@ -2273,12 +2866,28 @@ async def encode_categorical(
             y = result[args.target_column].astype(float)
             for col in args.columns:
                 result[col] = _target_encode(result[col], y, args.smoothing)
+        elif args.strategy == EncodeStrategy.leave_one_out:
+            y = result[args.target_column].astype(float)
+            if y.notna().sum() < 2:
+                raise ValueError("leave_one_out needs at least 2 rows with a target value")
+            for col in args.columns:
+                result[col] = _leave_one_out_encode(result[col], y)
+        elif args.strategy == EncodeStrategy.woe:
+            event, event_label = _binary_target(result[args.target_column], args.positive_class)
+            for col in args.columns:
+                result[col], information_values[col] = _woe_encode(result[col], event)
 
         added = [c for c in result.columns if c not in df.columns]
         summary = (
             f"Encoded {len(args.columns)} column(s) using {args.strategy.value}"
             + (f"; added {len(added)} column(s)." if added else " in place.")
         )
+        if information_values:
+            summary += (
+                f" Event class: {event_label}. Information value: "
+                + ", ".join(f"{c} {v:.3f}" for c, v in information_values.items())
+                + " (below 0.02 not predictive, 0.1–0.3 medium, above 0.3 strong)."
+            )
         return await _persist_new_version(
             db,
             parent=parent,
@@ -2292,6 +2901,11 @@ async def encode_categorical(
                    if args.strategy == EncodeStrategy.ordinal and args.category_order else {}),
                 **({"target_column": args.target_column, "smoothing": args.smoothing}
                    if args.strategy == EncodeStrategy.target else {}),
+                **({"target_column": args.target_column}
+                   if args.strategy == EncodeStrategy.leave_one_out else {}),
+                **({"target_column": args.target_column, "positive_class": event_label,
+                    "information_value": information_values}
+                   if args.strategy == EncodeStrategy.woe else {}),
             },
             summary_message=summary,
         )
@@ -2309,6 +2923,11 @@ async def reduce_dimensions(
     n_components: Optional[int] = None,
     threshold: Optional[float] = None,
     keep_original: bool = False,
+    target_column: Optional[str] = None,
+    perplexity: float = 30.0,
+    hidden_units: int = 16,
+    max_iter: int = 500,
+    random_state: int = 42,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -2323,6 +2942,11 @@ async def reduce_dimensions(
         **({"n_components": n_components} if n_components is not None else {}),
         **({"threshold": threshold} if threshold is not None else {}),
         keep_original=keep_original,
+        target_column=target_column,
+        perplexity=perplexity,
+        hidden_units=hidden_units,
+        max_iter=max_iter,
+        random_state=random_state,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -2331,7 +2955,44 @@ async def reduce_dimensions(
         _assert_numeric_columns(df, args.columns)
         result = df.copy()
 
-        if args.strategy == ReduceDimensionsStrategy.pca:
+        if args.strategy in _COMPONENT_PREFIX:
+            needed = list(args.columns)
+            if args.strategy == ReduceDimensionsStrategy.lda:
+                _assert_columns_exist(df, [args.target_column])
+                needed.append(args.target_column)
+            complete = df[needed].dropna()
+            if len(complete) < 5:
+                raise ValueError(f"Need at least 5 rows without missing values in these columns; found {len(complete)}")
+            labels = complete[args.target_column] if args.strategy == ReduceDimensionsStrategy.lda else None
+            comps, detail = _embed(complete[args.columns].astype(float).to_numpy(), labels, args)
+            prefix = _COMPONENT_PREFIX[args.strategy]
+            for i in range(comps.shape[1]):
+                column = pd.Series(np.nan, index=df.index)
+                column.loc[complete.index] = comps[:, i]
+                result[f"{prefix}_{i}"] = column
+            if not args.keep_original:
+                result = result.drop(columns=args.columns)
+            skipped = len(df) - len(complete)
+            summary = (
+                f"{args.strategy.value} reduced {len(args.columns)} column(s) to {comps.shape[1]} component(s) "
+                f"({prefix}_0…{prefix}_{comps.shape[1] - 1}), {detail}."
+                + (f" {skipped} row(s) with missing values have empty components." if skipped else "")
+            )
+            parameters: dict[str, Any] = {
+                "strategy": args.strategy.value,
+                "columns": args.columns,
+                "n_components": args.n_components,
+                "keep_original": args.keep_original,
+            }
+            if args.strategy == ReduceDimensionsStrategy.lda:
+                parameters["target_column"] = args.target_column
+            if args.strategy == ReduceDimensionsStrategy.tsne:
+                parameters.update(perplexity=args.perplexity, max_iter=args.max_iter, random_state=args.random_state)
+            if args.strategy == ReduceDimensionsStrategy.autoencoder:
+                parameters.update(hidden_units=args.hidden_units, max_iter=args.max_iter, random_state=args.random_state)
+            if args.strategy == ReduceDimensionsStrategy.truncated_svd:
+                parameters["random_state"] = args.random_state
+        elif args.strategy == ReduceDimensionsStrategy.pca:
             limit = min(len(args.columns), len(df))
             if args.n_components > limit:
                 raise ValueError(f"n_components={args.n_components} is more than the {limit} the selected columns allow")
@@ -2346,7 +3007,7 @@ async def reduce_dimensions(
                 f"PCA reduced {len(args.columns)} column(s) to {args.n_components} component(s) "
                 f"explaining {explained:.1f}% of their variance."
             )
-            parameters: dict[str, Any] = {
+            parameters = {
                 "strategy": args.strategy.value,
                 "columns": args.columns,
                 "n_components": args.n_components,
@@ -2391,6 +3052,8 @@ async def feature_engineer(
     degree: Optional[int] = 2,
     interaction_only: bool = False,
     period: Optional[float] = None,
+    pair_operation: str = "product",
+    holiday_country: Optional[str] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
@@ -2402,6 +3065,8 @@ async def feature_engineer(
         degree=degree if degree is not None else 2,
         interaction_only=interaction_only,
         period=period,
+        pair_operation=pair_operation,  # type: ignore[arg-type]
+        holiday_country=holiday_country,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -2423,13 +3088,35 @@ async def feature_engineer(
                     result[name] = poly_features[:, i]
 
         elif args.strategy == FeatureEngineerStrategy.datetime:
+            if args.holiday_country:
+                parameters["holiday_country"] = args.holiday_country
             for col in args.columns:
-                result[col] = pd.to_datetime(result[col], errors='coerce')
-                result[f"{col}_year"] = result[col].dt.year
-                result[f"{col}_month"] = result[col].dt.month
-                result[f"{col}_day"] = result[col].dt.day
-                result[f"{col}_hour"] = result[col].dt.hour
-                result[f"{col}_dayofweek"] = result[col].dt.dayofweek
+                stamps = result[col]
+                if not pd.api.types.is_datetime64_any_dtype(stamps):
+                    stamps = (
+                        pd.to_datetime(stamps, errors="coerce")
+                        if _is_plain_numeric(stamps)
+                        else pd.to_datetime(stamps, errors="coerce", format="mixed")
+                    )
+                if stamps.notna().sum() == 0 and result[col].notna().any():
+                    raise ValueError(f"'{col}' has no values that parse as dates")
+                result[col] = stamps
+                for name, values in _datetime_parts(stamps, col, args.holiday_country).items():
+                    result[name] = values
+        elif args.strategy == FeatureEngineerStrategy.pairwise:
+            _assert_numeric_columns(df, args.columns)
+            op = args.pair_operation
+            parameters["pair_operation"] = op.value
+            for i, a in enumerate(args.columns):
+                for b in args.columns[i + 1:]:
+                    x, y = result[a].astype(float), result[b].astype(float)
+                    values = {
+                        PairOperation.product: lambda: x * y,
+                        PairOperation.sum: lambda: x + y,
+                        PairOperation.difference: lambda: x - y,
+                        PairOperation.ratio: lambda: x / y.replace(0, np.nan),
+                    }[op]()
+                    result[f"{a}_{_PAIR_SYMBOLS[op]}_{b}"] = values
         elif args.strategy == FeatureEngineerStrategy.cyclical:
             _assert_numeric_columns(df, args.columns)
             if args.period is not None:
@@ -2466,14 +3153,27 @@ async def feature_engineer(
 
 class BalanceDataStrategy(str, Enum):
     smote = "smote"
+    adasyn = "adasyn"
+    random_oversample = "random_oversample"
     random_undersample = "random_undersample"
+
+
+_SYNTHETIC_BALANCING = frozenset({BalanceDataStrategy.smote, BalanceDataStrategy.adasyn})
+
 
 class BalanceDataArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
     target_column: str = Field(..., min_length=1, description="Class label column to balance.")
-    strategy: BalanceDataStrategy = Field(..., description="smote (oversample minority classes) or random_undersample.")
+    strategy: BalanceDataStrategy = Field(
+        ...,
+        description=(
+            "smote (synthesise minority rows between neighbours), adasyn (like SMOTE but more "
+            "synthetic rows near minority rows surrounded by other classes), random_oversample "
+            "(repeat random minority rows) or random_undersample (drop random majority rows)."
+        ),
+    )
     random_state: int = Field(42, description="Random seed")
-    k_neighbors: int = Field(5, description="Neighbours SMOTE uses to synthesise new samples.", ge=1)
+    k_neighbors: int = Field(5, description="Neighbours SMOTE and ADASYN use to synthesise new samples.", ge=1)
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -2494,39 +3194,67 @@ def _smote(
     counts: pd.Series,
     k_neighbors: int,
     rng: np.random.Generator,
+    adaptive: bool = False,
 ) -> pd.DataFrame:
-    """Oversample every class up to the largest one with SMOTE.
+    """Oversample every class up to the largest one with SMOTE, or ADASYN when ``adaptive``.
 
     Each synthetic row lies between a minority row and one of its k nearest
     same-class neighbours in the numeric columns; other columns are copied
-    from the minority row.
+    from the minority row. ADASYN draws the minority rows in proportion to how
+    many of their k nearest neighbours belong to other classes, so the hard
+    border regions get the most synthetic rows (uniformly if none have any).
     """
     from sklearn.neighbors import NearestNeighbors
 
+    name = "ADASYN" if adaptive else "SMOTE"
     numeric = [c for c in df.columns if c != target and pd.api.types.is_numeric_dtype(df[c])]
     if not numeric:
-        raise ValueError("SMOTE needs at least one numeric feature column")
+        raise ValueError(f"{name} needs at least one numeric feature column")
     largest = int(counts.max())
     synthetic: list[pd.DataFrame] = []
+    labels = df[target].to_numpy()
+    around = None
+    if adaptive:
+        every = df[numeric].astype(float)
+        every = every.fillna(every.mean()).fillna(0).to_numpy()
+        around = NearestNeighbors(n_neighbors=k_neighbors + 1).fit(every).kneighbors(every, return_distance=False)[:, 1:]
     for label, size in counts.items():
         need = largest - int(size)
         if need == 0:
             continue
-        group = df[df[target] == label]
+        in_class = np.flatnonzero(labels == label)
+        group = df.iloc[in_class]
         if len(group) <= k_neighbors:
             raise ValueError(
-                f"Class {label!r} has {len(group)} rows; SMOTE needs more rows than "
-                f"k_neighbors ({k_neighbors}). Lower k_neighbors or use random_undersample."
+                f"Class {label!r} has {len(group)} rows; {name} needs more rows than "
+                f"k_neighbors ({k_neighbors}). Lower k_neighbors or use random_oversample."
             )
         X = group[numeric].astype(float)
         X = X.fillna(X.mean()).fillna(0).to_numpy()
         neighbours = NearestNeighbors(n_neighbors=k_neighbors + 1).fit(X).kneighbors(X, return_distance=False)[:, 1:]
-        base = rng.integers(0, len(group), need)
+        weights = None
+        if adaptive:
+            # Share of each row's k nearest neighbours (in the whole data) from another class.
+            hardness = (labels[around[in_class]] != label).mean(axis=1)
+            if hardness.sum() > 0:
+                weights = hardness / hardness.sum()
+        base = rng.choice(len(group), size=need, p=weights) if weights is not None else rng.integers(0, len(group), need)
         partner = neighbours[base, rng.integers(0, k_neighbors, need)]
         rows = group.iloc[base].copy()
         rows[numeric] = X[base] + rng.random((need, 1)) * (X[partner] - X[base])
         synthetic.append(rows)
     return pd.concat([df, *synthetic], ignore_index=True)
+
+
+def _random_oversample(df: pd.DataFrame, target: str, counts: pd.Series, rng: np.random.Generator) -> pd.DataFrame:
+    """Repeat randomly drawn rows of every smaller class until it matches the largest one."""
+    largest = int(counts.max())
+    extra = [
+        df[df[target] == label].iloc[rng.integers(0, int(size), largest - int(size))]
+        for label, size in counts.items()
+        if int(size) < largest
+    ]
+    return pd.concat([df, *extra], ignore_index=True)
 
 
 async def balance_data(
@@ -2561,8 +3289,13 @@ async def balance_data(
             )
 
         rng = np.random.default_rng(args.random_state)
-        if args.strategy == BalanceDataStrategy.smote:
-            result = _smote(labelled, args.target_column, counts, args.k_neighbors, rng)
+        if args.strategy in _SYNTHETIC_BALANCING:
+            result = _smote(
+                labelled, args.target_column, counts, args.k_neighbors, rng,
+                adaptive=args.strategy == BalanceDataStrategy.adasyn,
+            )
+        elif args.strategy == BalanceDataStrategy.random_oversample:
+            result = _random_oversample(labelled, args.target_column, counts, rng)
         else:
             result = (
                 labelled.groupby(args.target_column, group_keys=False)
@@ -2585,7 +3318,7 @@ async def balance_data(
                 "strategy": args.strategy.value,
                 "target_column": args.target_column,
                 "random_state": args.random_state,
-                **({"k_neighbors": args.k_neighbors} if args.strategy == BalanceDataStrategy.smote else {}),
+                **({"k_neighbors": args.k_neighbors} if args.strategy in _SYNTHETIC_BALANCING else {}),
             },
             summary_message=summary,
         )
@@ -2612,9 +3345,13 @@ class InspectView(str, Enum):
     missing = "missing"
     correlation = "correlation"
     profile = "profile"
+    nunique = "nunique"
+    distribution = "distribution"
+    alerts = "alerts"
 
 
 _MAX_INSPECT_ROWS = 50
+_DEFAULT_QUANTILES = (0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99)
 
 
 class InspectDataArgs(BaseModel):
@@ -2628,7 +3365,11 @@ class InspectDataArgs(BaseModel):
             "per column; missing: missing values per column (isnull, including text such as 'NA' or "
             "'?'); correlation: correlation matrix of the numeric columns (method); profile: a "
             "profiling report per column (type, missing, unique, zeros, mean, std, min, median, max, "
-            "skew, kurtosis, most frequent value)."
+            "skew, kurtosis, most frequent value); nunique: distinct values per column; "
+            "distribution: skew, kurtosis and the chosen quantiles of each numeric column; alerts: "
+            "an automated EDA check listing data-quality warnings (constant, ID-like and "
+            "high-cardinality columns, heavy missingness, skew, zeros, outliers, imbalance, numbers "
+            "or dates stored as text, duplicate rows, highly correlated pairs)."
         ),
     )
     columns: Optional[list[str]] = Field(
@@ -2641,6 +3382,11 @@ class InspectDataArgs(BaseModel):
         CorrelationMethod.pearson,
         description="Correlation coefficient for the correlation view: pearson, spearman or kendall.",
     )
+    quantiles: list[float] = Field(
+        default_factory=lambda: list(_DEFAULT_QUANTILES),
+        description="For distribution: quantiles between 0 and 1 to report, e.g. [0.1, 0.5, 0.9].",
+        max_length=15,
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -2651,6 +3397,17 @@ class InspectDataArgs(BaseModel):
     @classmethod
     def _optional_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
         return _clean_optional_names(value)
+
+    @field_validator("quantiles")
+    @classmethod
+    def _valid_quantiles(cls, value: list[float]) -> list[float]:
+        if any(not 0 <= q <= 1 for q in value):
+            raise ValueError("quantiles must be between 0 and 1")
+        return sorted(set(value)) or list(_DEFAULT_QUANTILES)
+
+
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, (bool, np.bool_))
 
 
 def _num(value: Any, digits: int = 6) -> Optional[float]:
@@ -2699,6 +3456,92 @@ def _positioned(df: pd.DataFrame, start: int) -> list[dict[str, Any]]:
     return out.to_dict(orient="records")
 
 
+_MAX_ALERT_PAIRS = 30
+
+
+def _share_parsed(text: pd.Series, parse: Callable[[pd.Series], pd.Series]) -> float:
+    if text.empty:
+        return 0.0
+    return float(parse(text).notna().mean())
+
+
+def _alerts(df: pd.DataFrame) -> list[dict[str, Any]]:
+    """Automated EDA warnings in the spirit of ydata-profiling's alerts, worst first."""
+    n_rows = len(df)
+    clean = _coerce_fake_nulls(df)
+    found: list[tuple[int, dict[str, Any]]] = []
+
+    def add(severity: int, column: str, alert: str, detail: str) -> None:
+        found.append((severity, {"column": column, "alert": alert, "severity": ("high", "medium", "low")[severity], "detail": detail}))
+
+    if n_rows == 0:
+        add(0, "(dataset)", "empty", "The dataset has no rows")
+    duplicates = int(df.duplicated().sum()) if n_rows else 0
+    if duplicates:
+        add(1, "(dataset)", "duplicate_rows", f"{duplicates} row(s) ({100 * duplicates / n_rows:.1f}%) repeat an earlier row")
+    numeric: list[str] = []
+    for c in df.columns:
+        s = clean[c]
+        non_null = s.dropna()
+        missing_pct = 100 * (1 - len(non_null) / n_rows) if n_rows else 0.0
+        if n_rows and len(non_null) == 0:
+            add(0, c, "all_missing", "Every value is missing")
+            continue
+        if missing_pct >= 50:
+            add(0, c, "high_missing", f"{missing_pct:.1f}% of values are missing")
+        elif missing_pct >= 5:
+            add(1, c, "missing", f"{missing_pct:.1f}% of values are missing")
+        distinct = int(non_null.nunique())
+        if distinct <= 1:
+            add(0, c, "constant", f"Only one distinct value ({_json_cell(non_null.iloc[0])!r})")
+            continue
+        if _is_plain_numeric(s):
+            numeric.append(c)
+            x = non_null.astype(float)
+            if distinct == len(non_null) and len(non_null) > 20 and pd.api.types.is_integer_dtype(s) and x.is_monotonic_increasing:
+                add(1, c, "id_like", "Strictly increasing unique integers, probably a row id or counter")
+            skew = x.skew()
+            if np.isfinite(skew) and abs(skew) > 1:
+                add(2, c, "skewed", f"Skewness {skew:.2f}; a log, Box-Cox or Yeo-Johnson transform may help")
+            zeros = float((x == 0).mean())
+            if zeros >= 0.5:
+                add(2, c, "zeros", f"{100 * zeros:.1f}% of values are zero")
+            q1, q3 = x.quantile([0.25, 0.75])
+            iqr = q3 - q1
+            if iqr > 0:
+                outliers = float(((x < q1 - 1.5 * iqr) | (x > q3 + 1.5 * iqr)).mean())
+                if outliers >= 0.05:
+                    add(1, c, "outliers", f"{100 * outliers:.1f}% of values lie outside the 1.5×IQR fences")
+            continue
+        if pd.api.types.is_bool_dtype(s) or pd.api.types.is_datetime64_any_dtype(s):
+            continue
+        text = non_null.astype(str).str.strip()
+        if _share_parsed(text, lambda t: pd.to_numeric(t, errors="coerce")) >= 0.9:
+            add(1, c, "numeric_as_text", "Most values are numbers stored as text; convert_types to float would fix it")
+        elif _share_parsed(text.head(500), lambda t: pd.to_datetime(t, errors="coerce", format="mixed")) >= 0.9:
+            add(2, c, "dates_as_text", "Most values look like dates stored as text; convert_types to datetime would fix it")
+        elif distinct == len(non_null) and len(non_null) > 20:
+            add(1, c, "unique_text", "Every value is different, probably an identifier rather than a feature")
+        elif distinct > 50 and distinct > 0.5 * len(non_null):
+            add(1, c, "high_cardinality", f"{distinct} distinct values; one-hot encoding would add many columns")
+        top_share = float(non_null.value_counts(normalize=True).iloc[0])
+        if top_share >= 0.9:
+            add(2, c, "imbalanced", f"The most common value covers {100 * top_share:.1f}% of rows")
+    if len(numeric) >= 2:
+        corr = df[numeric].astype(float).corr().abs()
+        pairs = [
+            (corr.iloc[i, j], numeric[i], numeric[j])
+            for i in range(len(numeric))
+            for j in range(i + 1, len(numeric))
+            if np.isfinite(corr.iloc[i, j]) and corr.iloc[i, j] >= 0.95
+        ]
+        for r, a, b in sorted(pairs, reverse=True)[:_MAX_ALERT_PAIRS]:
+            add(1, f"{a} ↔ {b}", "high_correlation", f"|Pearson r| = {r:.3f}; one of the two may be redundant")
+    if not found:
+        return [{"column": "(dataset)", "alert": "none", "severity": "", "detail": "No data-quality warnings found"}]
+    return [row for _, row in sorted(found, key=lambda item: item[0])]
+
+
 def _inspect(df: pd.DataFrame, args: InspectDataArgs) -> tuple[str, list[dict[str, Any]]]:
     n_rows, n_cols = df.shape
     view = args.view
@@ -2722,6 +3565,41 @@ def _inspect(df: pd.DataFrame, args: InspectDataArgs) -> tuple[str, list[dict[st
         desc = df.describe(include="all").T
         rows = [{"column": str(col), **{str(k): v for k, v in stats.items()}} for col, stats in desc.iterrows()]
         return f"describe — {n_rows} rows", rows
+
+    if view == InspectView.nunique:
+        rows = [
+            {
+                "column": c,
+                "unique": int(df[c].nunique(dropna=True)),
+                "unique_pct": round(100 * df[c].nunique(dropna=True) / n_rows, 2) if n_rows else 0.0,
+                "missing": int(df[c].isna().sum()),
+            }
+            for c in df.columns
+        ]
+        return f"nunique — distinct values per column ({n_rows} rows)", rows
+
+    if view == InspectView.distribution:
+        numeric = [c for c in df.columns if _is_plain_numeric(df[c])]
+        if not numeric:
+            raise ValueError("The distribution view needs numeric columns")
+        rows = []
+        for c in numeric:
+            x = df[c].astype(float)
+            quantiles = x.quantile(args.quantiles)
+            rows.append({
+                "column": c,
+                "count": int(x.notna().sum()),
+                "mean": _num(x.mean()),
+                "std": _num(x.std()),
+                "skew": _num(x.skew(), 4),
+                "kurtosis": _num(x.kurt(), 4),
+                **{f"p{q * 100:g}": _num(v) for q, v in quantiles.items()},
+            })
+        return "distribution — skew, kurtosis (excess) and quantiles", rows
+
+    if view == InspectView.alerts:
+        rows = _alerts(df)
+        return f"alerts — {len(rows) if rows[0]['alert'] != 'none' else 0} data-quality warning(s)", rows
 
     if view == InspectView.value_counts:
         rows = []
@@ -2804,6 +3682,7 @@ async def inspect_data(
     n_rows: int = 10,
     top_n: int = 10,
     method: str = "pearson",
+    quantiles: Optional[list[float]] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
@@ -2815,6 +3694,7 @@ async def inspect_data(
         n_rows=n_rows,
         top_n=top_n,
         method=method,  # type: ignore[arg-type]
+        **({"quantiles": quantiles} if quantiles else {}),
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
@@ -2845,6 +3725,7 @@ async def inspect_data(
 class DropRowsMode(str, Enum):
     condition = "condition"
     row_range = "row_range"
+    query = "query"
 
 
 class RowOperator(str, Enum):
@@ -2879,8 +3760,20 @@ class DropRowsArgs(BaseModel):
         ...,
         description=(
             "condition: the rows where `column` `operator` `value` holds; row_range: the rows at "
-            "positions start_row (inclusive) to end_row (exclusive), counted from 0 like pandas iloc."
+            "positions start_row (inclusive) to end_row (exclusive), counted from 0 like pandas iloc; "
+            "query: the rows where a pandas query() expression is true (boolean indexing)."
         ),
+    )
+    query: Optional[str] = Field(
+        None,
+        description=(
+            "For query mode: a pandas query expression over column names, e.g. "
+            "\"temp > 80 and status == 'ok'\" or \"`flow rate` <= 2.5\". It may use comparisons, "
+            "and / or / not, in [...], arithmetic and math functions such as abs or sqrt, but no "
+            "methods (.str, .isna()) or @variables. Put names with spaces in backticks. With "
+            "keep_matching the result is df.query(query)."
+        ),
+        max_length=1000,
     )
     column: Optional[str] = Field(None, description="Column the condition tests (condition mode).")
     operator: RowOperator = Field(
@@ -2920,9 +3813,18 @@ class DropRowsArgs(BaseModel):
     def _value_as_text(cls, value: Any) -> Any:
         return None if value is None else str(value)
 
+    @field_validator("query", mode="before")
+    @classmethod
+    def _blank_query(cls, value: Any) -> Any:
+        return value.strip() or None if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _mode_needs(self) -> "DropRowsArgs":
-        if self.mode == DropRowsMode.condition:
+        if self.mode == DropRowsMode.query:
+            if not self.query:
+                raise ValueError("query mode needs query")
+            self.query = assert_safe_expression(self.query, kind="query")
+        elif self.mode == DropRowsMode.condition:
             if not self.column:
                 raise ValueError("condition mode needs column")
             if self.operator not in _VALUELESS_OPERATORS and (self.value is None or self.value == ""):
@@ -2969,6 +3871,19 @@ def _condition_mask(df: pd.DataFrame, args: DropRowsArgs) -> pd.Series:
     return compare.fillna(False).astype(bool)
 
 
+def query_mask(df: pd.DataFrame, expression: str) -> pd.Series:
+    """Rows where a checked pandas query expression is true."""
+    try:
+        mask = df.eval(expression)
+    except Exception as exc:  # noqa: BLE001 - pandas raises many error types for bad expressions
+        raise ValueError(f"Could not evaluate the query {expression!r}: {exc}") from exc
+    if not isinstance(mask, pd.Series) or len(mask) != len(df):
+        raise ValueError(f"The query {expression!r} must give one true/false value per row")
+    if not pd.api.types.is_bool_dtype(mask):
+        raise ValueError(f"The query {expression!r} must be a condition (true/false), not a calculation")
+    return mask.fillna(False).astype(bool)
+
+
 async def drop_rows(
     dataset_version_id: str,
     mode: str,
@@ -2978,10 +3893,11 @@ async def drop_rows(
     start_row: int = 0,
     end_row: Optional[int] = None,
     keep_matching: bool = False,
+    query: Optional[str] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    """Drop (or keep only) the rows matching a condition or a position range."""
+    """Drop (or keep only) the rows matching a condition, a query expression or a position range."""
     args = DropRowsArgs(
         dataset_version_id=dataset_version_id,
         mode=mode,  # type: ignore[arg-type]
@@ -2991,19 +3907,24 @@ async def drop_rows(
         start_row=start_row,
         end_row=end_row,
         keep_matching=keep_matching,
+        query=query,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
         n = len(df)
-        if args.mode == DropRowsMode.condition:
+        if args.mode == DropRowsMode.query:
+            matching = query_mask(df, args.query)
+            rule = args.query
+            parameters: dict[str, Any] = {"mode": args.mode.value, "query": args.query}
+        elif args.mode == DropRowsMode.condition:
             _assert_columns_exist(df, [args.column])
             matching = _condition_mask(df, args)
             rule = f"{args.column} {_OPERATOR_SYMBOLS[args.operator]}"
             if args.operator not in _VALUELESS_OPERATORS:
                 rule += f" {args.value}"
-            parameters: dict[str, Any] = {
+            parameters = {
                 "mode": args.mode.value, "column": args.column, "operator": args.operator.value,
                 **({"value": args.value} if args.operator not in _VALUELESS_OPERATORS else {}),
             }
@@ -3279,6 +4200,11 @@ class TextOperation(str, Enum):
     title = "title"
     collapse_whitespace = "collapse_whitespace"
     replace = "replace"
+    contains = "contains"
+    extract = "extract"
+
+
+_FIND_OPERATIONS = frozenset({TextOperation.replace, TextOperation.contains, TextOperation.extract})
 
 
 class CleanTextArgs(BaseModel):
@@ -3288,12 +4214,28 @@ class CleanTextArgs(BaseModel):
         ...,
         description=(
             "strip (trim leading/trailing spaces), lower, upper, title (Title Case), "
-            "collapse_whitespace (runs of spaces become one, then trim), or replace (find → replace_with)."
+            "collapse_whitespace (runs of spaces become one, then trim), replace (find → "
+            "replace_with, str.replace), contains (adds a true/false column <col>_contains, "
+            "str.contains) or extract (adds the regex capture groups of find as new columns, "
+            "str.extract)."
         ),
     )
-    find: Optional[str] = Field(None, description="For replace: the text (or regular expression) to find.", max_length=200)
-    replace_with: str = Field("", description="For replace: what each match becomes (empty to delete it).", max_length=200)
-    use_regex: bool = Field(False, description="For replace: treat find as a regular expression.")
+    find: Optional[str] = Field(
+        None,
+        description=(
+            "For replace and contains: the text (or regular expression with use_regex) to find. "
+            "For extract: always a regular expression; each (group) becomes a column, e.g. "
+            r"'(\d+)\s*kg'."
+        ),
+        max_length=200,
+    )
+    replace_with: str = Field(
+        "",
+        description="For replace: what each match becomes (empty to delete it); with use_regex \\1 inserts group 1.",
+        max_length=200,
+    )
+    use_regex: bool = Field(False, description="For replace and contains: treat find as a regular expression.")
+    ignore_case: bool = Field(False, description="For replace, contains and extract: match regardless of upper/lower case.")
 
     @field_validator("dataset_version_id")
     @classmethod
@@ -3307,15 +4249,23 @@ class CleanTextArgs(BaseModel):
 
     @model_validator(mode="after")
     def _replace_needs_find(self) -> "CleanTextArgs":
-        if self.operation == TextOperation.replace:
+        if self.operation in _FIND_OPERATIONS:
             if not self.find:
-                raise ValueError("replace needs find")
-            if self.use_regex:
+                raise ValueError(f"{self.operation.value} needs find")
+            if self.use_regex or self.operation == TextOperation.extract:
                 try:
                     re.compile(self.find)
                 except re.error as exc:
                     raise ValueError(f"find is not a valid regular expression: {exc}") from exc
         return self
+
+    def pattern(self) -> re.Pattern[str]:
+        regex = self.operation == TextOperation.extract or self.use_regex
+        source = self.find if regex else re.escape(self.find or "")
+        compiled = re.compile(source, re.IGNORECASE if self.ignore_case else 0)
+        if self.operation == TextOperation.extract and compiled.groups == 0:
+            compiled = re.compile(f"({source})", compiled.flags)
+        return compiled
 
 
 def _clean_strings(values: pd.Series, args: CleanTextArgs) -> pd.Series:
@@ -3331,7 +4281,45 @@ def _clean_strings(values: pd.Series, args: CleanTextArgs) -> pd.Series:
         return text.title()
     if op == TextOperation.collapse_whitespace:
         return text.replace(r"\s+", " ", regex=True).str.strip()
-    return text.replace(args.find, args.replace_with, regex=args.use_regex)
+    if args.use_regex:
+        return text.replace(args.pattern(), args.replace_with, regex=True)
+    literal = args.replace_with
+    return text.replace(args.pattern(), lambda _match: literal, regex=True)
+
+
+def _match_columns(df: pd.DataFrame, args: CleanTextArgs) -> tuple[pd.DataFrame, list[str], int]:
+    """Columns added by contains / extract, their names, and how many values matched."""
+    result = df.copy()
+    pattern = args.pattern()
+    added: list[str] = []
+    matched = 0
+    for col in args.columns:
+        values = df[col].astype(object)
+        text = values.map(lambda v: v if isinstance(v, str) else None).astype("string")
+        if args.operation == TextOperation.contains:
+            name = _free_name(result, f"{col}_contains")
+            flags = text.str.contains(pattern, regex=True, na=False).astype(bool)
+            result[name] = flags
+            added.append(name)
+            matched += int(flags.sum())
+            continue
+        groups = text.str.extract(pattern, expand=True)
+        names = {index: label for label, index in pattern.groupindex.items()}
+        for i, column in enumerate(groups.columns):
+            suffix = names.get(i + 1) or ("extract" if groups.shape[1] == 1 else f"extract_{i + 1}")
+            name = _free_name(result, f"{col}_{suffix}")
+            result[name] = groups[column].astype(object).where(groups[column].notna(), None)
+            added.append(name)
+        matched += int(groups.notna().any(axis=1).sum())
+    return result, added, matched
+
+
+def _free_name(df: pd.DataFrame, name: str) -> str:
+    """``name``, or ``name_2``, ``name_3``… when the dataset already has that column."""
+    candidate, n = name, 2
+    while candidate in df.columns:
+        candidate, n = f"{name}_{n}", n + 1
+    return candidate
 
 
 async def clean_text(
@@ -3341,10 +4329,11 @@ async def clean_text(
     find: Optional[str] = None,
     replace_with: str = "",
     use_regex: bool = False,
+    ignore_case: bool = False,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    """Strip, re-case, collapse spaces in, or find-and-replace text columns."""
+    """Strip, re-case, collapse spaces in, find-and-replace, match or extract from text columns."""
     args = CleanTextArgs(
         dataset_version_id=dataset_version_id,
         columns=columns,
@@ -3352,6 +4341,7 @@ async def clean_text(
         find=find,
         replace_with=replace_with,
         use_regex=use_regex,
+        ignore_case=ignore_case,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
@@ -3365,6 +4355,29 @@ async def clean_text(
         ]
         if not_text:
             raise ValueError(f"Not text columns: {not_text}. Convert them with convert_types (string) first.")
+
+        if args.operation in (TextOperation.contains, TextOperation.extract):
+            result, added, matched = _match_columns(df, args)
+            verb = "matched" if args.operation == TextOperation.contains else "had a match to extract"
+            return await _persist_new_version(
+                db,
+                parent=parent,
+                df=result,
+                action_performed="clean_text",
+                parameters_used={
+                    "columns": args.columns,
+                    "operation": args.operation.value,
+                    "find": args.find,
+                    "use_regex": args.use_regex or args.operation == TextOperation.extract,
+                    "ignore_case": args.ignore_case,
+                    "added_columns": added,
+                    "values_matched": matched,
+                },
+                summary_message=(
+                    f"{args.operation.value} '{args.find}' on {len(args.columns)} column(s): "
+                    f"{matched} value(s) {verb}; added {', '.join(added)}."
+                ),
+            )
 
         result = df.copy()
         changed = 0
@@ -3390,7 +4403,8 @@ async def clean_text(
             parameters_used={
                 "columns": args.columns,
                 "operation": args.operation.value,
-                **({"find": args.find, "replace_with": args.replace_with, "use_regex": args.use_regex}
+                **({"find": args.find, "replace_with": args.replace_with, "use_regex": args.use_regex,
+                    "ignore_case": args.ignore_case}
                    if args.operation == TextOperation.replace else {}),
                 "values_changed": changed,
             },
