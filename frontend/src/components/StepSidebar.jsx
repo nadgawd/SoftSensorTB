@@ -37,7 +37,11 @@ export default function StepSidebar({
       return 'Dataset loaded'
     }
     if (stepId === 'feature-selection' && targetVariable) return `Target: ${targetVariable}`
-    if (stepId === 'modeling' && modelMetrics) return `${modelMetrics.algorithm} R²: ${modelMetrics.r2_score?.toFixed(2)}`
+    if (stepId === 'modeling' && modelMetrics) {
+      return typeof modelMetrics.r2_score === 'number'
+        ? `${modelMetrics.algorithm} test R²: ${modelMetrics.r2_score.toFixed(2)}`
+        : `${modelMetrics.algorithm} · not tested yet`
+    }
     return null
   }
 

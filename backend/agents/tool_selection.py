@@ -79,7 +79,12 @@ _KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (r"collinear|multicollinear|\bvif\b", ("drop_collinear_features",)),
     (r"\bpca\b|principal component|svd|\blda\b|discriminant|t-?sne|umap|autoencoder|dimension", ("reduce_dimensions",)),
     (r"train|fit|model|regress|\bpls\b|ridge|lasso|\bknn\b|k-nn|\bols\b|pcr|cross[- ]?valid|\bcv\b|k-?fold|"
-     r"split|holdout|validation set|bootstrap|out-of-bag|\boob\b|walk[- ]forward|loocv|leave[- ]one", ("train_soft_sensor",)),
+     r"split|holdout|validation set|bootstrap|out-of-bag|\boob\b|walk[- ]forward|loocv|leave[- ]one",
+     ("train_soft_sensor", "evaluate_on_test_set")),
+    (r"\btest(ing)? (the )?model|\bevaluat|score .*test|test (set|rows|data|score|r2|r²|rmse)|held[- ]out|"
+     r"how (well|good)|performance|accuracy", ("evaluate_on_test_set",)),
+    (r"split|train(ing)? (rows|set|data)|test (rows|set|data)|validation (rows|set|data)|which rows",
+     ("view_data_split",)),
     (r"parity|predicted vs|actual vs", ("generate_parity_plot",)),
     (r"residual", ("generate_residuals_plot",)),
     (r"coefficient", ("generate_coefficients_plot",)),

@@ -474,6 +474,31 @@ class GenerateLearningCurveArgs(GenerateDiagnosticPlotArgs):
     random_state: int = Field(default=_RANDOM_STATE, description="Seed of the shuffled folds.")
 
 
+class EvaluateOnTestSetArgs(GenerateDiagnosticPlotArgs):
+    """Score a trained model on the test rows it held out at training time."""
+
+
+class SplitSubset(str, Enum):
+    summary = "summary"
+    train = "train"
+    validation = "validation"
+    test = "test"
+
+
+class ViewDataSplitArgs(GenerateDiagnosticPlotArgs):
+    """The rows of a trained model's train / validation / test split."""
+
+    subset: SplitSubset = Field(
+        default=SplitSubset.summary,
+        description=(
+            "summary: one row per part (rows, share, target mean / std / range, first and last "
+            "row number); train, validation or test: the rows of that part (row number, target, "
+            "features)."
+        ),
+    )
+    n_rows: int = Field(default=50, description="For train, validation and test: how many rows to show (in dataset order).", ge=1, le=50)
+
+
 class ListTrainedModelsArgs(BaseModel):
     """Arguments for listing models trained on the active dataset lineage."""
 
@@ -728,6 +753,62 @@ def _finite(value: Any) -> Optional[float]:
     return f if np.isfinite(f) else None
 
 
+_SUBSET_LABELS = {"train": "Training", "validation": "Validation", "test": "Test"}
+
+
+def _split_summary(subsets: list[tuple[str, pd.Series]]) -> list[dict[str, Any]]:
+    """Size, share and target distribution of each part of the split."""
+    total = sum(len(y) for _, y in subsets) or 1
+    out = []
+    for name, y in subsets:
+        index = pd.Index(y.index)
+        numbered = pd.api.types.is_integer_dtype(index)
+        out.append({
+            "set": name,
+            "rows": int(len(y)),
+            "share": round(len(y) / total, 4),
+            "target_mean": _finite(y.mean()),
+            "target_std": _finite(y.std()),
+            "target_min": _finite(y.min()),
+            "target_max": _finite(y.max()),
+            "first_row": int(index.min()) if numbered and len(index) else None,
+            "last_row": int(index.max()) if numbered and len(index) else None,
+        })
+    return out
+
+
+def _model_report(artifact: dict[str, Any]) -> dict[str, Any]:
+    """What the UI shows about a model: training, validation, CV and (once run) test results."""
+    hyperparameters = dict(artifact.get("hyperparameters") or {})
+    metrics = artifact.get("metrics") or {}
+    test = artifact.get("test")
+    if test is None and metrics.get("r2_score") is not None:
+        # Saved before training and testing were separate: it was scored at training time.
+        test = {"n_rows": artifact.get("test_size"), "r2": metrics.get("r2_score"), "rmse": metrics.get("rmse")}
+    return {
+        "model_id": str(artifact["model_id"]),
+        "algorithm": artifact.get("algorithm"),
+        "target_column": artifact.get("target_column"),
+        "feature_columns": list(artifact.get("feature_columns") or []),
+        "r2_score": (test or {}).get("r2"),
+        "rmse": (test or {}).get("rmse"),
+        "tested": test is not None,
+        "test": test,
+        "feature_importances": artifact.get("coefficients"),
+        "coefficients": artifact.get("coefficients"),
+        "split_strategy": hyperparameters.get("split_strategy"),
+        "test_size": hyperparameters.get("test_size"),
+        "hyperparameters": hyperparameters,
+        "cv": artifact.get("cv"),
+        "train": artifact.get("train"),
+        "validation": artifact.get("validation"),
+        "split": artifact.get("split"),
+        "n_train": artifact.get("train_size"),
+        "n_validation": artifact.get("validation_rows", 0),
+        "n_test": artifact.get("test_size"),
+    }
+
+
 def _check_strata(labels: pd.Series, k: int, what: str) -> None:
     smallest = int(labels.value_counts().min())
     if smallest < k:
@@ -961,11 +1042,13 @@ async def train_soft_sensor(
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
     """
-    Train a soft sensor on a train/test split (``test_size`` held out, 0.2 by default),
-    optionally with a validation set and cross-validated on the training rows.
+    Split the rows into train / (validation) / test (``test_size`` held out, 0.2 by
+    default) and fit a soft sensor on the training rows, optionally cross-validated
+    on them. The test rows are only recorded, not scored: ``evaluate_on_test_set``
+    tests the model on them afterwards.
 
-    Persists the ``.pkl`` artifact through storage and returns metrics plus
-    feature coefficients for process interpretation.
+    Persists the ``.pkl`` artifact through storage and returns the training (and
+    validation / CV) metrics, the split and the feature coefficients.
     """
     args = TrainSoftSensorArgs(
         dataset_version_id=dataset_version_id,
@@ -1007,9 +1090,6 @@ async def train_soft_sensor(
         )
         model = _fit(args, X_train, y_train)
         hyperparameters = _hyperparameters(args)
-        y_pred = _predict(model, X_test)
-        r2 = float(r2_score(y_test, y_pred))
-        rmse = float(np.sqrt(mean_squared_error(y_test, y_pred)))
         train_pred = _predict(model, X_train)
         train = {
             "n_rows": int(len(X_train)),
@@ -1055,6 +1135,7 @@ async def train_soft_sensor(
             ),
         )
 
+        subsets = [("train", y_train), *([("validation", y_val)] if y_val is not None else []), ("test", y_test)]
         artifact = {
             "model_id": str(model_id),
             "algorithm": args.algorithm.value,
@@ -1065,13 +1146,16 @@ async def train_soft_sensor(
             "hyperparameters": hyperparameters,
             "dataset_version_id": args.dataset_version_id,
             "new_version_id": new_version_id,
-            "metrics": {"r2_score": r2, "rmse": rmse},
+            "metrics": {"r2_score": None, "rmse": None},
+            "test": None,
             "cv": cv,
             "train": train,
             "validation": validation,
             "coefficients": coefficients,
+            "split": _split_summary(subsets),
             "train_size": int(len(X_train)),
             "train_index": X_train.index.tolist(),
+            "validation_index": X_val.index.tolist() if X_val is not None else [],
             "test_index": X_test.index.tolist(),
             "validation_rows": int(len(X_val)) if X_val is not None else 0,
             "test_size": int(len(X_test)),
@@ -1084,28 +1168,7 @@ async def train_soft_sensor(
             build_model_path(dataset.owner_id, dataset.id, model_id), artifact
         )
         await register_model(db, dataset_id=dataset.id, artifact=artifact, artifact_key=artifact_path)
-
-        return {
-            "model_id": str(model_id),
-            "algorithm": args.algorithm.value,
-            "new_version_id": new_version_id,
-            "r2_score": r2,
-            "rmse": rmse,
-            "feature_importances": coefficients,
-            "coefficients": coefficients,
-            "artifact_path": artifact_path,
-            "split_strategy": args.split_strategy,
-            "test_size": args.test_size,
-            "hyperparameters": hyperparameters,
-            "cv": cv,
-            "train": train,
-            "validation": validation,
-            "n_train": int(len(X_train)),
-            "n_validation": int(len(X_val)) if X_val is not None else 0,
-            "n_test": int(len(X_test)),
-            "target_column": args.target_column,
-            "feature_columns": args.feature_columns,
-        }
+        return {**_model_report(artifact), "new_version_id": new_version_id, "artifact_path": artifact_path}
 
     if session is not None:
         return await _run(session)
@@ -1408,21 +1471,36 @@ def _artifact_args(artifact: dict[str, Any]) -> TrainSoftSensorArgs:
     )
 
 
-async def _model_split(
+async def _model_subsets(
     db: AsyncSession, artifact: dict[str, Any]
-) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
-    """(X_train, y_train, X_test, y_test) of the dataset version the model was trained on."""
+) -> dict[str, tuple[pd.DataFrame, pd.Series]]:
+    """{'train' | 'validation' | 'test': (X, y)} of the dataset version the model was trained on."""
     try:
         train_args = _artifact_args(artifact)
         trained_on = _load_dataframe(await _get_version(db, train_args.dataset_version_id))
         X, y, strata, groups = _training_rows(trained_on, train_args)
         if "test_index" in artifact and "train_index" in artifact:
-            train_index, test_index = artifact["train_index"], artifact["test_index"]
-            return X.loc[train_index], y.loc[train_index], X.loc[test_index], y.loc[test_index]
-        X_train, _X_val, X_test, y_train, _y_val, y_test = _holdout(X, y, train_args, strata, groups)
-        return X_train, y_train, X_test, y_test
+            indexes = {"train": artifact["train_index"], "test": artifact["test_index"]}
+            if artifact.get("validation_rows"):
+                held = set(indexes["train"]) | set(indexes["test"])
+                indexes["validation"] = artifact.get("validation_index") or [i for i in X.index if i not in held]
+            return {name: (X.loc[index], y.loc[index]) for name, index in indexes.items()}
+        X_train, X_val, X_test, y_train, y_val, y_test = _holdout(X, y, train_args, strata, groups)
+        out = {"train": (X_train, y_train), "test": (X_test, y_test)}
+        if X_val is not None:
+            out["validation"] = (X_val, y_val)
+        return out
     except (KeyError, ValueError) as exc:
         raise ValueError(f"Could not recover this model's train/test split ({exc}); retrain the model") from exc
+
+
+async def _model_split(
+    db: AsyncSession, artifact: dict[str, Any]
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    """(X_train, y_train, X_test, y_test) of the dataset version the model was trained on."""
+    subsets = await _model_subsets(db, artifact)
+    (X_train, y_train), (X_test, y_test) = subsets["train"], subsets["test"]
+    return X_train, y_train, X_test, y_test
 
 
 def _test_scores(y_true: np.ndarray, y_hat: np.ndarray) -> str:
@@ -1602,6 +1680,95 @@ async def generate_learning_curve(
         return await _run(db)
 
 
+async def evaluate_on_test_set(
+    dataset_version_id: str,
+    model_id: Optional[str] = None,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> dict[str, Any]:
+    """Test a trained soft sensor on its held-out test rows and record the scores."""
+    args = EvaluateOnTestSetArgs(dataset_version_id=dataset_version_id, model_id=model_id)
+
+    async def _run(db: AsyncSession) -> dict[str, Any]:
+        row = await resolve_model(db, args.dataset_version_id, args.model_id)
+        artifact = _load_model_artifact(row.artifact_key)
+        _X_train, _y_train, X_test, y_test = await _model_split(db, artifact)
+        if len(X_test) == 0:
+            raise ValueError("This model has no test rows; retrain it with a test fraction above 0")
+        y_true = y_test.to_numpy(dtype=float)
+        y_hat = np.asarray(_predict(artifact["model"], X_test), dtype=float)
+        test = {
+            "n_rows": int(len(y_true)),
+            "r2": _finite(r2_score(y_true, y_hat)) if len(y_true) >= 2 else None,
+            "rmse": _finite(np.sqrt(mean_squared_error(y_true, y_hat))),
+            "mae": _finite(np.mean(np.abs(y_true - y_hat))),
+            "bias": _finite(np.mean(y_hat - y_true)),
+            "tested_at": datetime.now(timezone.utc).isoformat(),
+        }
+        artifact["test"] = test
+        artifact["metrics"] = {"r2_score": test["r2"], "rmse": test["rmse"]}
+        _save_model_artifact(row.artifact_key, artifact)
+        row.meta = {**(row.meta or {}), "r2_score": test["r2"], "rmse": test["rmse"], "tested_at": test["tested_at"]}
+        await db.commit()
+        return _model_report(artifact)
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+async def view_data_split(
+    dataset_version_id: str,
+    model_id: Optional[str] = None,
+    subset: str = "summary",
+    n_rows: int = 50,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> dict[str, Any]:
+    """The train / validation / test split of a trained model: a summary or the rows of one part."""
+    args = ViewDataSplitArgs(dataset_version_id=dataset_version_id, model_id=model_id, subset=subset, n_rows=n_rows)  # type: ignore[arg-type]
+
+    async def _run(db: AsyncSession) -> dict[str, Any]:
+        artifact = _load_model_artifact((await resolve_model(db, args.dataset_version_id, args.model_id)).artifact_key)
+        subsets = await _model_subsets(db, artifact)
+        name = f"{artifact.get('algorithm', 'model')} {str(artifact['model_id'])[:8]}"
+        if args.subset == SplitSubset.summary:
+            order = [s for s in ("train", "validation", "test") if s in subsets]
+            rows = artifact.get("split") or _split_summary([(s, subsets[s][1]) for s in order])
+            rows = [{**r, "set": _SUBSET_LABELS.get(r["set"], r["set"])} for r in rows]
+            return {"dataset_version_id": args.dataset_version_id, "title": f"Train / validation / test split · {name}", "rows": rows}
+        part = args.subset.value
+        if part not in subsets:
+            raise ValueError("This model has no validation rows; set a validation fraction when training")
+        X, y = subsets[part]
+        total = sum(len(v[1]) for v in subsets.values())
+        target = str(artifact["target_column"])
+        shown = pd.concat([y.rename(target), X], axis=1).sort_index().head(args.n_rows)
+        rows = [
+            {"row": idx, **{str(k): _cell_value(v) for k, v in values.items()}}
+            for idx, values in zip(shown.index.tolist(), shown.to_dict(orient="records"))
+        ]
+        title = (
+            f"{_SUBSET_LABELS[part]} rows · {len(y)} of {total} ({100 * len(y) / total:.0f}%) · "
+            f"first {len(rows)} shown · {name}"
+        )
+        return {"dataset_version_id": args.dataset_version_id, "title": title, "rows": rows}
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
+
+
+def _cell_value(value: Any) -> Any:
+    if isinstance(value, (np.integer, np.floating)):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 async def list_trained_models(
     dataset_version_id: str,
     *,
@@ -1637,11 +1804,30 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "(LOOCV), time_series, group_kfold, leave_one_group_out, repeated_kfold, "
             "repeated_stratified_kfold, shuffle_split, stratified_shuffle_split, walk_forward or "
             "bootstrap (out-of-bag). "
-            "Reports test-set R² and RMSE, saves a .pkl artifact under "
-            "data_storage/models/, and returns model_id, metrics, and feature "
-            "coefficients/importances."
+            "Fits on the training rows only and reports training (plus validation and CV) R² "
+            "and RMSE and the split; the test rows are held out and NOT scored here: call "
+            "evaluate_on_test_set next to test the model. Saves a .pkl artifact and returns "
+            "model_id, metrics, the split and feature coefficients/importances."
         ),
         args_model=TrainSoftSensorArgs,
+    ),
+    _openai_tool_schema(
+        name="evaluate_on_test_set",
+        description=(
+            "Test a trained soft sensor: predict the test rows it held out at training time "
+            "(never used for fitting) and report test R², RMSE, MAE and bias. Run it after "
+            "train_soft_sensor; the scores are saved with the model."
+        ),
+        args_model=EvaluateOnTestSetArgs,
+    ),
+    _openai_tool_schema(
+        name="view_data_split",
+        description=(
+            "Show how a trained model split the data: subset='summary' gives the size, share and "
+            "target statistics of the train, validation and test parts; 'train', 'validation' or "
+            "'test' lists the rows of that part (row number, target and features)."
+        ),
+        args_model=ViewDataSplitArgs,
     ),
     _openai_tool_schema(
         name="generate_parity_plot",
@@ -1724,6 +1910,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
 TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "list_trained_models": list_trained_models,
     "train_soft_sensor": train_soft_sensor,
+    "evaluate_on_test_set": evaluate_on_test_set,
+    "view_data_split": view_data_split,
     "generate_parity_plot": generate_parity_plot,
     "generate_residuals_plot": generate_residuals_plot,
     "generate_importance_plot": generate_importance_plot,
@@ -1734,6 +1922,10 @@ TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
 }
 
 __all__ = [
+    "EvaluateOnTestSetArgs",
+    "ViewDataSplitArgs",
+    "evaluate_on_test_set",
+    "view_data_split",
     "GenerateClassificationCurveArgs",
     "GenerateLearningCurveArgs",
     "GenerateParityPlotArgs",

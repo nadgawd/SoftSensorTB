@@ -9,6 +9,7 @@ import ExportStep from './steps/ExportStep'
 import VersionHistory from './VersionHistory'
 import ManualTools from './manual/ManualTools'
 import ResultTable from './manual/ResultTable'
+import DataDock from './DataDock'
 import { usePersisted } from '../hooks/usePersisted'
 
 const HISTORY_VIEWS = [
@@ -31,7 +32,7 @@ const STEP_SUBTITLES = {
   quality: 'Assess sensor health, identify data issues',
   preprocessing: 'Resample and clean data for analysis',
   'feature-selection': 'Select process variables for the soft-sensor model',
-  modeling: 'Build and compare regression models',
+  modeling: 'Split the data, train a model on the training rows, then test it on the held-out rows',
   validation: 'Evaluate model performance on the reserved validation set',
   export: 'Package model, data, and decision log for deployment',
 }
@@ -69,6 +70,7 @@ export default function StepContent({
   manualTools,
   resultTable,
   onResultTableClose,
+  dock,
 }) {
   const [showHistory, setShowHistory] = useState(false)
   const [historyView, setHistoryView] = usePersisted('historyView', 'tree')
@@ -97,7 +99,6 @@ export default function StepContent({
         return (
           <PreprocessingStep
             tablePreview={tablePreview}
-            plotHistory={plotHistory}
             datasetVersionId={datasetVersionId}
           />
         )
@@ -115,6 +116,8 @@ export default function StepContent({
           <ModelingStep
             modelMetrics={modelMetrics}
             datasetVersionId={datasetVersionId}
+            onToolResult={manualTools.onResult}
+            busy={manualTools.assistantBusy}
           />
         )
       case 'validation':
@@ -287,93 +290,25 @@ export default function StepContent({
         {activeStep !== 'ingestion' && renderStepPanel()}
       </div>
 
-      {/* Data preview footer (all steps except ingestion) */}
-      {tablePreview?.length > 0 && activeStep !== 'ingestion' && (
-        <DataPreviewFooter 
-          columns={Object.keys(tablePreview[0])} 
-          rows={tablePreview} 
+      {/* Data preview + Graph dock (every step, once there is data) */}
+      {datasetVersionId && (
+        <DataDock
+          rows={tablePreview}
           previewLimit={previewLimit}
           onPreviewLimitChange={onPreviewLimitChange}
-        />
-      )}
-    </div>
-  )
-}
-
-function DataPreviewFooter({ columns, rows, previewLimit, onPreviewLimitChange }) {
-  const [expanded, setExpanded] = useState(false)
-
-  return (
-    <div style={{ borderTop: '1px solid var(--color-line)', flexShrink: 0 }}>
-      <div style={{ display: 'flex', alignItems: 'center', width: '100%', paddingRight: '28px' }}>
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          style={{
-            flex: 1,
-            textAlign: 'left',
-            padding: '9px 0 9px 28px',
-            background: 'none',
-            border: 'none',
-            color: 'var(--color-mist)',
-            fontSize: '12px',
-            fontFamily: 'var(--font-mono)',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '8px',
-            transition: 'color 150ms ease',
+          open={dock.open}
+          tab={dock.tab}
+          onOpenChange={dock.onOpenChange}
+          onTabChange={dock.onTabChange}
+          plotHistory={plotHistory}
+          graphTools={{
+            ...manualTools,
+            datasetVersionId,
+            targetVariable,
+            selectedFeatures,
+            modelKey: modelMetrics?.model_id,
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-foam)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-mist)')}
-        >
-          <span>{expanded ? '▾' : '▸'}</span>
-          Data Preview — {rows.length} rows shown · {columns.length} columns
-        </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--color-mist)', fontFamily: 'var(--font-mono)' }}>
-          <span>Limit:</span>
-          <input 
-            type="number" 
-            min="1" 
-            max="10000" 
-            value={previewLimit || 25} 
-            onChange={(e) => {
-              const val = parseInt(e.target.value, 10)
-              if (!isNaN(val) && val > 0) {
-                onPreviewLimitChange?.(val)
-              }
-            }}
-            style={{
-              width: '50px',
-              background: 'rgba(255,255,255,0.05)',
-              border: '1px solid var(--color-line-2)',
-              color: 'var(--color-foam)',
-              padding: '2px 4px',
-              borderRadius: '4px',
-              fontFamily: 'inherit',
-              fontSize: 'inherit',
-              outline: 'none',
-            }}
-          />
-        </div>
-      </div>
-      {expanded && (
-        <div style={{ overflowX: 'auto', maxHeight: '180px', overflowY: 'auto' }}>
-          <table className="data-table">
-            <thead>
-              <tr>{columns.map((c) => <th key={c}>{c}</th>)}</tr>
-            </thead>
-            <tbody>
-              {rows.map((row, i) => (
-                <tr key={i}>
-                  {columns.map((c) => (
-                    <td key={c}>{row[c] === null || row[c] === undefined ? '—' : String(row[c])}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        />
       )}
     </div>
   )

@@ -73,6 +73,8 @@ export default function App() {
 
   // ── Data Preview ──────────────────────────────────────────
   const [previewLimit, setPreviewLimit] = usePersisted('previewLimit', 25)
+  const [dockOpen, setDockOpen] = usePersisted('dockOpen', false)
+  const [dockTab, setDockTab] = usePersisted('dockTab', 'preview')
   const [docOpen, setDocOpen] = useState(false)
 
   // ── Restore state ─────────────────────────────────────────
@@ -222,13 +224,15 @@ export default function App() {
       if (response.active_dataset_version_id) {
         setDatasetVersionId(response.active_dataset_version_id)
       }
-      const onCanvasStep = activeStep === 'preprocessing' || activeStep === 'validation'
       let nextStep = null
       if (response.plot_data) {
         addPlot(response.plot_data)
-        if (!onCanvasStep) {
-          const diagnostic = (response.tool_calls_made || []).some((t) => DIAGNOSTIC_PLOT_TOOLS.has(t))
-          nextStep = diagnostic ? 'validation' : 'preprocessing'
+        const diagnostic = (response.tool_calls_made || []).some((t) => DIAGNOSTIC_PLOT_TOOLS.has(t))
+        if (diagnostic) {
+          if (activeStep !== 'validation') nextStep = 'validation'
+        } else {
+          setDockTab('graph')
+          setDockOpen(true)
         }
       }
       if (Array.isArray(response.table_preview)) {
@@ -254,7 +258,7 @@ export default function App() {
       if (datasetId) await refreshHistory(datasetId)
     },
     [activeStep, datasetId, refreshHistory, setActiveStep, setDatasetVersionId,
-      setModelMetrics, addPlot, setSelectedFeatures, setTargetVariable],
+      setModelMetrics, addPlot, setSelectedFeatures, setTargetVariable, setDockOpen, setDockTab],
   )
 
   // ── Tools panel run → same UI sync as the chat, plus a chat log entry ──
@@ -312,7 +316,7 @@ export default function App() {
       const next = { ...prev }
       for (const c of filled) {
         const { steps } = specs.get(c.name)
-        next[steps.includes(activeStep) ? activeStep : steps[0]] = c.name
+        if (steps.length) next[steps.includes(activeStep) ? activeStep : steps[0]] = c.name
       }
       return next
     })
@@ -563,6 +567,7 @@ export default function App() {
           }}
           resultTable={resultTable}
           onResultTableClose={() => setResultTable(null)}
+          dock={{ open: dockOpen, tab: dockTab, onOpenChange: setDockOpen, onTabChange: setDockTab }}
         />
       </div>
 

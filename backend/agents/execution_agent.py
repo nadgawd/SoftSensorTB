@@ -106,9 +106,9 @@ _PLOT_TOOLS = frozenset({
 })
 _TABLE_TOOLS = frozenset({
     "run_duckdb_query", "get_column_statistics", "inspect_data", "list_trained_models",
-    "aggregate_data", "statistical_test", "list_datasets",
+    "aggregate_data", "statistical_test", "list_datasets", "view_data_split",
 })
-_METRIC_TOOLS = frozenset({"train_soft_sensor"})
+_METRIC_TOOLS = frozenset({"train_soft_sensor", "evaluate_on_test_set"})
 _MAX_TABLE_ROWS = 50
 _TABLE_TITLES = {
     "run_duckdb_query": "Query result",
@@ -118,6 +118,7 @@ _TABLE_TITLES = {
     "aggregate_data": "Aggregation",
     "statistical_test": "Statistical test",
     "list_datasets": "Your datasets",
+    "view_data_split": "Train / validation / test split",
 }
 
 
@@ -163,6 +164,11 @@ Rules:
 - Training: when the user does not name the target or features, use the UI
   STATE target and selected features; if none are selected, use every numeric
   column except the target and any Predicted_* column.
+- Training and testing are separate: train_soft_sensor fits on the training
+  rows and reports training scores only; evaluate_on_test_set then scores the
+  held-out test rows. When the user asks how well a model performs, or to
+  "train and test", call evaluate_on_test_set after training. view_data_split
+  shows the train / validation / test rows.
 - To change the target or the selected features in the Feature Selection step,
   call set_model_features (it accepts wildcards such as '*_lag*'). For "only
   these" / "select the new ones and unselect the old ones", pass the complete
@@ -229,10 +235,21 @@ def _summarize_tool_result(tool_name: str, result: Any) -> str:
             val = result.get("validation") or {}
             val_text = f" · validation R² {val['r2']:.3f}" if isinstance(val.get("r2"), (int, float)) else ""
             train = result.get("train") or {}
-            train_text = f"train R² {train['r2']:.3f} · " if isinstance(train.get("r2"), (int, float)) else ""
+            train_text = (
+                f"train R² {train['r2']:.3f} · RMSE {train['rmse']:.3g}"
+                if isinstance(train.get("r2"), (int, float)) and isinstance(train.get("rmse"), (int, float))
+                else "trained"
+            )
             return (
-                f"{result.get('algorithm')} · {train_text}test R² {result.get('r2_score', 0):.3f} · "
-                f"RMSE {result.get('rmse', 0):.3g}{val_text}{cv_text} · model {str(result.get('model_id'))[:8]}"
+                f"{result.get('algorithm')} · {train_text} on {result.get('n_train')} rows{val_text}{cv_text} · "
+                f"{result.get('n_test')} test rows held out, not tested yet · model {str(result.get('model_id'))[:8]}"
+            )
+        if tool_name == "evaluate_on_test_set":
+            test = result.get("test") or {}
+            r2 = f"test R² {test['r2']:.3f}" if isinstance(test.get("r2"), (int, float)) else "test R² —"
+            return (
+                f"{result.get('algorithm')} · {r2} · RMSE {test.get('rmse') or 0:.3g} · MAE {test.get('mae') or 0:.3g} "
+                f"on {test.get('n_rows')} held-out test rows · model {str(result.get('model_id'))[:8]}"
             )
         if tool_name == SET_MODEL_FEATURES:
             feats = result.get("selected_features") or []
@@ -351,6 +368,9 @@ def _update_ui_state(
             "train": result.get("train"),
             "validation": result.get("validation"),
             "n_validation": result.get("n_validation"),
+            "split": result.get("split"),
+            "tested": result.get("tested"),
+            "test": result.get("test"),
         }
         if "new_version_id" in result:
             state["active_dataset_version_id"] = result["new_version_id"]

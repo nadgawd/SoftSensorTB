@@ -289,7 +289,8 @@ _COLUMN_FUNCTIONS = [
 
 _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 
-# label, steps, and optional: numeric (column pickers limited to numeric
+# label, steps (the one pipeline step whose Tools list shows the tool; empty
+# for a tool with its own panel, named by "panel"), and optional: numeric (column pickers limited to numeric
 # columns), show_when ({field: {other_field: [values]}}, all of which must
 # hold, or a list of such dicts of which any may hold), defaults (form
 # defaults for required fields), app_defaults (fill from the workbench:
@@ -297,7 +298,7 @@ _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     "inspect_data": {
         "label": "Inspect data (head, info, describe…)",
-        "steps": ("ingestion", "quality", "preprocessing", "feature-selection"),
+        "steps": ("ingestion",),
         "defaults": {"view": "head"},
         "show_when": {
             "n_rows": {"view": ["head", "tail"]},
@@ -308,7 +309,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "aggregate_data": {
         "label": "Group by / pivot table / crosstab",
-        "steps": ("ingestion", "quality", "preprocessing", "feature-selection"),
+        "steps": ("ingestion",),
         "show_when": {
             "pivot_column": {"mode": ["pivot_table", "crosstab"]},
             "normalize": {"mode": ["crosstab"]},
@@ -317,7 +318,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "statistical_test": {
         "label": "Statistical tests (t-test, ANOVA, χ², normality, ADF)",
-        "steps": ("quality", "preprocessing", "feature-selection"),
+        "steps": ("quality",),
         "defaults": {"test": "shapiro"},
         "show_when": {
             "column": {"test": ["t_test_one_sample", "t_test_independent", "t_test_paired", "anova", "chi_square"]},
@@ -331,15 +332,15 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "list_datasets": {
         "label": "Your uploaded datasets",
-        "steps": ("ingestion", "preprocessing"),
+        "steps": ("ingestion",),
     },
     "sort_data": {
         "label": "Sort rows",
-        "steps": ("ingestion", "quality", "preprocessing"),
+        "steps": ("ingestion",),
     },
     "combine_datasets": {
         "label": "Combine datasets (merge, join, concat)",
-        "steps": ("ingestion", "preprocessing"),
+        "steps": ("ingestion",),
         "show_when": {
             "on": {"mode": ["merge"]},
             "suffix": {"mode": ["merge", "join"]},
@@ -359,23 +360,23 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "get_column_statistics": {
         "label": "Column statistics",
-        "steps": ("ingestion", "quality", "feature-selection"),
+        "steps": ("ingestion",),
     },
     "run_duckdb_query": {
         "label": "SQL query",
-        "steps": ("ingestion", "quality", "export"),
+        "steps": ("export",),
         "defaults": {"sql_query": "SELECT * FROM dataset LIMIT 10"},
         "help": {"sql_query": _SQL_HELP},
     },
     "convert_types": {
         "label": "Convert types / parse dates",
-        "steps": ("ingestion", "quality", "preprocessing"),
+        "steps": ("ingestion",),
         "defaults": {"target_type": "float"},
         "show_when": {"datetime_format": {"target_type": ["datetime"]}},
     },
     "clean_text": {
         "label": "Text & regex (strip, case, replace, contains, extract)",
-        "steps": ("ingestion", "quality", "preprocessing"),
+        "steps": ("quality",),
         "defaults": {"operation": "strip"},
         "show_when": {
             "find": {"operation": _PATTERN_OPERATIONS},
@@ -386,7 +387,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "drop_rows": {
         "label": "Drop / filter rows (condition, range, query)",
-        "steps": ("quality", "preprocessing"),
+        "steps": ("quality",),
         "defaults": {"mode": "condition"},
         "show_when": {
             "query": {"mode": ["query"]},
@@ -400,12 +401,12 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "mask_values": {
         "label": "Replace where a condition holds (mask / where)",
-        "steps": ("quality", "preprocessing"),
+        "steps": ("quality",),
         "show_when": {"value": {"operator": _VALUE_OPERATORS}},
     },
     "map_values": {
         "label": "Map / recode values",
-        "steps": ("quality", "preprocessing"),
+        "steps": ("quality",),
     },
     "drop_duplicates": {
         "label": "Drop duplicates",
@@ -446,11 +447,11 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "drop_columns": {
         "label": "Drop columns",
-        "steps": ("quality", "preprocessing", "feature-selection"),
+        "steps": ("feature-selection",),
     },
     "rename_columns": {
         "label": "Rename columns",
-        "steps": ("ingestion", "preprocessing"),
+        "steps": ("ingestion",),
     },
     "normalize_data": {
         "label": "Normalize / scale",
@@ -529,7 +530,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "resample_time_series": {
         "label": "Resample time series (downsample / upsample)",
-        "steps": ("quality", "preprocessing"),
+        "steps": ("preprocessing",),
         "defaults": {"frequency": "1h", "mode": "downsample"},
         "show_when": {
             "aggregation": {"mode": ["downsample"]},
@@ -553,7 +554,8 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     },
     "generate_custom_plot": {
         "label": "Plot",
-        "steps": ("ingestion", "quality", "preprocessing", "feature-selection"),
+        "steps": (),
+        "panel": "graph",
         "defaults": {"plot_type": "correlation_heatmap"},
         "show_when": _PLOT_SHOW_WHEN,
         "advanced": ("max_points",),
@@ -610,16 +612,26 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "advanced": ("n_estimators", "alpha", "random_state"),
     },
     "train_soft_sensor": {
-        "label": "Train & test a model",
+        "label": "1 · Split & train a model",
         "steps": ("modeling",),
         "numeric": ("target_column", "feature_columns"),
         "defaults": {"algorithm": "PLS"},
         "app_defaults": {"target_column": "target", "feature_columns": "features"},
         "show_when": _TRAIN_SHOW_WHEN,
     },
+    "evaluate_on_test_set": {
+        "label": "2 · Test the model on the held-out test rows",
+        "steps": ("modeling",),
+    },
+    "view_data_split": {
+        "label": "View the train / validation / test rows",
+        "steps": ("modeling",),
+        "defaults": {"subset": "summary"},
+        "show_when": {"n_rows": {"subset": ["train", "validation", "test"]}},
+    },
     "list_trained_models": {
         "label": "Trained models",
-        "steps": ("modeling", "validation", "export"),
+        "steps": ("export",),
     },
     "generate_parity_plot": {"label": "Parity plot", **_DIAGNOSTIC},
     "generate_residuals_plot": {"label": "Residuals plot", **_DIAGNOSTIC},
@@ -632,6 +644,8 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
 
 
 def _kind(name: str) -> str:
+    if name == "evaluate_on_test_set":
+        return "test"
     if name in _METRIC_TOOLS:
         return "train"
     if name in _MUTATING_TOOLS:
@@ -751,6 +765,7 @@ def manual_tool_specs() -> list[dict[str, Any]]:
             "label": ui["label"],
             "description": _clean_description(fn["description"]),
             "steps": list(ui["steps"]),
+            "panel": ui.get("panel"),
             "kind": _kind(name),
             "fields": [
                 _field_spec(name, field, raw, field in required, defs)

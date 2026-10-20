@@ -26,6 +26,8 @@ const TOOL_LABELS = {
   generate_importance_plot: 'Importance plot',
   generate_coefficients_plot: 'Coefficients plot',
   train_soft_sensor: 'Train model',
+  evaluate_on_test_set: 'Test model',
+  view_data_split: 'View split',
   list_trained_models: 'List models',
   set_model_features: 'Set features',
 }

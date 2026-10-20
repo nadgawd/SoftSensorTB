@@ -472,9 +472,22 @@ def test_training_with_validation_set_and_groups(client):  # noqa: F811
     assert m["validation"]["n_rows"] == m["n_validation"] == 20 and m["n_test"] == 20 and m["n_train"] == 40
     assert m["hyperparameters"]["group_column"] == "g" and m["cv"]["n_splits"] == 2
     assert m["train"]["n_rows"] == 40 and 0 < m["train"]["r2"] <= 1 and m["train"]["rmse"] > 0
-    assert f"train R² {m['train']['r2']:.3f} · test R² {m['r2_score']:.3f}" in body["message"]
-    models = _ok(_run(client, user, body["active_dataset_version_id"], "list_trained_models"))["table_preview"]
-    assert models[0]["validation_r2"] == m["validation"]["r2"]
+    assert f"train R² {m['train']['r2']:.3f}" in body["message"] and "20 test rows held out, not tested yet" in body["message"]
+    assert [(s["set"], s["rows"]) for s in m["split"]] == [("train", 40), ("validation", 20), ("test", 20)]
+    scored = body["active_dataset_version_id"]
+    models = _ok(_run(client, user, scored, "list_trained_models"))["table_preview"]
+    assert models[0]["validation_r2"] == m["validation"]["r2"] and models[0]["r2_score"] is None
+
+    tested = _ok(_run(client, user, scored, "evaluate_on_test_set"))["model_metrics"]
+    assert tested["test"]["n_rows"] == 20 and tested["validation"] == m["validation"]
+    assert _ok(_run(client, user, scored, "list_trained_models"))["table_preview"][0]["r2_score"] == tested["r2_score"]
+
+    parts = {}
+    for subset in ("train", "validation", "test"):
+        rows = _ok(_run(client, user, scored, "view_data_split", subset=subset))["table_preview"]
+        parts[subset] = {r["row"] for r in rows}
+    assert len(parts["train"]) == 40 and len(parts["validation"]) == len(parts["test"]) == 20
+    assert not (parts["train"] & parts["validation"] or parts["train"] & parts["test"] or parts["validation"] & parts["test"])
 
 
 @pytest.mark.parametrize("tool", ["generate_roc_curve", "generate_pr_curve", "generate_learning_curve"])
@@ -503,7 +516,8 @@ def test_validation_plots_use_only_the_test_rows(client):  # noqa: F811
     user, version, _ = _setup(client)
     trained = _ok(_run(client, user, version, "train_soft_sensor", algorithm="OLS", target_column="y",
                        feature_columns=["x", "noise"], test_size=0.25))
-    m, scored = trained["model_metrics"], trained["active_dataset_version_id"]
+    scored = trained["active_dataset_version_id"]
+    m = _ok(_run(client, user, scored, "evaluate_on_test_set"))["model_metrics"]
     parity = _ok(_run(client, user, scored, "generate_parity_plot"))["plot_data"]
     assert len(_points(parity["data"][0]["x"])) == m["n_test"]
     assert f"R² {m['r2_score']:.3f}" in parity["layout"]["title"]["text"]

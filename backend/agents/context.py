@@ -104,8 +104,11 @@ def render_dataset_context(ctx: Optional[DatasetContext]) -> str:
         for m in ctx.models:
             lines.append(
                 f"  - {m['model_id']}: {m.get('algorithm')} predicting {m.get('target_column')} "
-                f"from {m.get('feature_columns')} — R² {_fmt_metric(m.get('r2_score'))}, "
-                f"RMSE {_fmt_metric(m.get('rmse'))}"
+                f"from {m.get('feature_columns')} — "
+                + (
+                    f"test R² {_fmt_metric(m.get('r2_score'))}, RMSE {_fmt_metric(m.get('rmse'))}"
+                    if m.get("r2_score") is not None else "not tested yet"
+                )
                 + (
                     f", validation R² {_fmt_metric(m['validation'].get('r2'))}"
                     if isinstance(m.get("validation"), dict) else ""
@@ -138,7 +141,10 @@ def render_ui_state(ui: dict[str, Any]) -> str:
     if metrics.get("model_id"):
         lines.append(
             f"  model shown in UI: {metrics['model_id']} ({metrics.get('algorithm')}, "
-            f"R² {_fmt_metric(metrics.get('r2_score'))}, RMSE {_fmt_metric(metrics.get('rmse'))})"
+            + (
+                f"test R² {_fmt_metric(metrics.get('r2_score'))}, RMSE {_fmt_metric(metrics.get('rmse'))})"
+                if metrics.get("r2_score") is not None else "trained, not tested yet)"
+            )
         )
         cv = metrics.get("cv") if isinstance(metrics.get("cv"), dict) else None
         if cv:

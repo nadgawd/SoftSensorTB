@@ -41,8 +41,8 @@ export default function ValidationStep({ modelMetrics, plotHistory }) {
               <tr><th>Metric</th><th>Value</th><th>Notes</th></tr>
             </thead>
             <tbody>
-              <MetricRow label="Test R²" value={fmt(modelMetrics.r2_score)} note="Coefficient of determination on the held-out rows" />
-              <MetricRow label="Test RMSE" value={fmt(modelMetrics.rmse)} note="Root mean squared error on the held-out rows" />
+              <MetricRow label="Test R²" value={fmt(modelMetrics.r2_score)} note={modelMetrics.r2_score == null ? 'Not tested yet: test the model in Step 5' : 'Coefficient of determination on the held-out rows'} />
+              <MetricRow label="Test RMSE" value={fmt(modelMetrics.rmse)} note={modelMetrics.r2_score == null ? '' : 'Root mean squared error on the held-out rows'} />
               {validation && (
                 <>
                   <MetricRow label="Validation R²" value={fmt(validation.r2)} note="On the separate validation rows" />

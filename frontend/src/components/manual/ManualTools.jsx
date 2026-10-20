@@ -24,8 +24,8 @@ const TOOL_LAYOUTS = {
       },
       { title: 'Data', fields: ['target_column', 'feature_columns'] },
       {
-        title: 'Train / test split',
-        note: 'The test rows are held out from training and used to score the model.',
+        title: 'Train / validation / test split',
+        note: 'The rows are split before training. The model is fitted on the training rows only; the test rows stay untouched until you test it.',
         fields: ['split_strategy', 'test_size', 'validation_size', 'stratify_column', 'n_strata', 'group_column', 'random_state'],
       },
       {
@@ -48,7 +48,8 @@ const TOOL_LAYOUTS = {
 }
 
 const RUN_LABELS = {
-  train: 'Train & test',
+  train: 'Split & train',
+  test: 'Test',
   transform: 'Apply',
   plot: 'Plot',
   table: 'Run',
@@ -57,15 +58,21 @@ const RUN_LABELS = {
 
 const KIND_NOTES = {
   transform: 'Creates a new dataset version. Use History to go back.',
-  train: 'Fits the model on the training rows, then tests it on the held-out test rows (and the validation rows, if a validation fraction is set). Results appear below.',
+  train: 'Fits the model on the training rows only (and scores the validation rows, if set). The test rows are held out; test the model next.',
+  test: 'Scores the chosen model (the newest one if left empty) on the test rows it held out at training time.',
 }
+
+const NEXT_TOOL = { train_soft_sensor: 'evaluate_on_test_set' }
 
 /**
  * The step's tools: pick one, set its parameters, run it.
  * Form values live in App so the assistant's tool calls fill them in too.
+ * With `fixedTool` it shows that one tool without the picker (the Graph tab).
  */
 export default function ManualTools({
   activeStep,
+  fixedTool,
+  title = 'Tools',
   datasetVersionId,
   targetVariable,
   selectedFeatures,
@@ -89,8 +96,8 @@ export default function ManualTools({
   const [status, setStatus] = useState(null)
 
   const stepTools = useMemo(
-    () => (tools || []).filter((t) => t.steps.includes(activeStep)),
-    [tools, activeStep],
+    () => (tools || []).filter((t) => (fixedTool ? t.name === fixedTool : t.steps.includes(activeStep))),
+    [tools, activeStep, fixedTool],
   )
   const tool = stepTools.find((t) => t.name === toolByStep[activeStep])
     || stepTools.find((t) => t.name === PREFERRED_TOOL[activeStep])
@@ -116,7 +123,8 @@ export default function ManualTools({
   if (!tool) return null
 
   const toolErrors = errors[tool.name] || {}
-  const toolStatus = status?.tool === tool.name ? status : null
+  // A train run switches to the test tool; its status line stays visible there.
+  const toolStatus = status && (status.tool === tool.name || NEXT_TOOL[status.tool] === tool.name) ? status : null
   const isRunning = running !== null
   const edited = Boolean(edits[tool.name] && Object.keys(edits[tool.name]).length)
 
@@ -147,6 +155,8 @@ export default function ManualTools({
       const result = await runManualTool(tool.name, datasetVersionId, args)
       await onResult(result, { tool: tool.name, label: tool.label, args })
       setStatus({ tool: tool.name, ok: true, text: result.message || 'Done.' })
+      const next = NEXT_TOOL[tool.name]
+      if (!fixedTool && next && stepTools.some((t) => t.name === next)) onToolSelect(activeStep, next)
     } catch (err) {
       setStatus({ tool: tool.name, ok: false, text: errorDetail(err, 'The tool failed.') })
     } finally {
@@ -157,23 +167,29 @@ export default function ManualTools({
 
   const selectId = `manual-tool-${activeStep}`
   return (
-    <section className="panel manual-panel" aria-label="Tools">
+    <section className={`panel manual-panel${fixedTool ? ' manual-panel-fixed' : ''}`} aria-label={title}>
       <div className="manual-head">
-        <label className="manual-title" htmlFor={selectId}>Tools</label>
-        <select
-          id={selectId}
-          className="input-base manual-input manual-tool-select"
-          value={tool.name}
-          onChange={(e) => onToolSelect(activeStep, e.target.value)}
-        >
-          {stepTools.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
-        </select>
+        {fixedTool ? (
+          <p className="manual-title">{title}</p>
+        ) : (
+          <>
+            <label className="manual-title" htmlFor={selectId}>{title}</label>
+            <select
+              id={selectId}
+              className="input-base manual-input manual-tool-select"
+              value={tool.name}
+              onChange={(e) => onToolSelect(activeStep, e.target.value)}
+            >
+              {stepTools.map((t) => <option key={t.name} value={t.name}>{t.label}</option>)}
+            </select>
+          </>
+        )}
         {editsFrom[tool.name] === 'assistant' && (
           <span className="badge badge-ember manual-source">Set by the assistant’s last run</span>
         )}
       </div>
 
-      <p className="manual-tool-desc" title={tool.description}>{tool.description}</p>
+      {!fixedTool && <p className="manual-tool-desc" title={tool.description}>{tool.description}</p>}
 
       {schemaError && <p className="manual-error">Could not load the dataset columns: {schemaError}</p>}
       {!schema && schemaLoading ? (

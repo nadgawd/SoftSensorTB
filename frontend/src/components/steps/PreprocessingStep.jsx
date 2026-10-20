@@ -1,48 +1,28 @@
-import PlotCanvas from '../PlotCanvas'
-
 /**
  * Step 3 — Preprocessing
  */
-export default function PreprocessingStep({ tablePreview, plotHistory, datasetVersionId }) {
+export default function PreprocessingStep({ tablePreview, datasetVersionId }) {
   const hasData = tablePreview?.length > 0
 
+  if (!hasData) {
+    return (
+      <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
+        <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>🔧</p>
+        <p style={{ fontSize: '0.875rem' }}>Upload a dataset in Step 1 to enable preprocessing tools.</p>
+      </div>
+    )
+  }
+
   return (
-    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: '100%' }}>
-      {/* Status bar */}
-      {hasData && (
-        <div className="panel" style={{ borderRadius: '14px', padding: '12px 18px' }}>
-          <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap' }}>
-            <StatItem label="Rows" value={tablePreview.length} />
-            <StatItem label="Columns" value={Object.keys(tablePreview[0]).length} />
-            <StatItem
-              label="Status"
-              value={datasetVersionId ? '✓ Active version' : '—'}
-              valueColor="var(--color-signal)"
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Plot area */}
-      <PlotCanvas
-        label="Visualization Canvas"
-        plotHistory={plotHistory}
-        emptyState={
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-mist)', gap: '8px', padding: '30px' }}>
-            <p style={{ fontSize: '1.5rem' }}>📈</p>
-            <p style={{ fontSize: '0.875rem', textAlign: 'center', color: 'var(--color-mist)' }}>
-              Pick the Plot tool above and press Plot, or ask the Assistant for a chart
-            </p>
-          </div>
-        }
-      />
-
-      {!hasData && (
-        <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
-          <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>🔧</p>
-          <p style={{ fontSize: '0.875rem' }}>Upload a dataset in Step 1 to enable preprocessing tools.</p>
-        </div>
-      )}
+    <div className="animate-rise panel" style={{ borderRadius: '14px', padding: '12px 18px' }}>
+      <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <StatItem label="Rows shown" value={tablePreview.length} />
+        <StatItem label="Columns" value={Object.keys(tablePreview[0]).length} />
+        <StatItem label="Status" value={datasetVersionId ? '✓ Active version' : '—'} valueColor="var(--color-signal)" />
+        <p className="manual-hint" style={{ margin: 0, flex: '1 1 220px' }}>
+          Check the effect of each step in the Data preview and Graph tabs at the bottom.
+        </p>
+      </div>
     </div>
   )
 }

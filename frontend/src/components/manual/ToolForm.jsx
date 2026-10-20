@@ -299,10 +299,11 @@ function FieldControl({ field, value, onChange, schema, values, id }) {
   }
 }
 
-/** Syntax rules and worked examples of a free-text field; an example can be copied into it. */
+/** Syntax rules and worked examples of a free-text field, folded by default; an example can be copied into it. */
 function SyntaxHelp({ help, onUse }) {
   return (
-    <div className="manual-syntax">
+    <details className="manual-syntax">
+      <summary className="manual-syntax-summary">Syntax &amp; examples</summary>
       <p className="manual-syntax-title">Syntax</p>
       <ul>
         {help.syntax.map((line) => <li key={line}>{line}</li>)}
@@ -318,7 +319,7 @@ function SyntaxHelp({ help, onUse }) {
           </li>
         ))}
       </ul>
-    </div>
+    </details>
   )
 }
 

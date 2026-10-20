@@ -54,7 +54,9 @@ def _run(client, user, version, tool, **arguments):  # noqa: F811
 def test_every_tool_has_a_manual_form():
     assert set(MANUAL_TOOLS) == set(TOOL_FUNCTIONS)
     for name, ui in MANUAL_TOOLS.items():
-        assert ui["steps"] and set(ui["steps"]) <= set(STEPS), name
+        assert set(ui["steps"]) <= set(STEPS), name
+        assert len(ui["steps"]) == 1 or (not ui["steps"] and ui.get("panel")), f"{name} must sit in exactly one step"
+    assert {s for ui in MANUAL_TOOLS.values() for s in ui["steps"]} == set(STEPS)
 
 
 @pytest.mark.parametrize("name", sorted(TOOL_FUNCTIONS))
@@ -211,9 +213,26 @@ def test_manual_pipeline_end_to_end(client):  # noqa: F811
     assert (metrics["n_train"], metrics["n_test"]) == (30, 10)
     assert metrics["hyperparameters"] == {"split_strategy": "random", "test_size": 0.25, "random_state": 7,
                                           "alpha": 0.5, "fit_intercept": True}
-    assert metrics["r2_score"] > 0.9
+    assert metrics["r2_score"] is None and metrics["tested"] is False and metrics["test"] is None
+    assert metrics["train"]["r2"] > 0.9 and "not tested yet" in trained.json()["message"]
+    assert [(s["set"], s["rows"]) for s in metrics["split"]] == [("train", 30), ("test", 10)]
 
     scored = trained.json()["active_dataset_version_id"]
+    tested = _run(client, alice, scored, "evaluate_on_test_set", model_id=metrics["model_id"])
+    assert tested.status_code == 200, tested.text
+    assert tested.json()["active_dataset_version_id"] == scored
+    test_metrics = tested.json()["model_metrics"]
+    assert test_metrics["tested"] and test_metrics["test"]["n_rows"] == 10 and test_metrics["r2_score"] > 0.9
+    assert test_metrics["r2_score"] == test_metrics["test"]["r2"] and test_metrics["test"]["mae"] > 0
+    assert "on 10 held-out test rows" in tested.json()["message"]
+
+    summary = _run(client, alice, scored, "view_data_split").json()["table_preview"]
+    assert [(r["set"], r["rows"]) for r in summary] == [("Training", 30), ("Test", 10)]
+    test_rows = _run(client, alice, scored, "view_data_split", subset="test").json()
+    assert len(test_rows["table_preview"]) == 10 and set(test_rows["table_preview"][0]) == {"row", "y", "x1", "x2"}
+    assert "Test rows · 10 of 40 (25%)" in test_rows["table_title"]
+    _ = _run(client, alice, scored, "view_data_split", subset="validation")
+    assert _.status_code == 400 and "no validation rows" in _.json()["detail"]
     parity = _run(client, alice, scored, "generate_parity_plot", model_id=metrics["model_id"])
     assert parity.status_code == 200, parity.text
     assert parity.json()["plot_data"]["data"]

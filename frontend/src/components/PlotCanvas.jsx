@@ -9,7 +9,7 @@ function formatTime(ts) {
  * Plot panel with the session's plot history: the selected plot fills the
  * canvas, and a strip above it switches between earlier ones.
  */
-export default function PlotCanvas({ label, plotHistory, emptyState }) {
+export default function PlotCanvas({ label, plotHistory, emptyState, compact = false }) {
   const { plots, activePlot, selectPlot, removePlot } = plotHistory
   const activeIndex = activePlot ? plots.findIndex((p) => p.id === activePlot.id) : -1
   const isLatest = activePlot && activeIndex === plots.length - 1
@@ -29,7 +29,10 @@ export default function PlotCanvas({ label, plotHistory, emptyState }) {
   return (
     <div
       className="panel"
-      style={{ borderRadius: '14px', flex: '1 0 auto', minHeight: '450px', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      style={{
+        borderRadius: '14px', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+        ...(compact ? { flex: 1, minHeight: 0, height: '100%' } : { flex: '1 0 auto', minHeight: '450px' }),
+      }}
     >
       <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--color-line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
         <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: 0 }}>
@@ -68,8 +71,8 @@ export default function PlotCanvas({ label, plotHistory, emptyState }) {
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: '400px' }}>
-        {activePlot ? <DynamicGraph key={activePlot.id} data={activePlot.data} /> : emptyState}
+      <div style={{ flex: 1, minHeight: compact ? 0 : '400px' }}>
+        {activePlot ? <DynamicGraph key={activePlot.id} data={activePlot.data} minHeight={compact ? 200 : 400} /> : emptyState}
       </div>
     </div>
   )

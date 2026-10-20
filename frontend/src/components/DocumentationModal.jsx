@@ -71,8 +71,8 @@ const CATEGORIES = [
   {
     id: 'modeling',
     label: 'Modeling & Validation',
-    blurb: 'Train soft-sensor regression models with random, stratified, chronological or group splits, an optional validation set, and K-Fold, stratified, repeated, group, leave-one-out, shuffle-split, walk-forward or bootstrap validation.',
-    tools: ['train_soft_sensor', 'list_trained_models'],
+    blurb: 'Split the rows into training, optional validation and test sets (random, stratified, chronological or group splits) and inspect each set; train soft-sensor regression models on the training rows only, with optional K-Fold, stratified, repeated, group, leave-one-out, shuffle-split, walk-forward or bootstrap validation; then test the model separately on the held-out test rows.',
+    tools: ['train_soft_sensor', 'view_data_split', 'evaluate_on_test_set', 'list_trained_models'],
   },
   {
     id: 'plotting',

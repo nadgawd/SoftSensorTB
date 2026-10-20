@@ -5,7 +5,7 @@ import { useTheme } from '../hooks/useTheme'
  * Renders Plotly JSON from generate_custom_plot / generate_parity_plot.
  * Expects ``json.loads(fig.to_json())`` shape: { data, layout, ... }.
  */
-export default function DynamicGraph({ data }) {
+export default function DynamicGraph({ data, minHeight = 400 }) {
   const { theme } = useTheme()
 
   if (!data || !Array.isArray(data.data) || data.data.length === 0) {
@@ -81,7 +81,7 @@ export default function DynamicGraph({ data }) {
   }
 
   return (
-    <div className="animate-fade-in" style={{ width: '100%', height: '100%', minHeight: '400px' }} key={theme}>
+    <div className="animate-fade-in" style={{ width: '100%', height: '100%', minHeight: `${minHeight}px` }} key={theme}>
       <Plot
         data={data.data}
         layout={layout}
@@ -92,7 +92,7 @@ export default function DynamicGraph({ data }) {
           modeBarButtonsToRemove: ['lasso2d', 'select2d'],
         }}
         useResizeHandler
-        style={{ width: '100%', height: '100%', minHeight: 400 }}
+        style={{ width: '100%', height: '100%', minHeight }}
       />
     </div>
   )
