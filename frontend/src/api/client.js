@@ -84,7 +84,7 @@ export async function postChat({ message, history, datasetVersionId, stepHint, u
 }
 
 /** `keepVersionId`: the open dataset, which must survive the per-user dataset limit (uploading a file to combine with it). */
-export async function uploadDataset(file, { keepVersionId } = {}) {
+export async function uploadDataset(file, { keepVersionId, onProgress } = {}) {
   const form = new FormData()
   form.append('file', file)
   const { data } = await api.post('/datasets/upload', form, {
@@ -92,6 +92,9 @@ export async function uploadDataset(file, { keepVersionId } = {}) {
     // Large plant exports can take longer than the default request timeout.
     timeout: 0,
     params: keepVersionId ? { keep_version_id: keepVersionId } : undefined,
+    onUploadProgress: onProgress
+      ? (e) => onProgress(e.total ? e.loaded / e.total : null, e.loaded)
+      : undefined,
   })
   return data
 }
@@ -101,9 +104,43 @@ export async function fetchDatasetHistory(datasetId) {
   return data
 }
 
-export async function fetchVersionPreview(datasetVersionId, limit = 25) {
-  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/preview?limit=${limit}`)
+/** A page of rows (`offset`, `limit`) or a random `sample`, plus `row_count` and `row_numbers`. */
+export async function fetchVersionPreview(datasetVersionId, { limit = 25, offset = 0, sample = false, seed = 0 } = {}) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/preview`, {
+    params: { limit, offset, sample, seed },
+  })
   return data
+}
+
+/** Quality profile of a whole version: per-column checks, time sampling and gaps, target coverage. */
+export async function fetchVersionProfile(datasetVersionId, { target, timeColumn } = {}) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/profile`, {
+    params: { target: target || undefined, time_column: timeColumn || undefined },
+    timeout: 0,
+  })
+  return data
+}
+
+/**
+ * Download an export (the request needs the auth header, so it is fetched as a blob and saved).
+ * `onProgress(fraction|null, loadedBytes)`; the file name comes from the server.
+ */
+export async function downloadExport(path, { params, onProgress, fallbackName = 'export' } = {}) {
+  const res = await api.get(path, {
+    params,
+    responseType: 'blob',
+    timeout: 0,
+    onDownloadProgress: onProgress
+      ? (e) => onProgress(e.total ? e.loaded / e.total : null, e.loaded)
+      : undefined,
+  })
+  const match = /filename="([^"]+)"/.exec(res.headers['content-disposition'] || '')
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = match ? match[1] : fallbackName
+  a.click()
+  setTimeout(() => URL.revokeObjectURL(url), 0)
 }
 
 export async function rollbackVersion(datasetVersionId) {

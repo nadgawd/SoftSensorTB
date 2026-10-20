@@ -7,6 +7,7 @@ import uuid
 from pathlib import Path
 from typing import Any, BinaryIO, Optional
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
@@ -25,6 +26,7 @@ from backend.services.lineage_service import (
     build_parquet_path,
     get_dataset_version_history,
 )
+from backend.services.profile import cached_profile
 from backend.services.projects import evict_old_datasets, owned_dataset, owned_version
 
 router = APIRouter(tags=["datasets"])
@@ -58,6 +60,10 @@ class PreviewResponse(BaseModel):
     row_count: int
     columns: list[str]
     table_preview: list[dict[str, Any]]
+    # Positions (0-based) of the returned rows in the version.
+    row_numbers: list[int] = Field(default_factory=list)
+    offset: int = 0
+    sample: bool = False
 
 
 class RollbackResponse(BaseModel):
@@ -206,9 +212,12 @@ async def dataset_history(
 async def version_preview(
     dataset_version_id: str,
     limit: int = Query(25, ge=1, le=10000),
+    offset: int = Query(0, ge=0, description="First row of the page."),
+    sample: bool = Query(False, description="A random sample of `limit` rows (in row order) instead of a page."),
+    seed: int = Query(0, description="Seed of the random sample."),
     user: User = Depends(get_current_user),
 ) -> PreviewResponse:
-    """Return the first N rows for the Data Preview tab."""
+    """A page of rows (or a random sample) for the Data Preview tab, with the version's total row count."""
     async with AsyncSessionLocal() as session:
         version = await owned_version(session, dataset_version_id, user)
         try:
@@ -216,12 +225,23 @@ async def version_preview(
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+        total = int(len(df))
+        if sample:
+            positions = np.sort(np.random.default_rng(seed).choice(total, size=min(limit, total), replace=False))
+            page, offset = df.iloc[positions], 0
+        else:
+            offset = min(offset, max(total - 1, 0))
+            positions = np.arange(offset, min(offset + limit, total))
+            page = df.iloc[offset:offset + limit]
         return PreviewResponse(
             dataset_id=str(version.dataset_id),
             dataset_version_id=str(version.id),
-            row_count=int(len(df)),
+            row_count=total,
             columns=list(df.columns),
-            table_preview=_df_preview(df, limit=limit),
+            table_preview=_df_preview(page, limit=limit),
+            row_numbers=[int(p) for p in positions],
+            offset=offset,
+            sample=sample,
         )
 
 
@@ -290,6 +310,29 @@ async def version_schema(
             "models": models,
             "datasets": datasets,
         }
+
+
+@router.get("/datasets/versions/{dataset_version_id}/profile")
+async def version_profile(
+    dataset_version_id: str,
+    target: Optional[str] = Query(None, description="Target (lab) column: reported as coverage, not as missing data."),
+    time_column: Optional[str] = Query(None, description="Time column; detected when omitted."),
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Quality profile of the whole version: per-column checks, time sampling and gaps, target coverage."""
+    async with AsyncSessionLocal() as session:
+        version = await owned_version(session, dataset_version_id, user)
+    try:
+        profile = await run_in_threadpool(
+            cached_profile,
+            (str(version.id), target, time_column),
+            lambda: _load_dataframe(version),
+            target=target,
+            time_column=time_column,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"dataset_version_id": str(version.id), **profile}
 
 
 @router.get("/datasets/versions/{dataset_version_id}/meta")

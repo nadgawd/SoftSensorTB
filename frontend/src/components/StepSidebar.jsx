@@ -1,5 +1,6 @@
 import { STEPS } from '../constants/steps'
 import LlmStatus from './LlmStatus'
+import { formatCount } from '../utils/format'
 
 
 function CheckIcon() {
@@ -20,6 +21,7 @@ export default function StepSidebar({
   onStepChange,
   completedSteps,
   tablePreview,
+  rowCount,
   modelMetrics,
   onNewProject,
 }) {
@@ -32,7 +34,8 @@ export default function StepSidebar({
   function getSubText(stepId) {
     if (stepId === 'ingestion' && fileName) {
       if (tablePreview && tablePreview.length > 0) {
-        return `${Object.keys(tablePreview[0]).length} columns loaded`
+        const cols = Object.keys(tablePreview[0]).length
+        return rowCount != null ? `${formatCount(rowCount)} rows · ${cols} columns` : `${cols} columns loaded`
       }
       return 'Dataset loaded'
     }

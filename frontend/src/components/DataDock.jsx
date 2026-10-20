@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import ManualTools from './manual/ManualTools'
 import PlotCanvas from './PlotCanvas'
 import { usePersisted } from '../hooks/usePersisted'
+import { formatCount } from '../utils/format'
 
 const MIN_HEIGHT = 180
 const DEFAULT_HEIGHT = 340
@@ -14,14 +15,66 @@ function cell(value) {
   return value === null || value === undefined ? '—' : String(value)
 }
 
+function PreviewControls({ meta, shown, limit, onLimitChange, onPageChange }) {
+  const total = meta?.rowCount ?? shown
+  const offset = meta?.offset ?? 0
+  const sample = Boolean(meta?.sample)
+  const first = shown ? offset + 1 : 0
+  const last = offset + shown
+
+  return (
+    <div className="dock-limit">
+      <div className="dock-mode" role="group" aria-label="Which rows to show">
+        <button type="button" className={sample ? '' : 'active'} onClick={() => onPageChange?.({ offset: 0, sample: false, seed: 0 })}>
+          In order
+        </button>
+        <button
+          type="button"
+          className={sample ? 'active' : ''}
+          title="A random sample of rows from the whole version, in row order"
+          onClick={() => onPageChange?.({ offset: 0, sample: true, seed: Math.floor(Math.random() * 1e6) })}
+        >
+          {sample ? '↻ New sample' : 'Random sample'}
+        </button>
+      </div>
+      {sample ? (
+        <span>{formatCount(shown)} random of {formatCount(total)}</span>
+      ) : (
+        <>
+          <button type="button" className="dock-page" disabled={offset === 0} aria-label="Previous rows"
+            onClick={() => onPageChange?.({ offset: Math.max(0, offset - limit), sample: false, seed: 0 })}>‹</button>
+          <span>{formatCount(first)}–{formatCount(last)} of {formatCount(total)}</span>
+          <button type="button" className="dock-page" disabled={last >= total} aria-label="Next rows"
+            onClick={() => onPageChange?.({ offset: offset + limit, sample: false, seed: 0 })}>›</button>
+        </>
+      )}
+      <label>
+        Per page
+        <input
+          type="number"
+          min="1"
+          max="10000"
+          value={limit}
+          onChange={(e) => {
+            const val = parseInt(e.target.value, 10)
+            if (!Number.isNaN(val) && val > 0) onLimitChange?.(val)
+          }}
+        />
+      </label>
+    </div>
+  )
+}
+
 /**
  * Bottom dock on every step: the active version's rows, and a Graph tab to plot
  * any columns of it. Drag the top edge to resize; click the open tab to fold it.
  */
 export default function DataDock({
   rows,
+  previewMeta,
   previewLimit,
   onPreviewLimitChange,
+  onPageChange,
   open,
   tab,
   onOpenChange,
@@ -107,26 +160,20 @@ export default function DataDock({
               {t.label}
               <span className="dock-tab-count">
                 {t.id === 'preview'
-                  ? `${rows?.length ?? 0} rows · ${columns.length} cols`
+                  ? `${formatCount(previewMeta?.rowCount ?? rows?.length ?? 0)} rows · ${columns.length} cols`
                   : `${plotCount} plot${plotCount === 1 ? '' : 's'}`}
               </span>
             </button>
           ))}
         </div>
         {open && tab === 'preview' && (
-          <label className="dock-limit">
-            Rows:
-            <input
-              type="number"
-              min="1"
-              max="10000"
-              value={previewLimit || 25}
-              onChange={(e) => {
-                const val = parseInt(e.target.value, 10)
-                if (!Number.isNaN(val) && val > 0) onPreviewLimitChange?.(val)
-              }}
-            />
-          </label>
+          <PreviewControls
+            meta={previewMeta}
+            shown={rows?.length ?? 0}
+            limit={previewLimit || 25}
+            onLimitChange={onPreviewLimitChange}
+            onPageChange={onPageChange}
+          />
         )}
         {open && (
           <button type="button" className="dock-fold" onClick={() => onOpenChange(false)} aria-label="Fold the panel" title="Fold">
@@ -139,10 +186,18 @@ export default function DataDock({
         <div className="dock-body dock-preview">
           {columns.length ? (
             <table className="data-table">
-              <thead><tr>{columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
+              <thead>
+                <tr>
+                  <th className="dock-rownum" title="Row number in this version">#</th>
+                  {columns.map((c) => <th key={c}>{c}</th>)}
+                </tr>
+              </thead>
               <tbody>
                 {rows.map((row, i) => (
-                  <tr key={i}>{columns.map((c) => <td key={c}>{cell(row[c])}</td>)}</tr>
+                  <tr key={previewMeta?.rowNumbers?.[i] ?? i}>
+                    <td className="dock-rownum">{(previewMeta?.rowNumbers?.[i] ?? i) + 1}</td>
+                    {columns.map((c) => <td key={c}>{cell(row[c])}</td>)}
+                  </tr>
                 ))}
               </tbody>
             </table>

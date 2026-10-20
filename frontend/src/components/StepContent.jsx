@@ -37,6 +37,9 @@ const STEP_SUBTITLES = {
   export: 'Package model, data, and decision log for deployment',
 }
 
+// Steps whose own panel is an overview that tells you which tool to use, so it comes before the tools.
+const PANEL_FIRST = new Set(['ingestion', 'quality'])
+
 const STEP_NUMBERS = {
   ingestion: 1,
   quality: 2,
@@ -61,6 +64,12 @@ export default function StepContent({
   targetVariable,
   previewLimit,
   onPreviewLimitChange,
+  previewMeta,
+  onPreviewPageChange,
+  profile,
+  timeColumn,
+  onTimeColumnChange,
+  onOpenTool,
   selectedFeatures,
   onUploadSuccess,
   onTargetSelect,
@@ -91,8 +100,9 @@ export default function StepContent({
       case 'quality':
         return (
           <DataQualityStep
-            tablePreview={tablePreview}
-            fileName={fileName}
+            profile={profile}
+            targetVariable={targetVariable}
+            onOpenTool={onOpenTool}
           />
         )
       case 'preprocessing':
@@ -130,10 +140,11 @@ export default function StepContent({
       case 'export':
         return (
           <ExportStep
-            fileName={fileName}
-            modelMetrics={modelMetrics}
-            tablePreview={tablePreview}
             datasetVersionId={datasetVersionId}
+            modelMetrics={modelMetrics}
+            profile={profile}
+            targetVariable={targetVariable}
+            timeColumn={timeColumn}
           />
         )
       default:
@@ -275,7 +286,7 @@ export default function StepContent({
 
       {/* Main step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
-        {activeStep === 'ingestion' && (
+        {PANEL_FIRST.has(activeStep) && (
           <div style={{ marginBottom: '16px' }}>{renderStepPanel()}</div>
         )}
         <ManualTools
@@ -287,15 +298,17 @@ export default function StepContent({
           {...manualTools}
         />
         {resultTable && <ResultTable table={resultTable} onClose={onResultTableClose} />}
-        {activeStep !== 'ingestion' && renderStepPanel()}
+        {!PANEL_FIRST.has(activeStep) && renderStepPanel()}
       </div>
 
       {/* Data preview + Graph dock (every step, once there is data) */}
       {datasetVersionId && (
         <DataDock
           rows={tablePreview}
+          previewMeta={previewMeta}
           previewLimit={previewLimit}
           onPreviewLimitChange={onPreviewLimitChange}
+          onPageChange={onPreviewPageChange}
           open={dock.open}
           tab={dock.tab}
           onOpenChange={dock.onOpenChange}

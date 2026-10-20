@@ -17,6 +17,7 @@ from backend.agents.execution_agent import run_execution_agent
 from backend.agents.knowledge_agent import run_knowledge_agent
 from backend.agents.router import classify_intent
 from backend.api.datasets import router as datasets_router
+from backend.api.exports import router as exports_router
 from backend.api.project import router as project_router
 from backend.api.tools import router as tools_router
 from backend.auth import User, auth_required, get_current_user
@@ -54,10 +55,11 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
-    expose_headers=["Retry-After"],
+    expose_headers=["Retry-After", "Content-Disposition"],
 )
 
 app.include_router(datasets_router)
+app.include_router(exports_router)
 app.include_router(project_router)
 app.include_router(tools_router)
 

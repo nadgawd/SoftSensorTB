@@ -1,118 +1,138 @@
-/**
- * Step 7 — Export
- */
-export default function ExportStep({ fileName, modelMetrics, tablePreview, datasetVersionId }) {
-  const hasModel = Boolean(modelMetrics)
-  const hasData = Boolean(tablePreview?.length)
+import { useEffect, useState } from 'react'
+import { downloadExport, errorDetail, fetchVersionSchema } from '../../api/client'
+import { formatBytes, formatCount } from '../../utils/format'
 
-  function downloadSummary() {
-    const summary = {
-      file: fileName,
-      dataset_version_id: datasetVersionId,
-      rows: tablePreview?.length,
-      model: modelMetrics,
-      exported_at: new Date().toISOString(),
+async function blobErrorDetail(err) {
+  const data = err?.response?.data
+  if (data instanceof Blob) {
+    try {
+      return JSON.parse(await data.text()).detail || 'Download failed.'
+    } catch {
+      return 'Download failed.'
     }
-    const blob = new Blob([JSON.stringify(summary, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `soft-sensor-export-${Date.now()}.json`
-    a.click()
-    URL.revokeObjectURL(url)
+  }
+  return errorDetail(err, 'Download failed.')
+}
+
+function modelLabel(m) {
+  const score = m.r2_score != null ? `test R² ${Number(m.r2_score).toFixed(3)}`
+    : m.cv?.r2 != null ? `CV R² ${Number(m.cv.r2).toFixed(3)}` : 'not tested'
+  return `${m.algorithm} → ${m.target_column} · ${m.feature_columns?.length ?? 0} features · ${score} · ${m.model_id.slice(0, 8)}`
+}
+
+/**
+ * Step 7 — Export: the data, the model, the steps that produced them, and a report.
+ */
+export default function ExportStep({ datasetVersionId, modelMetrics, profile, targetVariable, timeColumn }) {
+  const [models, setModels] = useState([])
+  const [modelId, setModelId] = useState('')
+  const [progress, setProgress] = useState({})
+  const [error, setError] = useState(null)
+  const data = profile?.data
+
+  useEffect(() => {
+    if (!datasetVersionId) return undefined
+    let cancelled = false
+    fetchVersionSchema(datasetVersionId)
+      .then((schema) => {
+        if (cancelled) return
+        const list = schema.models || []
+        setModels(list)
+        setModelId((current) => (list.some((m) => m.model_id === current) ? current
+          : list.find((m) => m.model_id === modelMetrics?.model_id)?.model_id || list[0]?.model_id || ''))
+      })
+      .catch(() => { if (!cancelled) setModels([]) })
+    return () => { cancelled = true }
+  }, [datasetVersionId, modelMetrics?.model_id])
+
+  async function download(key, path, params) {
+    setError(null)
+    setProgress((p) => ({ ...p, [key]: 'Preparing…' }))
+    try {
+      await downloadExport(path, {
+        params,
+        onProgress: (fraction, loaded) => setProgress((p) => ({
+          ...p,
+          [key]: fraction != null ? `${Math.round(fraction * 100)}%` : formatBytes(loaded),
+        })),
+      })
+    } catch (err) {
+      setError(await blobErrorDetail(err))
+    } finally {
+      setProgress((p) => ({ ...p, [key]: null }))
+    }
   }
 
+  if (!datasetVersionId) {
+    return <div className="panel export-panel"><p className="manual-hint">Upload a dataset in Step 1 to export it.</p></div>
+  }
+
+  const base = `/datasets/versions/${datasetVersionId}`
+  const button = (key, label, path, params, disabled = false) => (
+    <button type="button" className="btn-ghost export-btn" disabled={disabled || Boolean(progress[key])}
+      onClick={() => download(key, path, params)}>
+      {progress[key] || label}
+    </button>
+  )
+
   return (
-    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Export summary card */}
-      <div className="panel" style={{ borderRadius: '14px', padding: '18px 22px' }}>
-        <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: '0 0 14px' }}>
-          Project Summary
-        </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '18px' }}>
-          <SummarySection label="Data" items={[
-            { key: 'Source file', val: fileName || '—' },
-            { key: 'Rows processed', val: tablePreview?.length ? `${tablePreview.length} (preview)` : '—' },
-            { key: 'Active version', val: datasetVersionId ? datasetVersionId.slice(0, 8) + '…' : '—' },
-          ]} />
-          <SummarySection label="Model" items={[
-            { key: 'Algorithm', val: modelMetrics?.algorithm || '—' },
-            { key: 'R²', val: modelMetrics?.r2_score != null ? Number(modelMetrics.r2_score).toFixed(4) : '—' },
-            { key: 'RMSE', val: modelMetrics?.rmse != null ? Number(modelMetrics.rmse).toFixed(4) : '—' },
-          ]} />
-        </div>
-
-        {/* Checklist */}
-        <div style={{ borderTop: '1px solid var(--color-line)', paddingTop: '14px', display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '16px' }}>
-          <CheckItem done={Boolean(fileName)} label="Dataset uploaded" />
-          <CheckItem done={hasData} label="Data preview available" />
-          <CheckItem done={hasModel} label="Soft sensor trained" />
-          <CheckItem done={hasModel && modelMetrics?.r2_score > 0.5} label="R² > 0.5 (recommended)" />
-        </div>
-
-        {/* Export options + button */}
-        <div style={{ borderTop: '1px solid var(--color-line)', paddingTop: '14px' }}>
-          <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginBottom: '14px' }}>
-            <ExportOption label="Decision log" format="JSON" checked={true} />
-            <ExportOption label="Model coefficients" format="JSON" checked={hasModel} />
-            <ExportOption label="Prepared dataset" format="Parquet" checked={hasData} />
+    <div className="animate-rise panel export-panel">
+      <p className="model-panel-title">Download from the active version</p>
+      <div className="export-list">
+        <div className="export-row">
+          <div>
+            <p className="export-name">Prepared dataset</p>
+            <p className="export-desc">
+              {data ? `All ${formatCount(data.row_count)} rows × ${data.column_count} columns` : 'Every row'} of the active version.
+              Parquet keeps the column types and is much smaller.
+            </p>
           </div>
-          <button
-            type="button"
-            className="btn-primary"
-            onClick={downloadSummary}
-            disabled={!hasData && !hasModel}
-            style={{ padding: '10px 22px', fontSize: '0.9rem' }}
-          >
-            Export summary JSON →
-          </button>
+          <div className="export-actions">
+            {button('csv', 'CSV', `${base}/download`, { format: 'csv' })}
+            {button('parquet', 'Parquet', `${base}/download`, { format: 'parquet' })}
+          </div>
+        </div>
+
+        <div className="export-row">
+          <div>
+            <p className="export-name">Trained model</p>
+            {models.length ? (
+              <>
+                <select className="manual-input export-select" value={modelId} onChange={(e) => setModelId(e.target.value)}>
+                  {models.map((m) => <option key={m.model_id} value={m.model_id}>{modelLabel(m)}</option>)}
+                </select>
+                <p className="export-desc">
+                  A joblib file. In Python: <code>a = joblib.load(path)</code>, then <code>a[&quot;model&quot;].predict(X[a[&quot;feature_columns&quot;]])</code>.
+                </p>
+              </>
+            ) : (
+              <p className="export-desc">No model trained on this dataset yet. Train one in Step 5.</p>
+            )}
+          </div>
+          <div className="export-actions">
+            {button('model', 'Model file', `/models/${modelId}/download`, undefined, !modelId)}
+          </div>
+        </div>
+
+        <div className="export-row">
+          <div>
+            <p className="export-name">Pipeline recipe</p>
+            <p className="export-desc">Every step from the upload to this version with its exact parameters, and the models trained along the way.</p>
+          </div>
+          <div className="export-actions">{button('recipe', 'JSON', `${base}/recipe`)}</div>
+        </div>
+
+        <div className="export-row">
+          <div>
+            <p className="export-name">Report</p>
+            <p className="export-desc">One HTML page with the data summary, pipeline steps, model scores and quality findings.</p>
+          </div>
+          <div className="export-actions">
+            {button('report', 'HTML', `${base}/report`, { target: targetVariable || undefined, time_column: timeColumn || undefined })}
+          </div>
         </div>
       </div>
-    </div>
-  )
-}
-
-function SummarySection({ label, items }) {
-  return (
-    <div>
-      <p style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--color-mist)', marginBottom: '8px', fontWeight: 500 }}>
-        {label}
-      </p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        {items.map(({ key, val }) => (
-          <div key={key} style={{ display: 'flex', gap: '8px', fontSize: '0.8125rem' }}>
-            <span style={{ color: 'var(--color-mist)', minWidth: '120px', flexShrink: 0 }}>{key}</span>
-            <span style={{ color: 'var(--color-foam)', fontFamily: 'var(--font-mono)', fontSize: '12px', wordBreak: 'break-all' }}>{val}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function ExportOption({ label, format, checked }) {
-  return (
-    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'default', opacity: checked ? 1 : 0.4 }}>
-      <input type="checkbox" checked={checked} readOnly style={{ accentColor: 'var(--color-signal)' }} />
-      <span style={{ fontSize: '0.8125rem', color: 'var(--color-foam)' }}>{label}</span>
-      <span style={{ fontSize: '11px', color: 'var(--color-mist)', fontFamily: 'var(--font-mono)' }}>{format}</span>
-    </label>
-  )
-}
-
-function CheckItem({ done, label }) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.875rem' }}>
-      <span style={{
-        width: '18px', height: '18px', borderRadius: '50%',
-        background: done ? 'var(--color-success)' : 'transparent',
-        border: `2px solid ${done ? 'var(--color-success)' : 'var(--color-line-2)'}`,
-        display: 'flex', alignItems: 'center', justifyContent: 'center',
-        flexShrink: 0, fontSize: '10px', color: '#fff',
-      }}>
-        {done ? '✓' : ''}
-      </span>
-      <span style={{ color: done ? 'var(--color-foam)' : 'var(--color-mist)' }}>{label}</span>
+      {error && <p className="manual-error">{error}</p>}
     </div>
   )
 }

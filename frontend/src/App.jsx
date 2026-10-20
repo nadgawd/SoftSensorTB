@@ -13,6 +13,7 @@ import { usePlotHistory } from './hooks/usePlotHistory'
 import { useTheme } from './hooks/useTheme'
 import { getSuggestions } from './utils/suggestions'
 import { useManualTools } from './hooks/useManualTools'
+import { useVersionProfile } from './hooks/useVersionProfile'
 import { editsFromArguments } from './lib/manualForm'
 
 const STEP_IDS = STEPS.map((s) => s.id)
@@ -55,24 +56,38 @@ export default function App() {
   const [datasetVersionId, setDatasetVersionId] = usePersisted('datasetVersionId', null)
   const [targetVariable, setTargetVariable] = usePersisted('targetVariable', null)
   const [selectedFeatures, setSelectedFeatures] = usePersisted('selectedFeatures', [])
+  const [timeColumn, setTimeColumn] = usePersisted('timeColumn', null)
   const [modelMetrics, setModelMetrics] = usePersisted('modelMetrics', null)
+  const profile = useVersionProfile(datasetVersionId, { target: targetVariable, timeColumn })
 
   // Table preview is kept in memory (not persisted) to allow large row limits without breaking localStorage quotas.
   // It is automatically re-fetched on load via useEffect.
   const [tablePreview, setTablePreviewRaw] = useState([])
+  // Total rows of the active version and the positions of the preview rows in it.
+  const [previewMeta, setPreviewMeta] = useState({ rowCount: null, rowNumbers: [], offset: 0, sample: false })
   const plotHistory = usePlotHistory()
   const { addPlot, clearActive: clearActivePlot, clearAll: clearPlots } = plotHistory
   const [versionHistory, setVersionHistory] = usePersisted('versionHistory', [])
 
-  // Safe setter without row capping
   const setTablePreview = useCallback((rows) => {
-    const arr = Array.isArray(rows) ? rows : []
-    setTablePreviewRaw(arr)
+    setTablePreviewRaw(Array.isArray(rows) ? rows : [])
   }, [setTablePreviewRaw])
+
+  const applyPreview = useCallback((res) => {
+    if (!res) return
+    setTablePreview(res.table_preview || [])
+    setPreviewMeta({
+      rowCount: res.row_count ?? null,
+      rowNumbers: res.row_numbers || [],
+      offset: res.offset || 0,
+      sample: Boolean(res.sample),
+    })
+  }, [setTablePreview])
 
 
   // ── Data Preview ──────────────────────────────────────────
   const [previewLimit, setPreviewLimit] = usePersisted('previewLimit', 25)
+  const [previewPage, setPreviewPage] = useState({ offset: 0, sample: false, seed: 0 })
   const [dockOpen, setDockOpen] = usePersisted('dockOpen', false)
   const [dockTab, setDockTab] = usePersisted('dockTab', 'preview')
   const [docOpen, setDocOpen] = useState(false)
@@ -90,11 +105,7 @@ export default function App() {
 
       try {
         // Ping the server to confirm this version still exists
-        const preview = await fetchVersionPreview(datasetVersionId, previewLimit)
-        // Update table preview with fresh server data if rows differ
-        if (preview?.rows?.length && preview.rows.length !== tablePreview.length) {
-          setTablePreview(preview.rows)
-        }
+        applyPreview(await fetchVersionPreview(datasetVersionId, { limit: previewLimit }))
         // Refresh history
         if (datasetId) {
           const history = await fetchDatasetHistory(datasetId)
@@ -117,15 +128,11 @@ export default function App() {
   useEffect(() => {
     if (!datasetVersionId) return
     let active = true
-    fetchVersionPreview(datasetVersionId, previewLimit)
-      .then((res) => {
-        if (active && res?.table_preview) {
-          setTablePreview(res.table_preview)
-        }
-      })
+    fetchVersionPreview(datasetVersionId, { limit: previewLimit, ...previewPage })
+      .then((res) => { if (active) applyPreview(res) })
       .catch(() => {})
     return () => { active = false }
-  }, [datasetVersionId, previewLimit, setTablePreview])
+  }, [datasetVersionId, previewLimit, previewPage, applyPreview])
 
   // Tool output tables (statistics, SQL, model list) — kept apart from the dataset preview.
   const [resultTable, setResultTable] = useState(null)
@@ -202,19 +209,21 @@ export default function App() {
       setFileName(result.file_name)
       setDatasetId(result.dataset_id)
       setDatasetVersionId(result.dataset_version_id)
-      setTablePreview(result.table_preview || [])
+      setPreviewPage({ offset: 0, sample: false, seed: 0 })
+      applyPreview({ ...result, row_numbers: (result.table_preview || []).map((_, i) => i) })
       clearPlots()
       setResultTable(null)
       setModelMetrics(null)
       setSelectedFeatures([])
       setTargetVariable(null)
+      setTimeColumn(null)
       markStepComplete('ingestion')
       await refreshHistory(result.dataset_id)
       setActiveStep('quality')
       setRestoreStatus(null)
     },
-    [refreshHistory, setFileName, setDatasetId, setDatasetVersionId, setTablePreview,
-      clearPlots, setModelMetrics, setSelectedFeatures, setTargetVariable, setActiveStep],
+    [refreshHistory, setFileName, setDatasetId, setDatasetVersionId, applyPreview,
+      clearPlots, setModelMetrics, setSelectedFeatures, setTargetVariable, setTimeColumn, setActiveStep],
   )
 
   // ── Chat response / manual tool run → UI sync ─────────────
@@ -297,6 +306,11 @@ export default function App() {
     setManualToolByStep((prev) => ({ ...prev, [step]: tool }))
   }, [setManualToolByStep])
 
+  const openTool = useCallback((step, tool) => {
+    selectManualTool(step, tool)
+    setActiveStep(step)
+  }, [selectManualTool, setActiveStep])
+
   // ── Assistant tool calls → the same tool's form shows what it used ──
   const handleAssistantToolCalls = useCallback((calls) => {
     const specs = new Map((manualToolSpecs || []).map((t) => [t.name, t]))
@@ -342,9 +356,10 @@ export default function App() {
   const handleRollback = useCallback((result) => {
     setDatasetId(result.dataset_id)
     setDatasetVersionId(result.active_dataset_version_id)
-    setTablePreview(result.table_preview || [])
+    setPreviewPage({ offset: 0, sample: false, seed: 0 })
+    applyPreview({ ...result, row_numbers: (result.table_preview || []).map((_, i) => i) })
     clearActivePlot()
-  }, [setDatasetId, setDatasetVersionId, setTablePreview, clearActivePlot])
+  }, [setDatasetId, setDatasetVersionId, applyPreview, clearActivePlot])
 
   // ── Step helpers ──────────────────────────────────────────
   function markStepComplete(stepId) {
@@ -404,6 +419,7 @@ export default function App() {
         activeStep={activeStep}
         completedSteps={completedSteps}
         tablePreview={tablePreview}
+        rowCount={previewMeta.rowCount}
         modelMetrics={modelMetrics}
         onStepChange={handleStepChange}
         onNewProject={hasSession ? handleNewProject : null}
@@ -539,6 +555,12 @@ export default function App() {
           targetVariable={targetVariable}
           previewLimit={previewLimit}
           onPreviewLimitChange={setPreviewLimit}
+          previewMeta={previewMeta}
+          onPreviewPageChange={setPreviewPage}
+          profile={profile}
+          timeColumn={timeColumn}
+          onTimeColumnChange={setTimeColumn}
+          onOpenTool={openTool}
           selectedFeatures={selectedFeatures}
           onUploadSuccess={handleUploadSuccess}
           onTargetSelect={(col) => {
