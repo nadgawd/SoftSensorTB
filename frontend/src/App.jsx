@@ -7,7 +7,12 @@ import AssistantPanel from './components/AssistantPanel'
 import DocumentationModal from './components/DocumentationModal'
 import ThemeToggle from './components/ThemeToggle'
 import AccountMenu from './components/AccountMenu'
-import { errorDetail, fetchDatasetHistory, fetchVersionPreview } from './api/client'
+import {
+  errorDetail, fetchDatasetHistory, fetchVersionDiff, fetchVersionPreview, rollbackVersion, runManualTool,
+} from './api/client'
+import { useColumnRoles } from './hooks/useColumnRoles'
+import ChangeToast from './components/ChangeToast'
+import { actionLabel } from './utils/versions'
 import { usePersisted, clearPersistedSession } from './hooks/usePersisted'
 import { resetProject } from './lib/projectSync'
 import { usePlotHistory } from './hooks/usePlotHistory'
@@ -137,6 +142,29 @@ export default function App() {
     return () => { active = false }
   }, [datasetVersionId, previewLimit, previewPage, applyPreview])
 
+  // ── What the last run changed ─────────────────────────────
+  // A new active version whose parent was the previous active one came from a run:
+  // its diff colours the preview's column headers and shows a toast with Undo.
+  const [lastDiff, setLastDiff] = useState(null)
+  const [changeToast, setChangeToast] = useState(false)
+  const prevVersionRef = useRef(datasetVersionId)
+  useEffect(() => {
+    const previous = prevVersionRef.current
+    prevVersionRef.current = datasetVersionId
+    if (!datasetVersionId || !previous || previous === datasetVersionId) return undefined
+    let active = true
+    fetchVersionDiff(datasetVersionId)
+      .then((diff) => {
+        if (!active) return
+        const fromRun = diff.parent_version_id === previous
+        setLastDiff(fromRun ? diff : null)
+        setChangeToast(fromRun)
+      })
+      .catch(() => { if (active) setLastDiff(null) })
+    return () => { active = false }
+  }, [datasetVersionId])
+  const columnChanges = lastDiff?.dataset_version_id === datasetVersionId ? lastDiff : null
+
   // Tool output tables (statistics, SQL, model list) — kept apart from the dataset preview.
   const [resultTable, setResultTable] = useState(null)
 
@@ -148,6 +176,8 @@ export default function App() {
   const [manualEditsFrom, setManualEditsFrom] = usePersisted('manualEditsFrom', {})
   const [manualToolByStep, setManualToolByStep] = usePersisted('manualToolByStep', {})
   const { tools: manualToolSpecs, error: manualSpecError, retry: retryManualSpec } = useManualTools()
+  const toolLabels = useMemo(() => new Map((manualToolSpecs || []).map((t) => [t.name, t.label])), [manualToolSpecs])
+  const closeChangeToast = useCallback(() => setChangeToast(false), [])
   const [assistantBusy, setAssistantBusy] = useState(false)
   const [toolsBusy, setToolsBusy] = useState(false)
 
@@ -314,6 +344,37 @@ export default function App() {
     setActiveStep(step)
   }, [selectManualTool, setActiveStep])
 
+  // ── Column roles and the Data preview's column menu ───────
+  const roleColumns = useMemo(
+    () => profile.data?.columns || (tablePreview?.length ? Object.keys(tablePreview[0]).map((name) => ({ name, kind: null })) : []),
+    [profile.data, tablePreview],
+  )
+  const columnRoles = useColumnRoles({
+    columns: roleColumns,
+    timeColumn: effectiveTimeColumn,
+    targetVariable,
+    selectedFeatures,
+    onTimeColumnChange: setTimeColumn,
+    onTargetSelect: setTargetVariable,
+    onFeaturesChange: setSelectedFeatures,
+  })
+  const runToolNow = useCallback(async (tool, args) => {
+    setToolsBusy(true)
+    try {
+      const result = await runManualTool(tool, datasetVersionId, args)
+      await handleToolResult(result, { tool, label: toolLabels.get(tool) || tool, args })
+    } finally {
+      setToolsBusy(false)
+    }
+  }, [datasetVersionId, handleToolResult, toolLabels])
+  const columnActions = useMemo(() => ({
+    kinds: new Map(roleColumns.map((c) => [c.name, c.kind])),
+    timeColumn: effectiveTimeColumn,
+    roleOf: columnRoles.roleOf,
+    setRole: columnRoles.setRole,
+    run: runToolNow,
+  }), [roleColumns, effectiveTimeColumn, columnRoles.roleOf, columnRoles.setRole, runToolNow])
+
   // ── Assistant tool calls → the same tool's form shows what it used ──
   const handleAssistantToolCalls = useCallback((calls) => {
     const specs = new Map((manualToolSpecs || []).map((t) => [t.name, t]))
@@ -479,6 +540,8 @@ export default function App() {
           onPreviewLimitChange={setPreviewLimit}
           previewMeta={previewMeta}
           onPreviewPageChange={setPreviewPage}
+          columnChanges={columnChanges}
+          columnActions={toolsBusy || assistantBusy ? null : columnActions}
           profile={profile}
           timeColumn={effectiveTimeColumn}
           onTimeColumnChange={setTimeColumn}
@@ -541,6 +604,24 @@ export default function App() {
         onWidthCommit={commitAssistantWidth}
         onWidthReset={() => commitAssistantWidth(ASSISTANT_DEFAULT_WIDTH)}
       />
+
+      {changeToast && columnChanges && (
+        <ChangeToast
+          diff={columnChanges}
+          label={actionLabel(columnChanges.action_performed, toolLabels)}
+          onClose={closeChangeToast}
+          onUndo={async () => {
+            try {
+              const result = await rollbackVersion(columnChanges.parent_version_id)
+              handleRollback(result)
+              await refreshHistory(result.dataset_id)
+              setChangeToast(false)
+            } catch (err) {
+              window.alert(`Could not undo: ${errorDetail(err)}`)
+            }
+          }}
+        />
+      )}
 
       {/* ── Documentation Modal ────────────────────────────── */}
       {docOpen && <DocumentationModal onClose={() => setDocOpen(false)} manualSpecs={manualToolSpecs} />}

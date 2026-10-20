@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { History } from 'lucide-react'
 import { STEP_BY_ID } from '../constants/steps'
+import HistoryStrip from './HistoryStrip'
 import DataIngestionStep from './steps/DataIngestionStep'
 import DataQualityStep from './steps/DataQualityStep'
 import FeatureSelectionStep from './steps/FeatureSelectionStep'
@@ -37,6 +37,8 @@ export default function StepContent({
   onPreviewLimitChange,
   previewMeta,
   onPreviewPageChange,
+  columnChanges,
+  columnActions,
   profile,
   timeColumn,
   onTimeColumnChange,
@@ -121,17 +123,20 @@ export default function StepContent({
         <span className="step-header-num">Step {step.number}</span>
         <h2 className="step-header-title">{step.label}</h2>
         <p className="step-header-desc" title={step.description}>{step.description}</p>
-        {versionHistory?.length > 0 && (
-          <button
-            type="button"
-            className={`app-header-btn${showHistory ? ' active' : ''}`}
-            onClick={() => setShowHistory((v) => !v)}
-          >
-            <History size={13} aria-hidden="true" />
-            {showHistory ? 'Hide history' : `History (${versionHistory.length})`}
-          </button>
-        )}
       </div>
+
+      {datasetVersionId && versionHistory?.length > 0 && (
+        <HistoryStrip
+          versionHistory={versionHistory}
+          datasetVersionId={datasetVersionId}
+          tools={manualTools.tools}
+          onRollback={onRollback}
+          onHistoryRefresh={onHistoryRefresh}
+          showAll={showHistory}
+          onToggleAll={() => setShowHistory((v) => !v)}
+          disabled={manualTools.assistantBusy}
+        />
+      )}
 
       {/* Version history drawer */}
       {showHistory && (
@@ -147,7 +152,7 @@ export default function StepContent({
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', margin: '0 0 12px' }}>
             <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: 0 }}>
-              Version History — Click to time-travel
+              All versions — click one to go back to it
             </p>
             <div
               role="tablist"
@@ -215,6 +220,8 @@ export default function StepContent({
         <DataDock
           rows={tablePreview}
           previewMeta={previewMeta}
+          columnChanges={columnChanges}
+          columnActions={columnActions}
           previewLimit={previewLimit}
           onPreviewLimitChange={onPreviewLimitChange}
           onPageChange={onPreviewPageChange}

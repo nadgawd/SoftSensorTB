@@ -61,6 +61,39 @@ def test_profile_reports_plant_data_problems_on_the_whole_version(client):  # no
     assert client.get(f"/datasets/versions/{version}/profile", headers=as_user(new_user())).status_code == 404
 
 
+def test_diff_reports_what_a_run_changed(client):  # noqa: F811
+    user = new_user()
+    h = as_user(user)
+    version = upload(client, user, body=_plant_csv(), name="plant.csv")["dataset_version_id"]
+    root = client.get(f"/datasets/versions/{version}/diff", headers=h).json()
+    assert root["parent_version_id"] is None and root["changed"] == []
+
+    def run(v, tool, **arguments):
+        resp = client.post(f"/api/tools/{tool}/run", headers=h, json={"dataset_version_id": v, "arguments": arguments})
+        assert resp.status_code == 200, resp.text
+        return resp.json()["active_dataset_version_id"]
+
+    filled = run(version, "remove_missing_data", strategy="forward_fill", columns=["lab"])
+    d = client.get(f"/datasets/versions/{filled}/diff", headers=h).json()
+    assert d["parent_version_id"] == version and d["action_performed"] == "remove_missing_data"
+    assert d["changed"] == ["lab"] and d["added"] == [] and d["removed"] == []
+    assert d["rows_before"] == d["rows_after"] == 570
+
+    lagged = run(filled, "create_lag_features", columns=["temp"], lag_periods=[1, 2])
+    d = client.get(f"/datasets/versions/{lagged}/diff", headers=h).json()
+    assert d["added"] == ["temp_lag1", "temp_lag2"] and d["changed"] == []
+
+    dropped = run(lagged, "drop_columns", columns=["constant"])
+    d = client.get(f"/datasets/versions/{dropped}/diff", headers=h).json()
+    assert d["removed"] == ["constant"]
+
+    fewer = run(dropped, "drop_rows", mode="row_range", start_row=0, end_row=70)
+    d = client.get(f"/datasets/versions/{fewer}/diff", headers=h).json()
+    assert (d["rows_before"], d["rows_after"]) == (570, 500)
+
+    assert client.get(f"/datasets/versions/{fewer}/diff", headers=as_user(new_user())).status_code == 404
+
+
 def test_profile_flags_missing_and_numbers_as_text():
     df = pd.DataFrame({
         "a": [1.0, None, None, None, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],

@@ -20,7 +20,7 @@ from backend.database import AsyncSessionLocal
 from backend.mcp_server.eda_tools import _load_dataframe, _resolve_storage_path, _write_parquet
 from backend.mcp_server.manipulation_tools import owner_datasets
 from backend.mcp_server.model_registry import lineage_models
-from backend.models import Dataset
+from backend.models import Dataset, DatasetVersion
 from backend.services.lineage_service import (
     LineageService,
     build_parquet_path,
@@ -333,6 +333,71 @@ async def version_profile(
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"dataset_version_id": str(version.id), **profile}
+
+
+def _column_stats(parquet: pq.ParquetFile) -> dict[str, tuple[Any, ...]]:
+    """Per column: type, null count, min, max — from the file's metadata, without reading the data."""
+    meta = parquet.metadata
+    out: dict[str, tuple[Any, ...]] = {}
+    for i, field in enumerate(parquet.schema_arrow):
+        if field.name.startswith("__index_level"):
+            continue
+        nulls, lo, hi = 0, None, None
+        for rg in range(meta.num_row_groups):
+            stats = meta.row_group(rg).column(i).statistics
+            if stats is None or not stats.has_null_count:
+                nulls = None
+                break
+            nulls += stats.null_count
+            if stats.has_min_max:
+                lo = stats.min if lo is None else min(lo, stats.min)
+                hi = stats.max if hi is None else max(hi, stats.max)
+        out[field.name] = (str(field.type), nulls, lo, hi) if nulls is not None else (str(field.type), None, None, None)
+    return out
+
+
+def version_diff(parent_path: Path, child_path: Path) -> dict[str, Any]:
+    before, after = pq.ParquetFile(parent_path), pq.ParquetFile(child_path)
+    a, b = _column_stats(before), _column_stats(after)
+    rows_before, rows_after = before.metadata.num_rows, after.metadata.num_rows
+    common = [c for c in b if c in a]
+    # Without statistics a column can't be compared; it counts as changed when the rows changed.
+    changed = [
+        c for c in common
+        if a[c] != b[c] or (a[c][1] is None and rows_before != rows_after)
+    ]
+    return {
+        "rows_before": rows_before,
+        "rows_after": rows_after,
+        "added": [c for c in b if c not in a],
+        "removed": [c for c in a if c not in b],
+        "changed": changed,
+    }
+
+
+@router.get("/datasets/versions/{dataset_version_id}/diff")
+async def version_changes(
+    dataset_version_id: str,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """What a version changed relative to its parent: rows, added / removed / changed columns."""
+    async with AsyncSessionLocal() as session:
+        version = await owned_version(session, dataset_version_id, user)
+        parent = await session.get(DatasetVersion, version.parent_version_id) if version.parent_version_id else None
+    base = {
+        "dataset_version_id": str(version.id),
+        "parent_version_id": str(parent.id) if parent else None,
+        "action_performed": version.action_performed,
+    }
+    if parent is None:
+        return {**base, "rows_before": None, "rows_after": None, "added": [], "removed": [], "changed": []}
+    try:
+        diff = await run_in_threadpool(
+            lambda: version_diff(_resolve_storage_path(parent.file_path), _resolve_storage_path(version.file_path))
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {**base, **diff}
 
 
 @router.get("/datasets/versions/{dataset_version_id}/meta")

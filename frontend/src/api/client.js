@@ -121,6 +121,12 @@ export async function fetchVersionProfile(datasetVersionId, { target, timeColumn
   return data
 }
 
+/** What a version changed relative to its parent: rows before / after and added, removed, changed columns. */
+export async function fetchVersionDiff(datasetVersionId) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/diff`)
+  return data
+}
+
 /**
  * Download an export (the request needs the auth header, so it is fetched as a blob and saved).
  * `onProgress(fraction|null, loadedBytes)`; the file name comes from the server.

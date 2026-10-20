@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown } from 'lucide-react'
+import ColumnMenu from './ColumnMenu'
 import ManualTools from './manual/ManualTools'
 import PlotCanvas from './PlotCanvas'
 import { usePersisted } from '../hooks/usePersisted'
@@ -81,7 +83,13 @@ export default function DataDock({
   onTabChange,
   plotHistory,
   graphTools,
+  columnChanges,
+  columnActions,
 }) {
+  const [menu, setMenu] = useState(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const added = useMemo(() => new Set(columnChanges?.added || []), [columnChanges])
+  const changed = useMemo(() => new Set(columnChanges?.changed || []), [columnChanges])
   const [savedHeight, setSavedHeight] = usePersisted('dockHeight', DEFAULT_HEIGHT)
   const [dragHeight, setDragHeight] = useState(null)
   const drag = useRef(null)
@@ -189,14 +197,31 @@ export default function DataDock({
               <thead>
                 <tr>
                   <th className="dock-rownum" title="Row number in this version">#</th>
-                  {columns.map((c) => <th key={c}>{c}</th>)}
+                  {columns.map((c) => {
+                    const change = added.has(c) ? 'added' : changed.has(c) ? 'changed' : null
+                    return (
+                      <th key={c} className={change ? `dock-col-${change}` : undefined}
+                        title={change ? `${change === 'added' ? 'New' : 'Changed'} in the last step` : undefined}>
+                        {columnActions ? (
+                          <button type="button" className="dock-colbtn" aria-haspopup="menu"
+                            onClick={(e) => setMenu({ column: c, anchor: e.currentTarget.getBoundingClientRect() })}>
+                            {c}<ChevronDown size={11} aria-hidden="true" />
+                          </button>
+                        ) : c}
+                      </th>
+                    )
+                  })}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row, i) => (
                   <tr key={previewMeta?.rowNumbers?.[i] ?? i}>
                     <td className="dock-rownum">{(previewMeta?.rowNumbers?.[i] ?? i) + 1}</td>
-                    {columns.map((c) => <td key={c}>{cell(row[c])}</td>)}
+                    {columns.map((c) => (
+                      <td key={c} className={added.has(c) ? 'dock-col-added' : changed.has(c) ? 'dock-col-changed' : undefined}>
+                        {cell(row[c])}
+                      </td>
+                    ))}
                   </tr>
                 ))}
               </tbody>
@@ -225,6 +250,9 @@ export default function DataDock({
             />
           </div>
         </div>
+      )}
+      {menu && columnActions && (
+        <ColumnMenu column={menu.column} anchor={menu.anchor} actions={columnActions} onClose={closeMenu} />
       )}
     </div>
   )
