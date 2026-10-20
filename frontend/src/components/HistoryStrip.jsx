@@ -1,12 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, History, Redo2, Undo2 } from 'lucide-react'
 import { errorDetail, fetchDatasetHistory, rollbackVersion } from '../api/client'
+import { isTyping, shortcutLabel } from '../utils/keys'
 import { actionLabel } from '../utils/versions'
-
-function isTyping(target) {
-  const tag = target?.tagName
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable
-}
 
 /**
  * The steps from the upload to the active version. Click one to go back to it;
@@ -72,16 +68,15 @@ export default function HistoryStrip({
   }, [path.length])
 
   if (!path.length) return null
-  const mod = navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl+'
 
   return (
     <div className="history-strip" aria-label="Version history">
       <button type="button" className="history-btn" onClick={() => goTo(parentId)} disabled={!parentId || busy || disabled}
-        title={`Undo: go back to the previous version (${mod}Z)`}>
+        title={`Undo: go back to the previous version (${shortcutLabel('Z')})`}>
         <Undo2 size={13} aria-hidden="true" /> Undo
       </button>
       <button type="button" className="history-btn history-icon" onClick={() => goTo(redoId)} disabled={!redoId || busy || disabled}
-        title={`Redo: go forward again (${mod}Shift+Z)`} aria-label="Redo">
+        title={`Redo: go forward again (${shortcutLabel('Shift+Z')})`} aria-label="Redo">
         <Redo2 size={13} aria-hidden="true" />
       </button>
       <ol className="history-path" ref={scrollRef}>

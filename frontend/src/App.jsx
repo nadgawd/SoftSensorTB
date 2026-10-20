@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { BookOpen, Check, CircleCheck, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
+import { BookOpen, Check, CircleCheck, RefreshCw, Search, Sparkles, TriangleAlert } from 'lucide-react'
 import StepSidebar from './components/StepSidebar'
 import { STEPS } from './constants/steps'
 import StepContent from './components/StepContent'
@@ -12,6 +12,8 @@ import {
 } from './api/client'
 import { useColumnRoles } from './hooks/useColumnRoles'
 import ChangeToast from './components/ChangeToast'
+import ToolPalette from './components/ToolPalette'
+import { shortcutLabel } from './utils/keys'
 import { actionLabel } from './utils/versions'
 import { usePersisted, clearPersistedSession } from './hooks/usePersisted'
 import { resetProject } from './lib/projectSync'
@@ -39,6 +41,7 @@ const MAIN_MIN_WIDTH = 480
 
 const CHAT_MAX_AGE = 24 * 60 * 60 * 1000
 const MAX_MANUAL_ACTIONS_IN_CONTEXT = 10
+const RECENT_TOOLS = 6
 const WELCOME_MESSAGE = {
   role: 'assistant',
   intent: null,
@@ -175,6 +178,8 @@ export default function App() {
   const [manualEdits, setManualEdits] = usePersisted('manualEdits', {})
   const [manualEditsFrom, setManualEditsFrom] = usePersisted('manualEditsFrom', {})
   const [manualToolByStep, setManualToolByStep] = usePersisted('manualToolByStep', {})
+  const [recentTools, setRecentTools] = usePersisted('recentTools', [])
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const { tools: manualToolSpecs, error: manualSpecError, retry: retryManualSpec } = useManualTools()
   const toolLabels = useMemo(() => new Map((manualToolSpecs || []).map((t) => [t.name, t.label])), [manualToolSpecs])
   const closeChangeToast = useCallback(() => setChangeToast(false), [])
@@ -305,6 +310,7 @@ export default function App() {
 
   // ── Tools panel run → same UI sync as the chat, plus a chat log entry ──
   const handleToolResult = useCallback(async (response, { tool, label, args }) => {
+    setRecentTools((prev) => [tool, ...prev.filter((t) => t !== tool)].slice(0, RECENT_TOOLS))
     await handleChatResponse(response)
     setChatMessages((prev) => [...prev, {
       role: 'manual',
@@ -314,7 +320,7 @@ export default function App() {
       content: response.message || '',
       at: Date.now(),
     }])
-  }, [handleChatResponse, setChatMessages])
+  }, [handleChatResponse, setChatMessages, setRecentTools])
 
   const editManualField = useCallback((tool, field, value) => {
     setManualEdits((prev) => ({ ...prev, [tool]: { ...prev[tool], [field]: value } }))
@@ -343,6 +349,32 @@ export default function App() {
     selectManualTool(step, tool)
     setActiveStep(step)
   }, [selectManualTool, setActiveStep])
+
+  const pickPaletteTool = useCallback((tool) => {
+    setPaletteOpen(false)
+    if (!tool.steps.length) {
+      setDockOpen(true)
+      setDockTab('graph')
+      return
+    }
+    openTool(tool.steps.includes(activeStep) ? activeStep : tool.steps[0], tool.name)
+    setTimeout(() => {
+      const panel = document.querySelector('.manual-panel:not(.manual-panel-fixed)')
+      panel?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      panel?.querySelector('form input, form select, form textarea')?.focus({ preventScroll: true })
+    }, 80)
+  }, [activeStep, openTool, setDockOpen, setDockTab])
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // ── Column roles and the Data preview's column menu ───────
   const roleColumns = useMemo(
@@ -512,6 +544,10 @@ export default function App() {
               <Check size={12} aria-hidden="true" /> Saved
             </span>
           )}
+          <button type="button" className="app-header-btn app-find-btn" onClick={() => setPaletteOpen(true)}
+            title="Find any tool by name or by what it does">
+            <Search size={14} aria-hidden="true" /> Find a tool <kbd>{shortcutLabel('K')}</kbd>
+          </button>
           <button type="button" className="app-header-btn" onClick={() => setDocOpen(true)}>
             <BookOpen size={14} aria-hidden="true" /> Docs
           </button>
@@ -625,6 +661,10 @@ export default function App() {
 
       {/* ── Documentation Modal ────────────────────────────── */}
       {docOpen && <DocumentationModal onClose={() => setDocOpen(false)} manualSpecs={manualToolSpecs} />}
+
+      {paletteOpen && (
+        <ToolPalette tools={manualToolSpecs} recent={recentTools} onPick={pickPaletteTool} onClose={() => setPaletteOpen(false)} />
+      )}
     </div>
   )
 }

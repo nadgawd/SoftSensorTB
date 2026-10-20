@@ -1,6 +1,8 @@
 import { useMemo, useState } from 'react'
 import ToolForm from './ToolForm'
+import Elapsed from '../Elapsed'
 import { errorDetail, runManualTool } from '../../api/client'
+import { shortcutLabel } from '../../utils/keys'
 import { useDatasetSchema } from '../../hooks/useManualTools'
 import { buildArguments, formValues } from '../../lib/manualForm'
 
@@ -205,11 +207,18 @@ export default function ManualTools({
             e.preventDefault()
             run()
           }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault()
+              if (!isRunning && !assistantBusy && schema) run()
+            }
+          }}
         >
           <ToolForm tool={tool} values={values} onChange={setField} schema={schema} errors={toolErrors} layout={TOOL_LAYOUTS[tool.name]} />
           <div className="manual-actions">
-            <button type="submit" className="btn-signal" disabled={isRunning || assistantBusy || !schema}>
-              {running === tool.name ? 'Running…' : RUN_LABELS[tool.kind] || 'Run'}
+            <button type="submit" className="btn-signal" disabled={isRunning || assistantBusy || !schema}
+              title={`Run (${shortcutLabel('Enter')})`}>
+              {running === tool.name ? <>Running… <Elapsed /></> : RUN_LABELS[tool.kind] || 'Run'}
             </button>
             <button type="button" className="btn-ghost" onClick={reset} disabled={!edited || isRunning}>
               Reset to defaults

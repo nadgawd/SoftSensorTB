@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { BarChart3, ChartLine, PencilLine, Sigma, Trash2 } from 'lucide-react'
 import { errorDetail } from '../api/client'
+import Elapsed from './Elapsed'
 import { RolePicker } from './VariablesTable'
 
 /**
@@ -43,7 +44,7 @@ export default function ColumnMenu({ column, anchor, actions, onClose }) {
   const left = Math.min(anchor.left, window.innerWidth - 270)
   const item = (key, Icon, label, onClick, disabled, title) => (
     <button type="button" className="colmenu-item" disabled={Boolean(busy) || disabled} onClick={onClick} title={title}>
-      <Icon size={14} aria-hidden="true" /> {busy === key ? 'Working…' : label}
+      <Icon size={14} aria-hidden="true" /> {busy === key ? <>Working… <Elapsed /></> : label}
     </button>
   )
 
