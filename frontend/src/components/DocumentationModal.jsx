@@ -1,14 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchTools as fetchToolsApi } from '../api/client';
-import { STEPS } from '../constants/steps';
+import { STEPS, uiPlaceOf } from '../constants/steps';
 
 const STEP_BLURBS = {
   ingestion: 'Look at the data (head, info, describe, profile), column statistics, group by and pivot, sort, combine datasets, convert types and rename columns.',
   quality: 'Missing values (fill, KNN, MICE, interpolation), duplicates, outliers, anomalies, dropping or filtering rows, masking and recoding values, text and regex, and statistical tests.',
   preprocessing: 'Scaling and transforms, encoding, lags and rolling windows, resampling to a regular time grid, formula columns, feature engineering, reshaping and class balancing.',
   'feature-selection': 'Choose the inputs (SelectKBest, RFE, model importance, permutation, SHAP), drop collinear or unwanted columns, and reduce dimensions (PCA, SVD, t-SNE…).',
-  modeling: 'Split the rows into training, validation and test sets, train a model on the training rows, then test it separately on the held-out test rows.',
-  validation: 'Diagnostic plots of a trained model on its test rows: parity, residuals, importances, coefficients, ROC and precision-recall curves, learning curves.',
+  modeling: 'Train & test tab: split the rows into training, validation and test sets, train a model on the training rows, then test it on the held-out test rows. Diagnostics tab: parity, residual, importance and coefficient plots, ROC and precision-recall curves, learning curves.',
   export: 'Download the prepared dataset (CSV or Parquet), a trained model, the pipeline recipe (every step with its parameters) and an HTML report. Also SQL queries on the active version and the list of trained models.',
 };
 
@@ -83,7 +82,7 @@ function buildTree(tools, manualSpecs) {
     number: i + 1,
     label: step.label,
     blurb: STEP_BLURBS[step.id] || step.description,
-    items: known.filter((s) => s.steps.includes(step.id)).map(withLabel),
+    items: known.filter((s) => s.steps.some((id) => uiPlaceOf(id).step === step.id)).map(withLabel),
   }));
   nodes.push({ ...EXTRA_NODES[0], number: '◫', items: known.filter((s) => !s.steps.length && s.panel).map(withLabel) });
   nodes.push({

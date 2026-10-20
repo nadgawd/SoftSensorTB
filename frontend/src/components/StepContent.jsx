@@ -1,11 +1,11 @@
 import { useState } from 'react'
-import { STEP_BY_ID } from '../constants/steps'
+import { MODEL_TABS, STEP_BY_ID } from '../constants/steps'
 import HistoryStrip from './HistoryStrip'
 import DataIngestionStep from './steps/DataIngestionStep'
 import DataQualityStep from './steps/DataQualityStep'
 import FeatureSelectionStep from './steps/FeatureSelectionStep'
 import ModelingStep from './steps/ModelingStep'
-import ValidationStep from './steps/ValidationStep'
+import DiagnosticsTab from './steps/DiagnosticsTab'
 import ExportStep from './steps/ExportStep'
 import VersionHistory from './VersionHistory'
 import ManualTools from './manual/ManualTools'
@@ -26,6 +26,9 @@ const PANEL_FIRST = new Set(['ingestion', 'quality'])
  */
 export default function StepContent({
   activeStep,
+  toolStep,
+  modelTab,
+  onModelTabChange,
   fileName,
   datasetVersionId,
   tablePreview,
@@ -87,19 +90,14 @@ export default function StepContent({
           <FeatureSelectionStep tablePreview={tablePreview} {...roleProps} />
         )
       case 'modeling':
-        return (
+        return modelTab === 'diagnostics' ? (
+          <DiagnosticsTab modelMetrics={modelMetrics} plotHistory={plotHistory} />
+        ) : (
           <ModelingStep
             modelMetrics={modelMetrics}
             datasetVersionId={datasetVersionId}
             onToolResult={manualTools.onResult}
             busy={manualTools.assistantBusy}
-          />
-        )
-      case 'validation':
-        return (
-          <ValidationStep
-            modelMetrics={modelMetrics}
-            plotHistory={plotHistory}
           />
         )
       case 'export':
@@ -199,11 +197,27 @@ export default function StepContent({
 
       {/* Main step content */}
       <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
+        {activeStep === 'modeling' && (
+          <div className="model-tabs" role="tablist" aria-label="Model">
+            {MODEL_TABS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={modelTab === t.id}
+                className={`model-tab${modelTab === t.id ? ' active' : ''}`}
+                onClick={() => onModelTabChange(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
         {PANEL_FIRST.has(activeStep) && (
           <div style={{ marginBottom: '16px' }}>{renderStepPanel()}</div>
         )}
         <ManualTools
-          activeStep={activeStep}
+          activeStep={toolStep}
           datasetVersionId={datasetVersionId}
           targetVariable={targetVariable}
           selectedFeatures={selectedFeatures}

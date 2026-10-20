@@ -1372,6 +1372,14 @@
 .doc-default code { padding: 1px 5px; border-radius: 4px; background: var(--chip-ember-bg); color: var(--chip-ember-fg); font-family: var(--font-mono); font-size: 11px; }
 
 /* ── Modeling: split, training, testing ───────────────────── */
+.model-tabs { display: flex; gap: 2px; margin: -4px 0 16px; border-bottom: 1px solid var(--color-line); }
+.model-tab {
+  padding: 8px 14px; margin-bottom: -1px;
+  border: none; border-bottom: 2px solid transparent; background: transparent;
+  color: var(--color-mist); font: inherit; font-size: 0.85rem; font-weight: 500; cursor: pointer;
+}
+.model-tab:hover { color: var(--color-foam); }
+.model-tab.active { color: var(--color-foam); border-bottom-color: var(--color-signal); }
 .model-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .model-kicker,
 .model-panel-title {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { BookOpen, Check, CircleCheck, RefreshCw, Search, Sparkles, TriangleAlert } from 'lucide-react'
 import StepSidebar from './components/StepSidebar'
-import { STEPS } from './constants/steps'
+import { MODEL_TABS, STEPS, uiPlaceOf } from './constants/steps'
 import StepContent from './components/StepContent'
 import AssistantPanel from './components/AssistantPanel'
 import DocumentationModal from './components/DocumentationModal'
@@ -31,6 +31,9 @@ const DIAGNOSTIC_PLOT_TOOLS = new Set([
   'generate_residuals_plot',
   'generate_importance_plot',
   'generate_coefficients_plot',
+  'generate_roc_curve',
+  'generate_pr_curve',
+  'generate_learning_curve',
 ])
 
 const ASSISTANT_DEFAULT_WIDTH = 380
@@ -59,6 +62,18 @@ const WELCOME_MESSAGE = {
 export default function App() {
   // ── Persisted pipeline state ─────────────────────────────
   const [activeStep, setActiveStep] = usePersisted('activeStep', 'ingestion')
+  const [modelTab, setModelTab] = usePersisted('modelTab', MODEL_TABS[0].id)
+  // The step whose tools are shown: the Model step's tabs each show one backend step.
+  const toolStep = activeStep === 'modeling'
+    ? (MODEL_TABS.find((t) => t.id === modelTab) || MODEL_TABS[0]).toolStep
+    : activeStep
+  // Validation used to be a step of its own; it is now the Model step's Diagnostics tab.
+  useEffect(() => {
+    if (STEPS.some((s) => s.id === activeStep)) return
+    const place = uiPlaceOf(activeStep)
+    setActiveStep(STEPS.some((s) => s.id === place.step) ? place.step : 'ingestion')
+    if (place.modelTab) setModelTab(place.modelTab)
+  }, [activeStep, setActiveStep, setModelTab])
   const [completedSteps, setCompletedSteps] = usePersisted('completedSteps', [])
   const [fileName, setFileName] = usePersisted('fileName', null)
   const [datasetId, setDatasetId] = usePersisted('datasetId', null)
@@ -190,14 +205,14 @@ export default function App() {
   const { theme, toggleTheme } = useTheme()
 
   // Suggested prompts shown in the assistant chat.
-  const suggestions = useMemo(() => getSuggestions(activeStep, {
+  const suggestions = useMemo(() => getSuggestions(toolStep, {
     columns: tablePreview?.length ? Object.keys(tablePreview[0]) : [],
     hasTarget: Boolean(targetVariable),
     targetVariable,
     selectedFeatures: selectedFeatures || [],
     hasModel: Boolean(modelMetrics),
     r2Score: modelMetrics?.r2_score ?? null,
-  }), [activeStep, tablePreview, targetVariable, selectedFeatures, modelMetrics])
+  }), [toolStep, tablePreview, targetVariable, selectedFeatures, modelMetrics])
 
   // ── Assistant panel width (drag its left edge) ────────────
   const [savedAssistantWidth, setSavedAssistantWidth] = usePersisted('assistantWidth', ASSISTANT_DEFAULT_WIDTH)
@@ -276,7 +291,8 @@ export default function App() {
         addPlot(response.plot_data)
         const diagnostic = (response.tool_calls_made || []).some((t) => DIAGNOSTIC_PLOT_TOOLS.has(t))
         if (diagnostic) {
-          if (activeStep !== 'validation') nextStep = 'validation'
+          nextStep = 'modeling'
+          setModelTab('diagnostics')
         } else {
           setDockTab('graph')
           setDockOpen(true)
@@ -297,14 +313,15 @@ export default function App() {
       if (response.model_metrics) {
         setModelMetrics(response.model_metrics)
         markStepComplete('modeling')
-        if (!nextStep && activeStep !== 'modeling' && activeStep !== 'validation') {
+        if (!nextStep) {
           nextStep = 'modeling'
+          setModelTab('train')
         }
       }
-      if (nextStep) setActiveStep(nextStep)
+      if (nextStep && nextStep !== activeStep) setActiveStep(nextStep)
       if (datasetId) await refreshHistory(datasetId)
     },
-    [activeStep, datasetId, refreshHistory, setActiveStep, setDatasetVersionId,
+    [activeStep, datasetId, refreshHistory, setActiveStep, setDatasetVersionId, setModelTab,
       setModelMetrics, addPlot, setSelectedFeatures, setTargetVariable, setDockOpen, setDockTab],
   )
 
@@ -346,9 +363,11 @@ export default function App() {
   }, [setManualToolByStep])
 
   const openTool = useCallback((step, tool) => {
+    const place = uiPlaceOf(step)
     selectManualTool(step, tool)
-    setActiveStep(step)
-  }, [selectManualTool, setActiveStep])
+    setActiveStep(place.step)
+    if (place.modelTab) setModelTab(place.modelTab)
+  }, [selectManualTool, setActiveStep, setModelTab])
 
   const pickPaletteTool = useCallback((tool) => {
     setPaletteOpen(false)
@@ -357,13 +376,13 @@ export default function App() {
       setDockTab('graph')
       return
     }
-    openTool(tool.steps.includes(activeStep) ? activeStep : tool.steps[0], tool.name)
+    openTool(tool.steps.includes(toolStep) ? toolStep : tool.steps[0], tool.name)
     setTimeout(() => {
       const panel = document.querySelector('.manual-panel:not(.manual-panel-fixed)')
       panel?.scrollIntoView({ block: 'start', behavior: 'smooth' })
       panel?.querySelector('form input, form select, form textarea')?.focus({ preventScroll: true })
     }, 80)
-  }, [activeStep, openTool, setDockOpen, setDockTab])
+  }, [toolStep, openTool, setDockOpen, setDockTab])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -426,11 +445,11 @@ export default function App() {
       const next = { ...prev }
       for (const c of filled) {
         const { steps } = specs.get(c.name)
-        if (steps.length) next[steps.includes(activeStep) ? activeStep : steps[0]] = c.name
+        if (steps.length) next[steps.includes(toolStep) ? toolStep : steps[0]] = c.name
       }
       return next
     })
-  }, [manualToolSpecs, activeStep, setManualEdits, setManualEditsFrom, setManualToolByStep])
+  }, [manualToolSpecs, toolStep, setManualEdits, setManualEditsFrom, setManualToolByStep])
 
   // Tools-panel runs the assistant should know about (since its last reply are marked).
   const manualActions = useMemo(() => {
@@ -565,6 +584,9 @@ export default function App() {
         {/* Step content */}
         <StepContent
           activeStep={activeStep}
+          toolStep={toolStep}
+          modelTab={modelTab}
+          onModelTabChange={setModelTab}
           fileName={fileName}
           datasetVersionId={datasetVersionId}
           tablePreview={tablePreview}

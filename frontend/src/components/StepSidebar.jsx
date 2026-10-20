@@ -3,7 +3,7 @@ import { STEPS } from '../constants/steps'
 import { formatCount } from '../utils/format'
 
 /**
- * Left sidebar: the 7 steps, each with its live status (what has been done, what needs attention).
+ * Left sidebar: the steps, each with its live status (what has been done, what needs attention).
  */
 export default function StepSidebar({
   fileName,
@@ -21,7 +21,7 @@ export default function StepSidebar({
 }) {
   function isStepDisabled(stepId, index) {
     if (index > 0 && !fileName) return true
-    if ((stepId === 'modeling' || stepId === 'validation') && !targetVariable) return true
+    if (stepId === 'modeling' && !targetVariable) return true
     return false
   }
 
@@ -50,8 +50,6 @@ export default function StepSidebar({
         return typeof modelMetrics.r2_score === 'number'
           ? [`${modelMetrics.algorithm} · test R² ${modelMetrics.r2_score.toFixed(2)}`, modelMetrics.r2_score >= 0.5 ? 'ok' : 'warn']
           : [`${modelMetrics.algorithm} · not tested yet`, 'warn']
-      case 'validation':
-        return [modelMetrics ? null : 'Train a model first']
       default:
         return [null]
     }

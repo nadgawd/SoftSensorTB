@@ -1,13 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Search } from 'lucide-react'
-import { STEP_BY_ID } from '../constants/steps'
+import { MODEL_TABS, STEP_BY_ID, uiPlaceOf } from '../constants/steps'
 import { shortcutLabel } from '../utils/keys'
 
 const STEP_ORDER = Object.keys(STEP_BY_ID)
 
 function stepName(tool) {
-  const step = tool.steps[0]
-  return step ? STEP_BY_ID[step]?.label || step : 'Data preview › Graph'
+  if (!tool.steps[0]) return 'Data preview › Graph'
+  const { step, modelTab } = uiPlaceOf(tool.steps[0])
+  const label = STEP_BY_ID[step]?.label || step
+  return modelTab ? `${label} › ${MODEL_TABS.find((t) => t.id === modelTab).label}` : label
+}
+
+function stepIndex(tool) {
+  return tool.steps[0] ? STEP_ORDER.indexOf(uiPlaceOf(tool.steps[0]).step) : STEP_ORDER.length
 }
 
 function score(tool, q) {
@@ -40,11 +46,7 @@ export default function ToolPalette({ tools, recent, onPick, onClose }) {
     const recentTools = recent.map((n) => byName.get(n)).filter(Boolean)
     const rest = all
       .filter((t) => !recent.includes(t.name))
-      .sort((a, b) => {
-        const sa = a.steps[0] ? STEP_ORDER.indexOf(a.steps[0]) : STEP_ORDER.length
-        const sb = b.steps[0] ? STEP_ORDER.indexOf(b.steps[0]) : STEP_ORDER.length
-        return sa - sb || a.label.localeCompare(b.label)
-      })
+      .sort((a, b) => stepIndex(a) - stepIndex(b) || stepName(a).localeCompare(stepName(b)) || a.label.localeCompare(b.label))
     return [
       ...recentTools.map((tool, i) => ({ tool, group: i === 0 ? 'Recently used' : null })),
       ...rest.map((tool, i) => ({ tool, group: i === 0 ? 'All tools' : null })),

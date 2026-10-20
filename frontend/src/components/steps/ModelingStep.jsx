@@ -31,7 +31,7 @@ function splitParts(m) {
 }
 
 /**
- * Step 5 — Modeling: the split, the training results and, once run, the test results.
+ * Model step › Train & test: the split, the training results and, once run, the test results.
  */
 export default function ModelingStep({ modelMetrics, datasetVersionId, onToolResult, busy }) {
   if (!modelMetrics) {

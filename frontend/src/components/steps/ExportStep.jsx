@@ -21,7 +21,7 @@ function modelLabel(m) {
 }
 
 /**
- * Step 7 — Export: the data, the model, the steps that produced them, and a report.
+ * Export step: the data, the model, the steps that produced them, and a report.
  */
 export default function ExportStep({ datasetVersionId, modelMetrics, profile, targetVariable, timeColumn }) {
   const [models, setModels] = useState([])
@@ -106,7 +106,7 @@ export default function ExportStep({ datasetVersionId, modelMetrics, profile, ta
                 </p>
               </>
             ) : (
-              <p className="export-desc">No model trained on this dataset yet. Train one in Step 5.</p>
+              <p className="export-desc">No model trained on this dataset yet. Train one in the Model step.</p>
             )}
           </div>
           <div className="export-actions">
