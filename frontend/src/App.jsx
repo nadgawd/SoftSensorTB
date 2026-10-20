@@ -598,7 +598,7 @@ export default function App() {
       />
 
       {/* ── Documentation Modal ────────────────────────────── */}
-      {docOpen && <DocumentationModal onClose={() => setDocOpen(false)} />}
+      {docOpen && <DocumentationModal onClose={() => setDocOpen(false)} manualSpecs={manualToolSpecs} />}
     </div>
   )
 }

@@ -1,297 +1,220 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchTools as fetchToolsApi } from '../api/client';
+import { STEPS } from '../constants/steps';
 
-const CATEGORIES = [
-  {
-    id: 'exploration',
-    label: 'Data Exploration',
-    blurb: 'Inspect the dataset: head, tail, info, shape, value counts, nunique, missing values, correlations, skew / kurtosis / quantiles, automated alerts, profile reports, statistics and SQL.',
-    tools: ['inspect_data', 'get_column_statistics', 'run_duckdb_query'],
-  },
-  {
-    id: 'analysis',
-    label: 'Aggregation & Statistical Tests',
-    blurb: 'Group and pivot (groupby, pivot_table, crosstab); hypothesis tests (t-tests, ANOVA, chi-square), normality (Shapiro-Wilk, Kolmogorov-Smirnov) and stationarity (ADF).',
-    tools: ['aggregate_data', 'statistical_test'],
-  },
-  {
-    id: 'cleaning',
-    label: 'Data Cleaning',
-    blurb: 'Fix missing values (fill, KNN, MICE, interpolation), duplicates, outliers (drop, cap or clip) and anomalous rows.',
-    tools: ['remove_missing_data', 'drop_duplicates', 'remove_outliers', 'detect_anomalies'],
-  },
-  {
-    id: 'types-text',
-    label: 'Types & Text',
-    blurb: 'Cast column types, parse dates, tidy text, and find or extract patterns (str.contains, str.extract, str.replace).',
-    tools: ['convert_types', 'clean_text'],
-  },
-  {
-    id: 'scaling',
-    label: 'Data Scaling & Transformation',
-    blurb: 'Rescale columns and apply non-linear transforms (log, Box-Cox, square root, reciprocal, square) or binning.',
-    tools: ['normalize_data', 'transform_features'],
-  },
-  {
-    id: 'manipulation',
-    label: 'Data Manipulation',
-    blurb: 'Add, drop and rename columns; filter rows (condition, range, query); sort; replace where a condition holds (mask / where); map values and apply functions (apply, map, transform).',
-    tools: ['drop_columns', 'drop_rows', 'rename_columns', 'execute_formula', 'sort_data', 'mask_values', 'map_values', 'apply_function'],
-  },
-  {
-    id: 'reshaping',
-    label: 'Reshaping & Combining',
-    blurb: 'Melt, stack, pivot and unstack; merge, join or concatenate with another uploaded dataset.',
-    tools: ['reshape_data', 'combine_datasets', 'list_datasets'],
-  },
-  {
-    id: 'time-series',
-    label: 'Time-Series Features',
-    blurb: 'Put the data on a regular time grid (downsample by aggregating intervals, or upsample by interpolating or carrying values forward, e.g. to align fast process data with slow lab samples) and capture process dynamics with lags, leads, differences, percent changes and rolling, expanding or exponentially weighted windows.',
-    tools: ['resample_time_series', 'create_lag_features', 'rolling_aggregate'],
-  },
-  {
-    id: 'engineering',
-    label: 'Feature Engineering & Encoding',
-    blurb: 'Derive features (polynomial, date parts with weekends and holidays, pairwise combinations) and encode categories (one-hot, target, leave-one-out, weight of evidence…).',
-    tools: ['feature_engineer', 'encode_categorical'],
-  },
-  {
-    id: 'selection',
-    label: 'Feature Selection & Reduction',
-    blurb: 'Choose the most useful inputs (SelectKBest, RFE, tree importance, permutation importance, SHAP) and reduce dimensions (PCA, truncated SVD, LDA, t-SNE, autoencoder).',
-    tools: ['select_k_best', 'select_features_rfe', 'select_features_model', 'drop_collinear_features', 'reduce_dimensions'],
-  },
-  {
-    id: 'sampling',
-    label: 'Sampling & Balancing',
-    blurb: 'Balance classes with SMOTE, ADASYN, random oversampling or undersampling.',
-    tools: ['balance_data'],
-  },
-  {
-    id: 'modeling',
-    label: 'Modeling & Validation',
-    blurb: 'Split the rows into training, optional validation and test sets (random, stratified, chronological or group splits) and inspect each set; train soft-sensor regression models on the training rows only, with optional K-Fold, stratified, repeated, group, leave-one-out, shuffle-split, walk-forward or bootstrap validation; then test the model separately on the held-out test rows.',
-    tools: ['train_soft_sensor', 'view_data_split', 'evaluate_on_test_set', 'list_trained_models'],
-  },
-  {
-    id: 'plotting',
-    label: 'Plotting & Visualization',
-    blurb: 'Distributions (KDE, ECDF, QQ, ridgeline), categories (bar, count, swarm, pie), multivariate (joint, hexbin, contour, parallel coordinates, RadViz), time series (line, candlestick, waterfall, ACF / PACF), hierarchies (treemap, sunburst, Sankey, network, chord, dendrogram) and clustering (silhouette).',
-    tools: ['generate_custom_plot'],
-  },
-  {
-    id: 'diagnostics',
-    label: 'Model Diagnostics',
-    blurb: 'Evaluate a trained model with parity, residual, importance and coefficient plots, ROC and precision-recall curves, and learning curves.',
-    tools: [
-      'generate_parity_plot', 'generate_residuals_plot', 'generate_importance_plot', 'generate_coefficients_plot',
-      'generate_roc_curve', 'generate_pr_curve', 'generate_learning_curve',
-    ],
-  },
+const STEP_BLURBS = {
+  ingestion: 'Look at the data (head, info, describe, profile), column statistics, group by and pivot, sort, combine datasets, convert types and rename columns.',
+  quality: 'Missing values (fill, KNN, MICE, interpolation), duplicates, outliers, anomalies, dropping or filtering rows, masking and recoding values, text and regex, and statistical tests.',
+  preprocessing: 'Scaling and transforms, encoding, lags and rolling windows, resampling to a regular time grid, formula columns, feature engineering, reshaping and class balancing.',
+  'feature-selection': 'Choose the inputs (SelectKBest, RFE, model importance, permutation, SHAP), drop collinear or unwanted columns, and reduce dimensions (PCA, SVD, t-SNE…).',
+  modeling: 'Split the rows into training, validation and test sets, train a model on the training rows, then test it separately on the held-out test rows.',
+  validation: 'Diagnostic plots of a trained model on its test rows: parity, residuals, importances, coefficients, ROC and precision-recall curves, learning curves.',
+  export: 'SQL queries on the active version and the list of trained models.',
+};
+
+const EXTRA_NODES = [
+  { id: 'graph', label: 'Graph tab', blurb: 'At the bottom of every step, next to the Data preview: plot any columns of the active version.' },
+  { id: 'assistant', label: 'Assistant only', blurb: 'Tools the Assistant uses that have no form in the Tools panel.' },
 ];
 
-const OTHER = { id: 'other', label: 'Other', blurb: 'Additional tools.' };
+function summary(text = '') {
+  const first = text.split(/(?<=\.)\s/)[0];
+  return first.length > 160 ? `${first.slice(0, 157)}…` : first;
+}
 
-function groupTools(tools) {
-  const byName = new Map(tools.map((t) => [t.function?.name, t]));
-  const used = new Set();
-  const groups = CATEGORIES.map((cat) => {
-    const items = cat.tools.filter((name) => byName.has(name)).map((name) => byName.get(name));
-    items.forEach((t) => used.add(t.function.name));
-    return { ...cat, items };
-  });
-  const rest = tools.filter((t) => !used.has(t.function?.name));
-  if (rest.length) groups.push({ ...OTHER, items: rest });
-  return groups.filter((g) => g.items.length);
+/** Inline `$ref` / single-entry `allOf` pointers into the schema's `$defs`. */
+function resolve(schema, defs) {
+  if (!schema) return schema;
+  if (schema.$ref) return { ...defs?.[schema.$ref.split('/').pop()], ...schema, $ref: undefined };
+  if (schema.allOf?.length === 1) return { ...resolve(schema.allOf[0], defs), ...schema, allOf: undefined };
+  return schema;
+}
+
+function argType(arg) {
+  if (arg.enum) return 'choice';
+  if (arg.type === 'array') return arg.items?.enum ? 'list of choices' : `list of ${arg.items?.type || 'values'}`;
+  if (arg.type) return arg.type;
+  if (arg.anyOf) return [...new Set(arg.anyOf.filter((t) => t.type !== 'null').map(argType))].join(' | ');
+  return '';
+}
+
+function argChoices(arg) {
+  const values = arg.enum
+    || arg.items?.enum
+    || arg.anyOf?.find((t) => t.enum)?.enum
+    || arg.anyOf?.find((t) => t.items?.enum)?.items.enum;
+  return values?.length ? values : null;
+}
+
+function resolveArg(arg, defs) {
+  const top = resolve(arg, defs);
+  return {
+    ...top,
+    items: resolve(top.items, defs),
+    anyOf: top.anyOf?.map((t) => {
+      const r = resolve(t, defs);
+      return { ...r, items: resolve(r.items, defs) };
+    }),
+  };
 }
 
 function matchesQuery(tool, query) {
   if (!query) return true;
   const fn = tool.function || {};
-  const haystack = [fn.name, fn.description, ...Object.keys(fn.parameters?.properties || {})]
+  return [fn.name, tool.label, fn.description, ...Object.keys(fn.parameters?.properties || {})]
     .join(' ')
-    .toLowerCase();
-  return haystack.includes(query);
+    .toLowerCase()
+    .includes(query);
 }
 
-export default function DocumentationModal({ onClose }) {
+/** One node per pipeline step (in the order of the Tools dropdowns), then the Graph tab and Assistant-only tools. */
+function buildTree(tools, manualSpecs) {
+  if (!manualSpecs) {
+    const items = tools.map((t) => ({ ...t, label: t.function?.name }));
+    return [{ id: 'all', number: '•', label: 'All tools', blurb: 'The step of each tool could not be loaded from the server.', items }];
+  }
+  const specs = new Map((manualSpecs || []).map((s) => [s.name, s]));
+  const byName = new Map(tools.map((t) => [t.function?.name, t]));
+  const withLabel = (spec) => ({ ...byName.get(spec.name), label: spec.label });
+  const known = (manualSpecs || []).filter((s) => byName.has(s.name));
+
+  const nodes = STEPS.map((step, i) => ({
+    id: step.id,
+    number: i + 1,
+    label: step.label,
+    blurb: STEP_BLURBS[step.id] || step.tooltip,
+    items: known.filter((s) => s.steps.includes(step.id)).map(withLabel),
+  }));
+  nodes.push({ ...EXTRA_NODES[0], number: '◫', items: known.filter((s) => !s.steps.length && s.panel).map(withLabel) });
+  nodes.push({
+    ...EXTRA_NODES[1],
+    number: '✦',
+    items: tools.filter((t) => !specs.has(t.function?.name)).map((t) => ({ ...t, label: t.function?.name })),
+  });
+  return nodes.filter((n) => n.items.length);
+}
+
+export default function DocumentationModal({ onClose, manualSpecs }) {
   const [tools, setTools] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState('');
-  const [activeCategory, setActiveCategory] = useState('all');
+  const [openSteps, setOpenSteps] = useState(() => new Set());
+  const [openTools, setOpenTools] = useState(() => new Set());
 
   useEffect(() => {
-    async function fetchTools() {
-      try {
-        setTools(await fetchToolsApi());
-      } catch (err) {
-        setError(err.message);
-      } finally {
-        setLoading(false);
-      }
-    }
-    fetchTools();
+    fetchToolsApi()
+      .then(setTools)
+      .catch((err) => setError(err.message))
+      .finally(() => setLoading(false));
   }, []);
 
-  const groups = useMemo(() => groupTools(tools), [tools]);
+  useEffect(() => {
+    const onKey = (e) => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
-  const visibleGroups = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return groups
-      .filter((g) => activeCategory === 'all' || g.id === activeCategory)
-      .map((g) => ({ ...g, items: g.items.filter((t) => matchesQuery(t, q)) }))
-      .filter((g) => g.items.length);
-  }, [groups, query, activeCategory]);
+  const tree = useMemo(() => buildTree(tools, manualSpecs), [tools, manualSpecs]);
+  const q = query.trim().toLowerCase();
+  const visible = useMemo(
+    () => tree.map((n) => ({ ...n, items: n.items.filter((t) => matchesQuery(t, q)) })).filter((n) => n.items.length),
+    [tree, q],
+  );
+  const matchCount = visible.reduce((n, s) => n + s.items.length, 0);
+  const allOpen = visible.length > 0 && visible.every((n) => openSteps.has(n.id));
 
-  const visibleCount = visibleGroups.reduce((n, g) => n + g.items.length, 0);
+  const toggle = (setter, id) => setter((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        width: '100vw',
-        height: '100vh',
-        background: 'var(--modal-backdrop)',
-        backdropFilter: 'blur(4px)',
-        zIndex: 9999,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-      onClick={onClose}
-    >
-      <div
-        style={{
-          background: 'var(--color-depth)',
-          border: '1px solid var(--color-line-2)',
-          borderRadius: '12px',
-          width: '80%',
-          maxWidth: '860px',
-          maxHeight: '85vh',
-          display: 'flex',
-          flexDirection: 'column',
-          boxShadow: 'var(--modal-shadow)',
-        }}
-        onClick={(e) => e.stopPropagation()} // Prevent closing when clicking inside
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: '20px',
-            borderBottom: '1px solid var(--color-line)',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-          }}
-        >
-          <h2 style={{ margin: 0, color: 'var(--color-foam)', fontFamily: 'var(--font-heading)' }}>
-            AI Assistant Toolbox Documentation
-          </h2>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--color-mist)',
-              cursor: 'pointer',
-              fontSize: '1.2rem',
-            }}
-          >
-            ✕
-          </button>
+    <div className="doc-backdrop" onClick={onClose}>
+      <div className="doc-modal" role="dialog" aria-modal="true" aria-labelledby="doc-title" onClick={(e) => e.stopPropagation()}>
+        <div className="doc-header">
+          <div>
+            <h2 id="doc-title">Toolbox documentation</h2>
+            <p className="manual-hint">
+              {tools.length ? `${tools.length} tools, shared by the Tools panel and the Assistant, listed by pipeline step.` : ' '}
+            </p>
+          </div>
+          <button type="button" className="doc-close" onClick={onClose} aria-label="Close documentation">✕</button>
         </div>
 
-        {/* Search + category filter */}
         {!loading && !error && (
-          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-line)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div className="doc-toolbar">
             <input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search tools by name, description or argument…"
               aria-label="Search tools"
-              style={{
-                width: '100%',
-                boxSizing: 'border-box',
-                padding: '8px 12px',
-                borderRadius: '8px',
-                border: '1px solid var(--color-line-2)',
-                background: 'var(--color-panel)',
-                color: 'var(--color-foam)',
-                fontSize: '0.875rem',
-                outline: 'none',
-              }}
             />
-            <div role="group" aria-label="Tool categories" style={{ display: 'flex', gap: '6px', overflowX: 'auto', paddingBottom: '2px' }}>
-              {[{ id: 'all', label: 'All', items: tools }, ...groups].map((g) => {
-                const selected = activeCategory === g.id;
-                return (
-                  <button
-                    key={g.id}
-                    type="button"
-                    aria-pressed={selected}
-                    onClick={() => setActiveCategory(g.id)}
-                    style={{
-                      padding: '4px 10px',
-                      borderRadius: '999px',
-                      border: `1px solid ${selected ? 'var(--color-signal)' : 'var(--color-line-2)'}`,
-                      background: selected ? 'var(--history-card-active-bg)' : 'transparent',
-                      color: selected ? 'var(--color-signal)' : 'var(--color-mist)',
-                      fontSize: '12px',
-                      cursor: 'pointer',
-                      whiteSpace: 'nowrap',
-                      flexShrink: 0,
-                    }}
-                  >
-                    {g.label} <span style={{ opacity: 0.7 }}>({g.items.length})</span>
-                  </button>
-                );
-              })}
-            </div>
+            {!q && (
+              <button
+                type="button"
+                className="btn-ghost doc-expand-all"
+                onClick={() => setOpenSteps(allOpen ? new Set() : new Set(visible.map((n) => n.id)))}
+              >
+                {allOpen ? 'Collapse all' : 'Expand all'}
+              </button>
+            )}
           </div>
         )}
 
-        {/* Content */}
-        <div style={{ padding: '20px', overflowY: 'auto', flex: 1 }}>
+        <div className="doc-body">
           {loading ? (
-            <div style={{ color: 'var(--color-mist)', textAlign: 'center', padding: '40px' }}>
-              Loading documentation...
-            </div>
+            <p className="doc-message">Loading documentation…</p>
           ) : error ? (
-            <div style={{ color: 'var(--color-alert)', textAlign: 'center', padding: '40px' }}>
-              Error: {error}
-            </div>
+            <p className="doc-message manual-error">Error: {error}</p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '28px' }}>
-              <p style={{ color: 'var(--color-mist)', margin: 0 }}>
-                The AI Assistant and the Tools panel share {tools.length} tools, grouped by what they do.
-                {(query || activeCategory !== 'all') && ` Showing ${visibleCount}.`}
-              </p>
-
-              {visibleGroups.length === 0 && (
-                <div style={{ color: 'var(--color-mist)', textAlign: 'center', padding: '30px' }}>
-                  No tools match “{query}”.
-                </div>
+            <>
+              {q && (
+                <p className="manual-hint doc-match-count">
+                  {matchCount ? `${matchCount} tool${matchCount === 1 ? '' : 's'} match “${query.trim()}”.` : `No tools match “${query.trim()}”.`}
+                </p>
               )}
-
-              {visibleGroups.map((group) => (
-                <section key={group.id} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                  <div>
-                    <h3 style={{ margin: 0, color: 'var(--color-foam)', fontSize: '1rem', fontFamily: 'var(--font-heading)' }}>
-                      {group.label} <span style={{ color: 'var(--color-mist)', fontWeight: 400, fontSize: '0.85rem' }}>· {group.items.length}</span>
-                    </h3>
-                    <p style={{ margin: '2px 0 0', color: 'var(--color-mist)', fontSize: '0.8125rem' }}>{group.blurb}</p>
-                  </div>
-                  {group.items.map((tool) => (
-                    <ToolCard key={tool.function?.name} tool={tool} />
-                  ))}
-                </section>
-              ))}
-            </div>
+              <ol className="doc-tree">
+                {visible.map((node) => {
+                  const open = Boolean(q) || openSteps.has(node.id);
+                  return (
+                    <li key={node.id} className={`doc-step${open ? ' open' : ''}`}>
+                      <button
+                        type="button"
+                        className="doc-step-head"
+                        aria-expanded={open}
+                        onClick={() => toggle(setOpenSteps, node.id)}
+                      >
+                        <span className="doc-step-num" aria-hidden="true">{node.number}</span>
+                        <span className="doc-step-text">
+                          <span className="doc-step-label">
+                            {node.label}
+                            <span className="doc-step-count">{node.items.length} tool{node.items.length === 1 ? '' : 's'}</span>
+                          </span>
+                          <span className="doc-step-blurb">{node.blurb}</span>
+                        </span>
+                        <span className="doc-chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+                      </button>
+                      {open && (
+                        <ul className="doc-tools">
+                          {node.items.map((tool) => (
+                            <ToolNode
+                              key={tool.function?.name}
+                              tool={tool}
+                              open={openTools.has(tool.function?.name)}
+                              onToggle={() => toggle(setOpenTools, tool.function?.name)}
+                            />
+                          ))}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
+              </ol>
+            </>
           )}
         </div>
       </div>
@@ -299,58 +222,63 @@ export default function DocumentationModal({ onClose }) {
   );
 }
 
-function ToolCard({ tool }) {
+function ToolNode({ tool, open, onToggle }) {
   const fn = tool.function || {};
-  const properties = fn.parameters?.properties || {};
+  const defs = fn.parameters?.$defs;
+  const properties = Object.entries(fn.parameters?.properties || {})
+    .filter(([name]) => name !== 'dataset_version_id')
+    .map(([name, arg]) => [name, resolveArg(arg, defs)]);
+  const required = new Set(fn.parameters?.required || []);
 
   return (
-    <div
-      style={{
-        background: 'var(--color-panel)',
-        border: '1px solid var(--color-line)',
-        borderRadius: '8px',
-        padding: '16px',
-      }}
-    >
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '8px' }}>
-        <code
-          style={{
-            color: 'var(--chip-ember-fg)',
-            background: 'var(--chip-ember-bg)',
-            padding: '2px 6px',
-            borderRadius: '4px',
-            fontSize: '0.9rem',
-            fontWeight: 600,
-          }}
-        >
-          {fn.name}
-        </code>
-      </div>
-      <p style={{ color: 'var(--color-foam-2)', margin: '0 0 12px 0', fontSize: '0.9rem', lineHeight: '1.5' }}>
-        {fn.description}
-      </p>
-
-      {Object.keys(properties).length > 0 && (
-        <div style={{ marginTop: '12px' }}>
-          <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', color: 'var(--color-mist)', marginBottom: '4px', letterSpacing: '0.5px' }}>
-            Arguments:
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            {Object.entries(properties).map(([argName, argData]) => (
-              <div key={argName} style={{ display: 'flex', gap: '8px', fontSize: '0.8rem' }}>
-                <span style={{ color: 'var(--color-foam)', minWidth: '140px' }}>{argName}</span>
-                <span style={{ color: 'var(--color-mist)' }}>
-                  {argData.type}
-                  {fn.parameters.required?.includes(argName) ? ' (required)' : ' (optional)'}
-                </span>
-                {argData.description && (
-                  <span style={{ color: 'var(--color-foam-2)', marginLeft: '10px' }}>- {argData.description}</span>
-                )}
-              </div>
-            ))}
-          </div>
+    <li className={`doc-tool${open ? ' open' : ''}`}>
+      <button type="button" className="doc-tool-head" aria-expanded={open} onClick={onToggle}>
+        <span className="doc-chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+        <span className="doc-tool-text">
+          <span className="doc-tool-label">
+            {tool.label}
+            {tool.label !== fn.name && <code>{fn.name}</code>}
+          </span>
+          {!open && <span className="doc-tool-summary">{summary(fn.description)}</span>}
+        </span>
+      </button>
+      {open && (
+        <div className="doc-tool-body">
+          <p className="doc-tool-desc">{fn.description}</p>
+          {properties.length > 0 && (
+            <table className="doc-args">
+              <thead>
+                <tr><th>Argument</th><th>Type</th><th>Description</th></tr>
+              </thead>
+              <tbody>
+                {properties.map(([name, arg]) => {
+                  const choices = argChoices(arg);
+                  return (
+                    <tr key={name}>
+                      <td>
+                        <code>{name}</code>
+                        {required.has(name) && <span className="doc-required" title="Required">*</span>}
+                      </td>
+                      <td>{argType(arg)}</td>
+                      <td>
+                        {arg.description}
+                        {arg.default !== undefined && arg.default !== null && (
+                          <span className="doc-default">Default: <code>{JSON.stringify(arg.default)}</code></span>
+                        )}
+                        {choices && (
+                          <span className="doc-choices">
+                            {choices.map((c) => <code key={String(c)}>{String(c)}</code>)}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
         </div>
       )}
-    </div>
+    </li>
   );
 }
