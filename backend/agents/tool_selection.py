@@ -49,9 +49,10 @@ _KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     (r"\bmap\b|recode|relabel|map values|replace .* with", ("map_values", "clean_text")),
     (r"\bapply\b|transform\(|cumsum|cumulative|\brank|z-?score|demean|group mean|\babs\b|\bround\b|floor|ceil",
      ("apply_function",)),
-    (r"tf-?idf|vectori[sz]|count ?vectori|hashing|bag of words|word2vec|glove|embedding|\blsa\b|text features",
-     ("vectorize_text",)),
-    (r"haversine|distance|latitude|longitude|\blat\b|\blon\b|geo|coordinates", ("geo_features",)),
+    (r"resampl|downsampl|upsampl|down-?sampl|up-?sampl|time grid|regular grid|time step|sampling (rate|interval)|"
+     r"\b(hourly|daily|weekly|monthly|minutely)\b|per (second|minute|hour|day|week|month)\b|"
+     r"every \d+ ?(s|sec|seconds?|min|minutes?|h|hours?|days?)\b|align .*(lab|sample|frequenc)",
+     ("resample_time_series",)),
     (r"shap|permutation|tree[- ]based|feature importance|importances?\b", ("select_features_model", "generate_importance_plot")),
     (r"missing|impute|imputation|\bfill|interpolat|\bnan\b|\bnull|mice|knn imput", ("remove_missing_data",)),
     (r"outlier|winsor|\bclip|\bcap\b", ("remove_outliers",)),

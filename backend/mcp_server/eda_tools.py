@@ -33,7 +33,7 @@ from backend.services.lineage_service import (
     build_parquet_path,
 )
 from backend.mcp_server.plots import EXTRA_PLOT_TYPES, build_extra_figure
-from backend.mcp_server.safe_expr import assert_safe_expression
+from backend.mcp_server.safe_expr import FUNCTIONS as SAFE_FUNCTIONS, assert_safe_expression
 from backend.storage import get_storage
 
 # ---------------------------------------------------------------------------
@@ -110,12 +110,6 @@ class PlotAggregation(str, Enum):
     median = "median"
     min = "min"
     max = "max"
-
-
-class LocationMode(str, Enum):
-    iso3 = "ISO-3"
-    country_names = "country names"
-    usa_states = "USA-states"
 
 
 class RunDuckDBQueryArgs(BaseModel):
@@ -412,7 +406,13 @@ class ExecuteFormulaArgs(BaseModel):
     )
     formula: str = Field(
         ...,
-        description="A pandas eval-compatible formula using existing column names, e.g., 'A * B + C'.",
+        description=(
+            "A pandas eval formula over existing columns, e.g. 'A * B + C'. Names with spaces or "
+            "symbols go in backticks or square brackets (`Feed temp` or [Feed temp]). Operators: "
+            "+ - * / ** // % and parentheses; comparisons (> < >= <= == !=) give True/False and "
+            "combine with & | ~. Functions: " + ", ".join(SAFE_FUNCTIONS) + ". No methods, "
+            "@variables or other functions."
+        ),
         min_length=1,
     )
 
@@ -672,8 +672,8 @@ class GenerateCustomPlotArgs(BaseModel):
             "Categorical: bar, count, swarm, strip, point (mean ± 95% CI), lollipop, pie, donut. "
             "Multivariate: joint, hexbin, bubble, contour, histogram_2d, parallel_coordinates, "
             "radviz, andrews_curves. Sequential: line, area, candlestick, waterfall, acf, pacf. "
-            "Relational: treemap, sunburst, sankey, network, dendrogram, chord. Geospatial: "
-            "choropleth, bubble_map, density_map (spatial heatmap). Clustering: silhouette (KMeans)."
+            "Relational: treemap, sunburst, sankey, network, dendrogram, chord. Clustering: "
+            "silhouette (KMeans)."
         ),
     )
     x_column: Optional[str] = Field(
@@ -702,7 +702,7 @@ class GenerateCustomPlotArgs(BaseModel):
         description=(
             "Optional grouping / colour column (scatter, time_series, kde, ridgeline, ecdf, bar, "
             "count, strip, point, joint, bubble, contour, parallel_coordinates, radviz, "
-            "andrews_curves, bubble_map)."
+            "andrews_curves)."
         ),
     )
     trendline: bool = Field(
@@ -716,9 +716,9 @@ class GenerateCustomPlotArgs(BaseModel):
     value_column: Optional[str] = Field(
         None,
         description=(
-            "Numeric size / weight column: bubble size (bubble, bubble_map), slice or area size "
-            "(pie, donut, treemap, sunburst), flow (sankey, network, chord), value per location "
-            "(choropleth), cell value (histogram_2d) or weight (density_map). Omit to count rows."
+            "Numeric size / weight column: bubble size (bubble), slice or area size (pie, donut, "
+            "treemap, sunburst), flow (sankey, network, chord) or cell value (histogram_2d). "
+            "Omit to count rows."
         ),
     )
     path_columns: list[str] = Field(
@@ -730,17 +730,7 @@ class GenerateCustomPlotArgs(BaseModel):
     )
     agg_func: PlotAggregation = Field(
         PlotAggregation.mean,
-        description="How bar, lollipop, pie, donut, histogram_2d and choropleth combine values per category.",
-    )
-    lat_column: Optional[str] = Field(None, description="Latitude column (degrees) for bubble_map and density_map.")
-    lon_column: Optional[str] = Field(None, description="Longitude column (degrees) for bubble_map and density_map.")
-    location_column: Optional[str] = Field(
-        None,
-        description="For choropleth: column of country ISO-3 codes, country names or US state codes.",
-    )
-    location_mode: LocationMode = Field(
-        LocationMode.iso3,
-        description="For choropleth: what location_column holds (ISO-3, country names or USA-states).",
+        description="How bar, lollipop, pie, donut and histogram_2d combine values per category.",
     )
     bins: int = Field(
         30,
@@ -769,8 +759,7 @@ class GenerateCustomPlotArgs(BaseModel):
         return _validate_uuid_str(value)
 
     @field_validator(
-        "x_column", "color_column", "z_column", "value_column", "lat_column", "lon_column", "location_column",
-    )
+"x_column", "color_column", "z_column", "value_column")
     @classmethod
     def _blank_is_none(cls, value: Optional[str]) -> Optional[str]:
         return value.strip() or None if isinstance(value, str) else value
@@ -2015,10 +2004,6 @@ async def generate_custom_plot(
     value_column: Optional[str] = None,
     path_columns: Optional[list[str]] = None,
     agg_func: str = "mean",
-    lat_column: Optional[str] = None,
-    lon_column: Optional[str] = None,
-    location_column: Optional[str] = None,
-    location_mode: str = "ISO-3",
     bins: int = 30,
     lags: int = 30,
     n_clusters: int = 3,
@@ -2032,8 +2017,8 @@ async def generate_custom_plot(
 
     Supports the basic types (scatter, time_series, histogram,
     correlation_heatmap, box_plot, violin_plot, pair_plot, scatter_3d) and
-    the distribution, categorical, multivariate, sequential, relational,
-    geospatial and clustering types built in ``plots.py``.
+    the distribution, categorical, multivariate, sequential, relational and
+    clustering types built in ``plots.py``.
     Large datasets are automatically subsampled to max_points rows.
     """
     args = GenerateCustomPlotArgs(
@@ -2048,10 +2033,6 @@ async def generate_custom_plot(
         value_column=value_column,
         path_columns=path_columns or [],
         agg_func=agg_func,  # type: ignore[arg-type]
-        lat_column=lat_column,
-        lon_column=lon_column,
-        location_column=location_column,
-        location_mode=location_mode,  # type: ignore[arg-type]
         bins=bins,
         lags=lags,
         n_clusters=n_clusters,
@@ -3770,7 +3751,8 @@ class DropRowsArgs(BaseModel):
             "For query mode: a pandas query expression over column names, e.g. "
             "\"temp > 80 and status == 'ok'\" or \"`flow rate` <= 2.5\". It may use comparisons, "
             "and / or / not, in [...], arithmetic and math functions such as abs or sqrt, but no "
-            "methods (.str, .isna()) or @variables. Put names with spaces in backticks. With "
+            "methods (.str, .isna()) or @variables. Put names with spaces in backticks or square "
+            "brackets (`flow rate` or [flow rate]). With "
             "keep_matching the result is df.query(query)."
         ),
         max_length=1000,

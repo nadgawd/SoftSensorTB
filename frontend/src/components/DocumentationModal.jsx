@@ -47,14 +47,14 @@ const CATEGORIES = [
   {
     id: 'time-series',
     label: 'Time-Series Features',
-    blurb: 'Capture process dynamics with lags, leads, differences, percent changes and rolling, expanding or exponentially weighted windows.',
-    tools: ['create_lag_features', 'rolling_aggregate'],
+    blurb: 'Put the data on a regular time grid (downsample by aggregating intervals, or upsample by interpolating or carrying values forward, e.g. to align fast process data with slow lab samples) and capture process dynamics with lags, leads, differences, percent changes and rolling, expanding or exponentially weighted windows.',
+    tools: ['resample_time_series', 'create_lag_features', 'rolling_aggregate'],
   },
   {
     id: 'engineering',
     label: 'Feature Engineering & Encoding',
-    blurb: 'Derive features (polynomial, date parts with weekends and holidays, pairwise combinations, text vectors, haversine distances) and encode categories (one-hot, target, leave-one-out, weight of evidence…).',
-    tools: ['feature_engineer', 'encode_categorical', 'vectorize_text', 'geo_features'],
+    blurb: 'Derive features (polynomial, date parts with weekends and holidays, pairwise combinations) and encode categories (one-hot, target, leave-one-out, weight of evidence…).',
+    tools: ['feature_engineer', 'encode_categorical'],
   },
   {
     id: 'selection',
@@ -77,7 +77,7 @@ const CATEGORIES = [
   {
     id: 'plotting',
     label: 'Plotting & Visualization',
-    blurb: 'Distributions (KDE, ECDF, QQ, ridgeline), categories (bar, count, swarm, pie), multivariate (joint, hexbin, contour, parallel coordinates, RadViz), time series (line, candlestick, waterfall, ACF / PACF), hierarchies (treemap, sunburst, Sankey, network, chord, dendrogram) and maps (choropleth, bubble, density).',
+    blurb: 'Distributions (KDE, ECDF, QQ, ridgeline), categories (bar, count, swarm, pie), multivariate (joint, hexbin, contour, parallel coordinates, RadViz), time series (line, candlestick, waterfall, ACF / PACF), hierarchies (treemap, sunburst, Sankey, network, chord, dendrogram) and clustering (silhouette).',
     tools: ['generate_custom_plot'],
   },
   {

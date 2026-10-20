@@ -12,12 +12,40 @@ from __future__ import annotations
 import ast
 import re
 
-from pandas.core.computation.ops import MATHOPS, REDUCTIONS
+from pandas.core.computation.ops import MATHOPS
 
 MAX_EXPRESSION_CHARS = 1000
 
-_FUNCTIONS = frozenset(MATHOPS) | frozenset(REDUCTIONS)
+FUNCTIONS = tuple(MATHOPS)
+_FUNCTIONS = frozenset(MATHOPS)
 _BACKTICKED = re.compile(r"`[^`]*`")
+_BRACKETED = re.compile(r"\[([^\[\]`'\"]+)\]")
+_LIST_CONTEXT = re.compile(r"(?:\bin|==|!=)\s*$")
+_QUOTED = re.compile(r"(`[^`]*`|\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
+
+
+def bracketed_columns(text: str) -> str:
+    """``[Feed temp]`` → ``\\`Feed temp\\```: square brackets around one name mean a column.
+
+    A bracket after ``in``, ``==`` or ``!=``, or holding literals or several items, stays a list.
+    """
+    def convert(part: str) -> str:
+        def replace(match: re.Match[str]) -> str:
+            inner = match.group(1).strip()
+            if not inner or _LIST_CONTEXT.search(part[: match.start()]):
+                return match.group(0)
+            try:
+                items = ast.parse(f"[{inner}]", mode="eval").body.elts  # type: ignore[attr-defined]
+            except SyntaxError:
+                return f"`{inner}`"
+            if len(items) == 1 and isinstance(items[0], ast.Name):
+                return f"`{inner}`"
+            return match.group(0)
+
+        return _BRACKETED.sub(replace, part)
+
+    parts = _QUOTED.split(text)
+    return "".join(part if i % 2 else convert(part) for i, part in enumerate(parts))
 _ALLOWED_NODES = (
     ast.Expression, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare, ast.Name, ast.Load,
     ast.Constant, ast.List, ast.Tuple, ast.Call,
@@ -29,7 +57,7 @@ _ALLOWED_NODES = (
 
 def assert_safe_expression(expression: str, *, kind: str = "expression") -> str:
     """Return the expression stripped, or raise ValueError naming what is not allowed."""
-    text = (expression or "").strip()
+    text = bracketed_columns((expression or "").strip())
     if not text:
         raise ValueError(f"The {kind} is empty")
     if len(text) > MAX_EXPRESSION_CHARS:
@@ -62,7 +90,7 @@ def assert_safe_expression(expression: str, *, kind: str = "expression") -> str:
             if isinstance(node.func, ast.Attribute):
                 raise ValueError(f"The {kind} cannot use attribute or method access (.name)")
             if not isinstance(node.func, ast.Name) or node.func.id not in _FUNCTIONS:
-                allowed = ", ".join(sorted(_FUNCTIONS))
+                allowed = ", ".join(FUNCTIONS)
                 raise ValueError(f"The {kind} can only call these functions: {allowed}")
             if node.keywords:
                 raise ValueError(f"The {kind} cannot pass keyword arguments to functions")

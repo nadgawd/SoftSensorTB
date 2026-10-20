@@ -180,6 +180,7 @@ export default function ManualTools({
         <p className="manual-hint">Loading columns…</p>
       ) : (
         <form
+          noValidate
           onSubmit={(e) => {
             e.preventDefault()
             run()

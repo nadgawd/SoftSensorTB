@@ -24,9 +24,8 @@ MULTIVARIATE = (
 )
 SEQUENTIAL = ("line", "area", "candlestick", "waterfall", "acf", "pacf")
 RELATIONAL = ("treemap", "sunburst", "sankey", "network", "dendrogram", "chord")
-GEOSPATIAL = ("choropleth", "bubble_map", "density_map")
 CLUSTERING = ("silhouette",)
-EXTRA_PLOT_TYPES = DISTRIBUTION + CATEGORICAL + MULTIVARIATE + SEQUENTIAL + RELATIONAL + GEOSPATIAL + CLUSTERING
+EXTRA_PLOT_TYPES = DISTRIBUTION + CATEGORICAL + MULTIVARIATE + SEQUENTIAL + RELATIONAL + CLUSTERING
 
 _MAX_CATEGORIES = 50
 _MAX_GROUPS = 12
@@ -963,77 +962,6 @@ def _chord(df: pd.DataFrame, args: Any) -> go.Figure:
 
 
 # ---------------------------------------------------------------------------
-# Geospatial
-# ---------------------------------------------------------------------------
-
-
-def _coordinates(df: pd.DataFrame, args: Any, kind: str) -> pd.DataFrame:
-    lat = _need(args.lat_column, kind, "lat_column")
-    lon = _need(args.lon_column, kind, "lon_column")
-    _numeric(df, [lat, lon])
-    frame = df.dropna(subset=[lat, lon])
-    frame = frame[frame[lat].between(-90, 90) & frame[lon].between(-180, 180)]
-    if frame.empty:
-        raise ValueError(f"{kind} found no valid coordinates (latitude −90…90, longitude −180…180)")
-    return frame
-
-
-def _choropleth(df: pd.DataFrame, args: Any) -> go.Figure:
-    location = _need(args.location_column, "choropleth", "location_column")
-    _exists(df, [location])
-    value = args.value_column
-    table = _aggregate(df, [location], value, args.agg_func if value else "count")
-    table = table[table[location] != _MISSING]
-    label = _value_label(args, value) if value else "count"
-    fig = px.choropleth(
-        table, locations=location, locationmode=args.location_mode, color="value",
-        color_continuous_scale="Viridis", labels={"value": label},
-        title=f"{label} by {location}",
-        scope="usa" if args.location_mode == "USA-states" else "world",
-    )
-    return fig
-
-
-def _bubble_map(df: pd.DataFrame, args: Any) -> go.Figure:
-    frame = _coordinates(df, args, "bubble_map")
-    size = args.value_column
-    if size:
-        _numeric(df, [size])
-        frame = frame.dropna(subset=[size])
-        if (frame[size] < 0).any():
-            raise ValueError(f"bubble sizes cannot be negative; {size!r} has negative values")
-    if args.color_column:
-        _exists(df, [args.color_column])
-    fig = px.scatter_geo(
-        frame, lat=args.lat_column, lon=args.lon_column, size=size, color=args.color_column,
-        size_max=30, opacity=0.75, projection="natural earth",
-        title="Bubble map" + (f" (size: {size})" if size else ""),
-    )
-    fig.update_geos(fitbounds="locations", showcountries=True)
-    return fig
-
-
-def _zoom_for(frame: pd.DataFrame, lat: str, lon: str) -> float:
-    span = max(float(np.ptp(frame[lat])), float(np.ptp(frame[lon])), 1e-3)
-    return float(np.clip(8 - math.log2(span), 0, 14))
-
-
-def _density_map(df: pd.DataFrame, args: Any) -> go.Figure:
-    frame = _coordinates(df, args, "density_map")
-    weight = args.value_column
-    if weight:
-        _numeric(df, [weight])
-        frame = frame.dropna(subset=[weight])
-    fig = px.density_map(
-        frame, lat=args.lat_column, lon=args.lon_column, z=weight, radius=12,
-        center={"lat": float(frame[args.lat_column].mean()), "lon": float(frame[args.lon_column].mean())},
-        zoom=_zoom_for(frame, args.lat_column, args.lon_column), map_style="open-street-map",
-        title="Spatial heatmap" + (f" (weight: {weight})" if weight else ""),
-    )
-    return fig
-
-
-# ---------------------------------------------------------------------------
 # Clustering
 # ---------------------------------------------------------------------------
 
@@ -1108,9 +1036,6 @@ _BUILDERS: dict[str, Callable[[pd.DataFrame, Any], go.Figure]] = {
     "network": _network,
     "dendrogram": _dendrogram,
     "chord": _chord,
-    "choropleth": _choropleth,
-    "bubble_map": _bubble_map,
-    "density_map": _density_map,
     "silhouette": _silhouette,
 }
 

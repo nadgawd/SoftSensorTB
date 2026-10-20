@@ -8,6 +8,7 @@ const TOOL_LABELS = {
   normalize_data: 'Normalize',
   create_lag_features: 'Lag features',
   rolling_aggregate: 'Rolling aggregate',
+  resample_time_series: 'Resample time series',
   feature_engineer: 'Feature engineering',
   execute_formula: 'Formula column',
   transform_features: 'Transform features',

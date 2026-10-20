@@ -88,7 +88,7 @@ _ACTION_RE = re.compile(
     r"train\w*|fit|refit|model\w*|predict\w*|validat\w*|cross[\s-]?val\w*|"
     r"remove|drop\w*|delete|impute\w*|fillna|"
     r"normali[sz]\w*|standardi[sz]\w*|scal\w*|encode\w*|transform\w*|"
-    r"engineer\w*|balance\w*|rename|resample\w*|rolling|lag\w*|smooth\w*|"
+    r"engineer\w*|balance\w*|rename|resampl\w*|downsampl\w*|upsampl\w*|rolling|lag\w*|smooth\w*|"
     r"anomal\w*|outlier\w*|"
     r"quer\w*|sql|duckdb|select|unselect\w*|deselect\w*|feature\w*|"
     r"count|sum|average|mean|median|max|min|std|"
@@ -100,10 +100,10 @@ _ACTION_RE = re.compile(
     r"group[\s_-]?by|groupby|pivot\w*|crosstab\w*|aggregat\w*|nunique|skew\w*|kurtosis|quantiles?|"
     r"t[\s-]?test\w*|anova|chi[\s-]?squared?|shapiro|kolmogorov|adf|dickey[\s-]fuller|stationar\w*|normality|"
     r"sort\w*|melt|stack|unstack|reshape\w*|merge\w*|join\w*|concat\w*|combine|append|"
-    r"mask\w*|recode\w*|apply|cumsum|rank\w*|interpolat\w*|vectori[sz]\w*|tf[\s-]?idf|"
-    r"haversine|shap|permutation|smote|adasyn|oversampl\w*|undersampl\w*|ewm|expanding|shift|diff|"
+    r"mask\w*|recode\w*|apply|cumsum|rank\w*|interpolat\w*|"
+    r"shap|permutation|smote|adasyn|oversampl\w*|undersampl\w*|ewm|expanding|shift|diff|"
     r"roc|auc|precision[\s-]recall|learning[\s-]curve|kde|ecdf|q[\s-]?q|treemap|sunburst|sankey|"
-    r"dendrogram|hexbin|choropleth|acf|pacf|bootstrap\w*|holdout|walk[\s-]forward|"
+    r"dendrogram|hexbin|acf|pacf|bootstrap\w*|holdout|walk[\s-]forward|"
     r"column\w*|row\w*|dataset|undo|revert|snapshot"
     r")\b",
     re.IGNORECASE,

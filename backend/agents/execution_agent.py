@@ -72,6 +72,7 @@ _MUTATING_TOOLS = frozenset(
         # Time-series
         "rolling_aggregate",
         "create_lag_features",
+        "resample_time_series",
         # Advanced feature selection & data quality
         "select_features_rfe",
         "select_k_best",
@@ -89,9 +90,7 @@ _MUTATING_TOOLS = frozenset(
         "mask_values",
         "map_values",
         "apply_function",
-        # Text, geospatial and model-based features
-        "vectorize_text",
-        "geo_features",
+        # Model-based feature selection
         "select_features_model",
     }
 )

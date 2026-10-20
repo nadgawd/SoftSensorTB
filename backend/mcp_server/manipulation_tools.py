@@ -1,9 +1,9 @@
 """Row/column manipulation and feature tools that create new dataset versions.
 
 Sorting, reshaping, combining datasets, where/mask, value mapping, function
-application, text vectorisation, geographic distances and model-based
-feature selection. Each mutating tool returns ``(new_version_id, summary)``
-like the tools in ``eda_tools``; ``list_datasets`` returns a table.
+application, time resampling and model-based feature selection. Each
+mutating tool returns ``(new_version_id, summary)`` like the tools in
+``eda_tools``; ``list_datasets`` returns a table.
 """
 
 from __future__ import annotations
@@ -1050,253 +1050,301 @@ async def apply_function(
 
 
 # ---------------------------------------------------------------------------
-# Text vectorisation
+# Time resampling
 # ---------------------------------------------------------------------------
 
 
-class VectorizeMethod(str, Enum):
-    tfidf = "tfidf"
+class ResampleMode(str, Enum):
+    downsample = "downsample"
+    upsample = "upsample"
+
+
+class ResampleAggregation(str, Enum):
+    mean = "mean"
+    median = "median"
+    sum = "sum"
+    min = "min"
+    max = "max"
+    first = "first"
+    last = "last"
+    std = "std"
     count = "count"
-    hashing = "hashing"
-    lsa = "lsa"
 
 
-_VECTOR_PREFIX = {
-    VectorizeMethod.tfidf: "tfidf",
-    VectorizeMethod.count: "count",
-    VectorizeMethod.hashing: "hash",
-    VectorizeMethod.lsa: "lsa",
+class UpsampleFill(str, Enum):
+    interpolate = "interpolate"
+    ffill = "ffill"
+    bfill = "bfill"
+    nearest = "nearest"
+    none = "none"
+
+
+_FREQUENCY = re.compile(r"^\s*(\d+(?:\.\d+)?)?\s*([A-Za-z]+)\s*$")
+_FREQUENCY_UNITS = {
+    **dict.fromkeys(("s", "sec", "secs", "second", "seconds"), "s"),
+    **dict.fromkeys(("min", "mins", "minute", "minutes", "m", "t"), "min"),
+    **dict.fromkeys(("h", "hr", "hrs", "hour", "hours"), "h"),
+    **dict.fromkeys(("d", "day", "days"), "D"),
+    **dict.fromkeys(("w", "wk", "week", "weeks"), "W"),
+    **dict.fromkeys(("mo", "month", "months"), "MS"),
+}
+_FILL_DESCRIPTIONS = {
+    UpsampleFill.interpolate: "linear interpolation in time",
+    UpsampleFill.ffill: "carrying the last value forward",
+    UpsampleFill.bfill: "carrying the next value backward",
+    UpsampleFill.nearest: "the nearest measured value",
+    UpsampleFill.none: "nothing (new time steps stay missing)",
 }
 
 
-class VectorizeTextArgs(BaseModel):
+def _offset(text: str) -> pd.DateOffset:
+    """A pandas offset from '5min', '1h', '15 minutes', '1D', '1MS'…"""
+    from pandas.tseries.frequencies import to_offset
+
+    offset = None
+    try:
+        offset = to_offset(re.sub(r"\s+", "", text))
+    except (ValueError, TypeError):
+        match = _FREQUENCY.match(text)
+        unit = _FREQUENCY_UNITS.get(match.group(2).lower()) if match else None
+        if unit is not None:
+            offset = to_offset(f"{match.group(1) or 1}{unit}")
+    if offset is None:
+        raise ValueError(
+            f"frequency {text!r} is not understood; use a number and a unit such as 30s, 5min, 1h, 1D, 1W or 1MS"
+        )
+    if offset.n <= 0:
+        raise ValueError("frequency must be a positive time step")
+    return offset
+
+
+def _step_text(step: pd.Timedelta) -> str:
+    seconds = step.total_seconds()
+    for unit, size in (("d", 86400), ("h", 3600), ("min", 60)):
+        if seconds >= size:
+            return f"{seconds / size:.3g} {unit}"
+    return f"{seconds:.3g} s"
+
+
+def _fixed_step(offset: pd.DateOffset) -> Optional[pd.Timedelta]:
+    try:
+        return pd.Timedelta(offset)
+    except (ValueError, TypeError):
+        return None
+
+
+class ResampleTimeSeriesArgs(BaseModel):
     dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    column: str = Field(..., description="Text column to vectorise.", min_length=1)
-    method: VectorizeMethod = Field(
-        VectorizeMethod.tfidf,
+    time_column: str = Field(..., description="Column holding the timestamps (dates / times) of the rows.", min_length=1)
+    frequency: str = Field(
+        ...,
         description=(
-            "tfidf (TfidfVectorizer: term weights), count (CountVectorizer: term counts), hashing "
-            "(HashingVectorizer: hashed term buckets, no vocabulary) or lsa (TF-IDF reduced to "
-            "n_components dense topics with TruncatedSVD, a light alternative to word embeddings)."
+            "The new time step: a number and a unit, e.g. 30s, 5min, 15min, 1h, 8h, 1D, 1W or 1MS "
+            "(month start). Units: s, min, h, D (day), W (week), MS (month)."
+        ),
+        min_length=1,
+        max_length=20,
+    )
+    mode: ResampleMode = Field(
+        ResampleMode.downsample,
+        description=(
+            "downsample: a coarser step; the rows in each interval are combined with `aggregation` "
+            "(e.g. 1-min historian data to hourly means). upsample: a finer step; new time steps are "
+            "filled with `fill` (e.g. 4-hourly lab results onto a 1-min grid). A step equal to the "
+            "data's spacing puts irregular timestamps on a regular grid."
         ),
     )
-    max_features: int = Field(20, description="Vocabulary size (tfidf, count, lsa input) or number of hash buckets (hashing).", ge=1, le=200)
-    n_components: int = Field(5, description="For lsa: number of topic columns.", ge=1, le=50)
-    ngram_max: int = Field(1, description="Longest word n-gram counted (1 = single words, 2 adds word pairs).", ge=1, le=3)
-    stop_words: bool = Field(True, description="Ignore common English words (the, and, of, …).")
-    binary: bool = Field(False, description="For count: 1 if a term occurs instead of how often.")
-    drop_original: bool = Field(False, description="Drop the text column after vectorising it.")
+    aggregation: ResampleAggregation = Field(
+        ResampleAggregation.mean,
+        description=(
+            "downsample: how the numeric values in each interval are combined: mean, median, sum, "
+            "min, max, first, last, std or count. Text columns take the first value (last for "
+            "'last', the number of values for 'count')."
+        ),
+    )
+    fill: UpsampleFill = Field(
+        UpsampleFill.interpolate,
+        description=(
+            "upsample: how new time steps are filled: interpolate (linear in time between measured "
+            "values; text columns carry the last value), ffill (carry the last value forward, e.g. a "
+            "lab result held until the next sample), bfill, nearest, or none (leave them missing)."
+        ),
+    )
+    fill_limit: Optional[int] = Field(
+        None,
+        description="upsample: fill at most this many consecutive new time steps, so a long outage is not invented. Omit for no limit.",
+        ge=1,
+    )
+    columns: Optional[list[str]] = Field(None, description="Columns to keep besides the time column. Omit to keep all.")
+    drop_empty: bool = Field(
+        True,
+        description="downsample: drop intervals that contain no rows (otherwise they stay as rows of missing values).",
+    )
 
     @field_validator("dataset_version_id")
     @classmethod
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
 
-    @field_validator("column")
+    @field_validator("time_column")
     @classmethod
     def _strip(cls, value: str) -> str:
         value = value.strip()
         if not value:
-            raise ValueError("column cannot be blank")
+            raise ValueError("time_column cannot be blank")
         return value
 
+    @field_validator("frequency")
+    @classmethod
+    def _valid_frequency(cls, value: str) -> str:
+        _offset(value)
+        return value.strip()
 
-def _token_name(token: str) -> str:
-    return re.sub(r"\W+", "_", token).strip("_") or "term"
-
-
-def _vectorize(text: pd.Series, args: VectorizeTextArgs) -> tuple[np.ndarray, list[str], str]:
-    from sklearn.feature_extraction.text import CountVectorizer, HashingVectorizer, TfidfVectorizer
-
-    common = {"ngram_range": (1, args.ngram_max), "stop_words": "english" if args.stop_words else None}
-    method = args.method
-    try:
-        if method == VectorizeMethod.hashing:
-            vectorizer = HashingVectorizer(n_features=args.max_features, alternate_sign=False, **common)
-            matrix = vectorizer.transform(text)
-            return matrix.toarray(), [str(i) for i in range(args.max_features)], f"{args.max_features} hash buckets"
-        if method == VectorizeMethod.count:
-            vectorizer = CountVectorizer(max_features=args.max_features, binary=args.binary, **common)
-        else:
-            limit = max(args.max_features, 1000) if method == VectorizeMethod.lsa else args.max_features
-            vectorizer = TfidfVectorizer(max_features=limit, **common)
-        matrix = vectorizer.fit_transform(text)
-    except ValueError as exc:
-        if "empty vocabulary" in str(exc):
-            raise ValueError("The text has no words left to count (empty or only stop words); try stop_words=false") from exc
-        raise
-    vocabulary = [str(t) for t in vectorizer.get_feature_names_out()]
-    if method != VectorizeMethod.lsa:
-        return matrix.toarray(), vocabulary, f"{len(vocabulary)} term(s)"
-    from sklearn.decomposition import TruncatedSVD
-
-    if args.n_components >= len(vocabulary):
-        raise ValueError(f"lsa needs n_components below the vocabulary size ({len(vocabulary)} terms)")
-    svd = TruncatedSVD(n_components=args.n_components, random_state=42)
-    topics = svd.fit_transform(matrix)
-    explained = 100 * float(svd.explained_variance_ratio_.sum())
-    return topics, [str(i) for i in range(args.n_components)], f"{args.n_components} topic(s) explaining {explained:.1f}% of the TF-IDF variance"
+    @field_validator("columns")
+    @classmethod
+    def _optional(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        return _clean_optional_names(value)
 
 
-async def vectorize_text(
+def _timestamps(series: pd.Series, name: str) -> pd.Series:
+    if pd.api.types.is_datetime64_any_dtype(series):
+        return series
+    if _is_plain_numeric(series):
+        raise ValueError(f"'{name}' holds numbers, not dates or times; convert it to datetime first (convert_types)")
+    return pd.to_datetime(series, errors="coerce", format="mixed")
+
+
+def _downsample(frame: pd.DataFrame, offset: pd.DateOffset, args: ResampleTimeSeriesArgs, numeric: list[str], other: list[str]) -> tuple[pd.DataFrame, str]:
+    bins = frame.resample(offset)
+    agg = args.aggregation
+    pieces = []
+    if numeric:
+        selected = bins[numeric]
+        pieces.append(selected.sum(min_count=1) if agg == ResampleAggregation.sum else getattr(selected, agg.value)())
+    other_agg = {ResampleAggregation.count: "count", ResampleAggregation.last: "last"}.get(agg, "first")
+    if other:
+        pieces.append(getattr(bins[other], other_agg)())
+    out = pd.concat(pieces, axis=1)[[*numeric, *other]]
+    sizes = bins.size().reindex(out.index).fillna(0)
+    empty = int((sizes == 0).sum())
+    described = f"{agg.value} of {len(numeric)} numeric column(s)"
+    if other:
+        described += f"; text columns take the {other_agg} {'number of values' if other_agg == 'count' else 'value'}"
+    if args.drop_empty and empty:
+        out = out.loc[sizes > 0]
+        described += f"; {empty} empty interval(s) dropped"
+    elif empty:
+        described += f"; {empty} empty interval(s) kept as missing rows"
+    return out, described
+
+
+def _upsample(frame: pd.DataFrame, offset: pd.DateOffset, args: ResampleTimeSeriesArgs, numeric: list[str], other: list[str]) -> tuple[pd.DataFrame, str]:
+    described = f"filled by {_FILL_DESCRIPTIONS[args.fill]}"
+    if frame.index.has_duplicates:
+        repeated = int(frame.index.duplicated().sum())
+        grouped = frame.groupby(level=0)
+        parts = ([grouped[numeric].mean()] if numeric else []) + ([grouped[other].first()] if other else [])
+        frame = pd.concat(parts, axis=1)
+        described += f"; {repeated} row(s) sharing a timestamp were averaged first"
+    step = _fixed_step(offset)
+    if step is not None and (frame.index[-1] - frame.index[0]) / step + 1 > _MAX_RESULT_ROWS:
+        raise ValueError(f"Upsampling to {args.frequency} would create more than {_MAX_RESULT_ROWS:,} rows; choose a coarser step")
+    grid = frame.resample(offset).asfreq().index
+    if len(grid) > _MAX_RESULT_ROWS:
+        raise ValueError(f"Upsampling to {args.frequency} would create more than {_MAX_RESULT_ROWS:,} rows; choose a coarser step")
+    limit = args.fill_limit
+    if args.fill == UpsampleFill.none:
+        out = frame.reindex(grid)
+    elif args.fill != UpsampleFill.interpolate:
+        out = frame.reindex(grid, method=args.fill.value, limit=limit)
+    else:
+        out = pd.DataFrame(index=grid)
+        if numeric:
+            merged = frame[numeric].reindex(frame.index.union(grid)).astype(float)
+            out[numeric] = merged.interpolate(method="time", limit=limit, limit_area="inside").loc[grid]
+        if other:
+            out[other] = frame[other].reindex(grid, method="ffill", limit=limit)
+    if limit and args.fill != UpsampleFill.none:
+        described += f" (at most {limit} step(s) in a row)"
+    return out[[*numeric, *other]], described
+
+
+async def resample_time_series(
     dataset_version_id: str,
-    column: str,
-    method: str = "tfidf",
-    max_features: int = 20,
-    n_components: int = 5,
-    ngram_max: int = 1,
-    stop_words: bool = True,
-    binary: bool = False,
-    drop_original: bool = False,
+    time_column: str,
+    frequency: str,
+    mode: str = "downsample",
+    aggregation: str = "mean",
+    fill: str = "interpolate",
+    fill_limit: Optional[int] = None,
+    columns: Optional[list[str]] = None,
+    drop_empty: bool = True,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
-    """Turn a text column into numeric columns (TF-IDF, counts, hashing or LSA topics)."""
-    args = VectorizeTextArgs(
-        dataset_version_id=dataset_version_id, column=column, method=method,  # type: ignore[arg-type]
-        max_features=max_features, n_components=n_components, ngram_max=ngram_max,
-        stop_words=stop_words, binary=binary, drop_original=drop_original,
+    """Put the rows on a regular time grid: downsample (aggregate) or upsample (fill)."""
+    args = ResampleTimeSeriesArgs(
+        dataset_version_id=dataset_version_id, time_column=time_column, frequency=frequency,
+        mode=mode, aggregation=aggregation, fill=fill, fill_limit=fill_limit,  # type: ignore[arg-type]
+        columns=columns, drop_empty=drop_empty,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
-        _assert_columns_exist(df, [args.column])
-        if _is_plain_numeric(df[args.column]):
-            raise ValueError(f"'{args.column}' is numeric; vectorize_text needs a text column")
-        text = df[args.column].astype(object).map(lambda v: v if isinstance(v, str) else "" if pd.isna(v) else str(v))
-        matrix, names, described = _vectorize(text, args)
-        prefix = f"{args.column}_{_VECTOR_PREFIX[args.method]}_"
-        result = df.copy()
-        added: list[str] = []
-        for i, token in enumerate(names):
-            name = _free_name(result, prefix + _token_name(token))
-            result[name] = matrix[:, i].astype(float)
-            added.append(name)
-        if args.drop_original:
-            result = result.drop(columns=[args.column])
-        preview = ", ".join(added[:8]) + (" …" if len(added) > 8 else "")
-        return await _persist_new_version(
-            db,
-            parent=parent,
-            df=result,
-            action_performed="vectorize_text",
-            parameters_used={**args.model_dump(mode="json", exclude={"dataset_version_id"}), "added_columns": added},
-            summary_message=f"Vectorised '{args.column}' with {args.method.value} into {len(added)} column(s) ({described}): {preview}.",
-        )
+        keep = [c for c in (args.columns or list(df.columns)) if c != args.time_column]
+        _assert_columns_exist(df, [args.time_column, *keep])
+        if not keep:
+            raise ValueError("Choose at least one column besides the time column")
+        offset = _offset(args.frequency)
+        stamps = _timestamps(df[args.time_column], args.time_column)
+        valid = stamps.notna()
+        if valid.sum() < 2:
+            raise ValueError(f"'{args.time_column}' needs at least two rows with readable timestamps")
+        frame = df.loc[valid, keep].copy()
+        frame.index = pd.DatetimeIndex(stamps[valid], name=args.time_column)
+        frame = frame.sort_index(kind="stable")
+        numeric = [c for c in keep if _is_plain_numeric(frame[c])]
+        other = [c for c in keep if c not in numeric]
 
-    return await _run_with(session, _run)
+        gaps = frame.index.to_series().diff()
+        gaps = gaps[gaps > pd.Timedelta(0)]
+        spacing = gaps.median() if len(gaps) else None
+        step = _fixed_step(offset)
+        if spacing is not None and step is not None:
+            if args.mode == ResampleMode.downsample and step < spacing:
+                raise ValueError(
+                    f"The rows are about {_step_text(spacing)} apart, so a {args.frequency} step is finer; "
+                    f"that is upsampling (mode='upsample'), or choose a step of at least {_step_text(spacing)}"
+                )
+            if args.mode == ResampleMode.upsample and step > spacing:
+                raise ValueError(
+                    f"The rows are about {_step_text(spacing)} apart, so a {args.frequency} step is coarser; "
+                    f"that is downsampling (mode='downsample'), or choose a step of at most {_step_text(spacing)}"
+                )
 
-
-# ---------------------------------------------------------------------------
-# Geospatial features
-# ---------------------------------------------------------------------------
-
-
-class DistanceUnit(str, Enum):
-    km = "km"
-    mi = "mi"
-    m = "m"
-
-
-_EARTH_RADIUS = {DistanceUnit.km: 6371.0088, DistanceUnit.mi: 3958.7613, DistanceUnit.m: 6_371_008.8}
-
-
-class GeoFeaturesArgs(BaseModel):
-    dataset_version_id: str = Field(..., min_length=36, max_length=36)
-    lat_column: str = Field(..., description="Latitude of the first point (degrees).", min_length=1)
-    lon_column: str = Field(..., description="Longitude of the first point (degrees).", min_length=1)
-    lat2_column: Optional[str] = Field(None, description="Latitude column of the second point (with lon2_column).")
-    lon2_column: Optional[str] = Field(None, description="Longitude column of the second point (with lat2_column).")
-    ref_lat: Optional[float] = Field(None, description="Latitude of a fixed reference point (with ref_lon), instead of second columns.", ge=-90, le=90)
-    ref_lon: Optional[float] = Field(None, description="Longitude of the fixed reference point.", ge=-180, le=180)
-    units: DistanceUnit = Field(DistanceUnit.km, description="Distance unit: km, mi or m.")
-    new_column_name: Optional[str] = Field(None, description="Name of the distance column. Omit for haversine_<units> or distance_to_ref_<units>.")
-
-    @field_validator("dataset_version_id")
-    @classmethod
-    def _valid_uuid(cls, value: str) -> str:
-        return _validate_uuid_str(value)
-
-    @field_validator("lat2_column", "lon2_column", "new_column_name", mode="before")
-    @classmethod
-    def _blank_names(cls, value: Any) -> Any:
-        return _blank(value)
-
-    @model_validator(mode="after")
-    def _one_target(self) -> "GeoFeaturesArgs":
-        columns = (self.lat2_column, self.lon2_column)
-        point = (self.ref_lat, self.ref_lon)
-        has_columns = all(v is not None for v in columns)
-        has_point = all(v is not None for v in point)
-        if any(v is not None for v in columns) and not has_columns:
-            raise ValueError("Give both lat2_column and lon2_column")
-        if any(v is not None for v in point) and not has_point:
-            raise ValueError("Give both ref_lat and ref_lon")
-        if has_columns == has_point:
-            raise ValueError("Give either lat2_column/lon2_column or ref_lat/ref_lon (one of the two)")
-        return self
-
-
-def _haversine(lat1: pd.Series, lon1: pd.Series, lat2: Any, lon2: Any, radius: float) -> pd.Series:
-    phi1, phi2 = np.radians(lat1), np.radians(lat2)
-    dphi = phi2 - phi1
-    dlmb = np.radians(lon2) - np.radians(lon1)
-    a = np.sin(dphi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlmb / 2) ** 2
-    return 2 * radius * np.arcsin(np.sqrt(np.clip(a, 0, 1)))
-
-
-async def geo_features(
-    dataset_version_id: str,
-    lat_column: str,
-    lon_column: str,
-    lat2_column: Optional[str] = None,
-    lon2_column: Optional[str] = None,
-    ref_lat: Optional[float] = None,
-    ref_lon: Optional[float] = None,
-    units: str = "km",
-    new_column_name: Optional[str] = None,
-    *,
-    session: Optional[AsyncSession] = None,
-) -> tuple[str, str]:
-    """Great-circle (haversine) distance between two coordinate columns or to a reference point."""
-    args = GeoFeaturesArgs(
-        dataset_version_id=dataset_version_id, lat_column=lat_column, lon_column=lon_column,
-        lat2_column=lat2_column, lon2_column=lon2_column, ref_lat=ref_lat, ref_lon=ref_lon,
-        units=units, new_column_name=new_column_name,  # type: ignore[arg-type]
-    )
-
-    async def _run(db: AsyncSession) -> tuple[str, str]:
-        parent = await _get_version(db, args.dataset_version_id)
-        df = _load_dataframe(parent)
-        pairs = [(args.lat_column, args.lon_column)]
-        if args.lat2_column:
-            pairs.append((args.lat2_column, args.lon2_column))
-        _assert_numeric_columns(df, [c for pair in pairs for c in pair])
-        valid = pd.Series(True, index=df.index)
-        for lat, lon in pairs:
-            valid &= df[lat].between(-90, 90) & df[lon].between(-180, 180)
-        lat1 = df[args.lat_column].astype(float).where(valid)
-        lon1 = df[args.lon_column].astype(float).where(valid)
-        radius = _EARTH_RADIUS[args.units]
-        if args.lat2_column:
-            distance = _haversine(lat1, lon1, df[args.lat2_column].astype(float).where(valid), df[args.lon2_column].astype(float).where(valid), radius)
-            default, target = f"haversine_{args.units.value}", f"({args.lat2_column}, {args.lon2_column})"
+        if args.mode == ResampleMode.downsample:
+            out, described = _downsample(frame, offset, args, numeric, other)
         else:
-            distance = _haversine(lat1, lon1, args.ref_lat, args.ref_lon, radius)
-            default, target = f"distance_to_ref_{args.units.value}", f"({args.ref_lat:g}, {args.ref_lon:g})"
-        name = args.new_column_name or default
-        result = df.copy()
-        result[name] = distance
-        invalid = int((~valid & df[[c for pair in pairs for c in pair]].notna().all(axis=1)).sum())
-        summary = f"Added '{name}': haversine distance in {args.units.value} from ({args.lat_column}, {args.lon_column}) to {target}."
-        if invalid:
-            summary += f" {invalid} row(s) with coordinates out of range got no distance."
+            out, described = _upsample(frame, offset, args, numeric, other)
+        if out.empty:
+            raise ValueError("Resampling left no rows")
+        result = out.reset_index()
+        result = result[[c for c in df.columns if c == args.time_column or c in keep]]
+
+        spacing_text = f" (about {_step_text(spacing)} apart)" if spacing is not None else ""
+        verb = "Downsampled" if args.mode == ResampleMode.downsample else "Upsampled"
+        summary = f"{verb} {len(frame)} rows{spacing_text} to {len(result)} rows every {args.frequency}: {described}."
+        if (~valid).any():
+            summary += f" {int((~valid).sum())} row(s) without a readable timestamp were left out."
+        missing = int(result[numeric].isna().sum().sum()) if numeric else 0
+        if missing:
+            summary += f" {missing} numeric value(s) are missing in the result."
         return await _persist_new_version(
             db,
             parent=parent,
             df=result,
-            action_performed="geo_features",
+            action_performed="resample_time_series",
             parameters_used=args.model_dump(mode="json", exclude={"dataset_version_id"}, exclude_none=True),
             summary_message=summary,
         )
@@ -1537,14 +1585,15 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         args_model=ApplyFunctionArgs,
     ),
     _openai_tool_schema(
-        name="vectorize_text",
-        description="Turn a text column into numeric columns: TF-IDF, word counts, hashing, or LSA topics.",
-        args_model=VectorizeTextArgs,
-    ),
-    _openai_tool_schema(
-        name="geo_features",
-        description="Add the haversine (great-circle) distance between two latitude/longitude column pairs or to a fixed point.",
-        args_model=GeoFeaturesArgs,
+        name="resample_time_series",
+        description=(
+            "Resample the rows onto a regular time grid by a timestamp column (pandas resample): "
+            "downsample to a coarser step by aggregating each interval (mean, median, sum, min, max, "
+            "first, last, std, count), or upsample to a finer step and fill the new time steps "
+            "(time interpolation, forward/backward fill, nearest or none), e.g. to align 1-min "
+            "historian data with hourly lab results. Saves a new dataset version."
+        ),
+        args_model=ResampleTimeSeriesArgs,
     ),
     _openai_tool_schema(
         name="select_features_model",
@@ -1564,8 +1613,7 @@ TOOL_FUNCTIONS = {
     "mask_values": mask_values,
     "map_values": map_values,
     "apply_function": apply_function,
-    "vectorize_text": vectorize_text,
-    "geo_features": geo_features,
+    "resample_time_series": resample_time_series,
     "select_features_model": select_features_model,
 }
 

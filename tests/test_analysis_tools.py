@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 
 import numpy as np
@@ -286,28 +287,67 @@ def test_encodings_loo_and_woe(client):  # noqa: F811
     _fails(_run(client, user, version, "encode_categorical", columns=["c"], strategy="woe", target_column="y"), "exactly two classes")
 
 
-def test_text_geo_and_math_features(client):  # noqa: F811
-    df = pd.DataFrame({
-        "note": ["pump leak", "valve leak", "pump noise", "sensor fault"],
-        "lat": [19.0760, 28.6139, 19.0760, 12.9716],
-        "lon": [72.8777, 77.2090, 72.8777, 77.5946],
-        "a": [1.0, 2.0, 4.0, 0.0],
-    })
-    user, version, _ = _setup(client, df)
-    counts = _ok(_run(client, user, version, "vectorize_text", column="note", method="count"))
-    out = _preview(client, user, counts["active_dataset_version_id"])
-    assert out["note_count_leak"].tolist() == [1, 1, 0, 0] and out["note_count_pump"].tolist() == [1, 0, 1, 0]
-    lsa = _ok(_run(client, user, version, "vectorize_text", column="note", method="lsa", n_components=2))
-    assert sum(c.startswith("note_lsa") for c in _preview(client, user, lsa["active_dataset_version_id"]).columns) == 2
-
-    geo = _ok(_run(client, user, version, "geo_features", lat_column="lat", lon_column="lon",
-                   ref_lat=19.0760, ref_lon=72.8777, new_column_name="from_mumbai"))
-    km = _preview(client, user, geo["active_dataset_version_id"])["from_mumbai"].tolist()
-    assert km[0] == pytest.approx(0, abs=1e-6) and km[1] == pytest.approx(1148, rel=0.01)
-
+def test_reciprocal_transform(client):  # noqa: F811
+    user, version, _ = _setup(client, pd.DataFrame({"a": [1.0, 2.0, 4.0, 0.0]}))
     recip = _ok(_run(client, user, version, "transform_features", columns=["a"], strategy="reciprocal"))
     r = _preview(client, user, recip["active_dataset_version_id"])["a_reciprocal"].tolist()
     assert r[:3] == [1.0, 0.5, 0.25] and (r[3] is None or math.isnan(r[3]))
+
+
+def _minute_data() -> pd.DataFrame:
+    """Three hours of 1-minute data, with a gap at 01:10–01:19 and a lab value every 30 min."""
+    stamps = pd.date_range("2026-03-01 00:00", periods=180, freq="min")
+    df = pd.DataFrame({
+        "ts": stamps.astype(str),
+        "temp": np.arange(180, dtype=float),
+        "mode": ["run"] * 120 + ["idle"] * 60,
+        "lab": [float(i) if i % 30 == 0 else np.nan for i in range(180)],
+    })
+    return df.drop(index=range(70, 80)).reset_index(drop=True)
+
+
+def test_resample_downsamples_by_interval(client):  # noqa: F811
+    user, version, df = _setup(client, _minute_data())
+    hourly = _ok(_run(client, user, version, "resample_time_series", time_column="ts", frequency="1h",
+                      columns=["temp", "mode"]))
+    assert "Downsampled 170 rows (about 1 min apart) to 3 rows every 1h" in hourly["message"]
+    out = _preview(client, user, hourly["active_dataset_version_id"])
+    assert list(out.columns) == ["ts", "temp", "mode"]
+    assert out["temp"].tolist() == pytest.approx([29.5, df["temp"][60:110].mean(), 149.5])
+    assert out["mode"].tolist() == ["run", "run", "idle"]
+    assert pd.to_datetime(out["ts"]).dt.hour.tolist() == [0, 1, 2]
+
+    ten = _ok(_run(client, user, version, "resample_time_series", time_column="ts", frequency="10 minutes",
+                   aggregation="count", columns=["temp"]))
+    counts = _preview(client, user, ten["active_dataset_version_id"])["temp"].tolist()
+    assert len(counts) == 17 and set(counts) == {10} and "1 empty interval(s) dropped" in ten["message"]
+
+    kept = _ok(_run(client, user, version, "resample_time_series", time_column="ts", frequency="10min",
+                    aggregation="sum", columns=["temp"], drop_empty=False))
+    sums = _preview(client, user, kept["active_dataset_version_id"])["temp"].tolist()
+    assert len(sums) == 18 and (sums[7] is None or math.isnan(sums[7])) and sums[0] == sum(range(10))
+
+
+def test_resample_upsamples_and_fills(client):  # noqa: F811
+    lab = pd.DataFrame({"ts": ["2026-03-01 00:00", "2026-03-01 01:00", "2026-03-01 03:00"], "y": [0.0, 6.0, 18.0]})
+    user, version, _ = _setup(client, lab)
+    linear = _ok(_run(client, user, version, "resample_time_series", time_column="ts", frequency="30min", mode="upsample"))
+    assert "Upsampled 3 rows" in linear["message"] and "linear interpolation" in linear["message"]
+    assert _preview(client, user, linear["active_dataset_version_id"])["y"].tolist() == pytest.approx([0, 3, 6, 9, 12, 15, 18])
+
+    held = _ok(_run(client, user, version, "resample_time_series", time_column="ts", frequency="30min",
+                    mode="upsample", fill="ffill", fill_limit=1))
+    y = _preview(client, user, held["active_dataset_version_id"])["y"].tolist()
+    assert y[:4] == [0.0, 0.0, 6.0, 6.0] and all(v is None or math.isnan(v) for v in y[4:6]) and y[6] == 18.0
+    assert "2 numeric value(s) are missing" in held["message"]
+
+    _fails(_run(client, user, version, "resample_time_series", time_column="ts", frequency="2h", mode="upsample"),
+           "coarser", "downsampling")
+    _fails(_run(client, user, version, "resample_time_series", time_column="ts", frequency="10min"),
+           "finer", "upsampling")
+    _fails(_run(client, user, version, "resample_time_series", time_column="ts", frequency="every so often"),
+           "not understood", status=422)
+    _fails(_run(client, user, version, "resample_time_series", time_column="y", frequency="1h"), "not dates")
 
 
 def test_log_transform_marks_out_of_domain_values_missing(client):  # noqa: F811
@@ -450,7 +490,27 @@ def test_model_evaluation_curves(client, tool):  # noqa: F811
         assert "AUC" in figure["data"][0]["name"] and float(figure["data"][0]["name"].split("= ")[1][:-1]) > 0.8
     if tool != "generate_learning_curve":
         _fails(_run(client, user, scored, tool, threshold=1e9), "threshold")
-        assert _ok(_run(client, user, scored, tool, rows="all"))["plot_data"]["data"]
+        assert "held-out test rows" in figure["layout"]["title"]["text"]
+
+
+def _points(values):
+    if isinstance(values, dict):
+        return np.frombuffer(base64.b64decode(values["bdata"]), dtype=values["dtype"])
+    return np.asarray(values)
+
+
+def test_validation_plots_use_only_the_test_rows(client):  # noqa: F811
+    user, version, _ = _setup(client)
+    trained = _ok(_run(client, user, version, "train_soft_sensor", algorithm="OLS", target_column="y",
+                       feature_columns=["x", "noise"], test_size=0.25))
+    m, scored = trained["model_metrics"], trained["active_dataset_version_id"]
+    parity = _ok(_run(client, user, scored, "generate_parity_plot"))["plot_data"]
+    assert len(_points(parity["data"][0]["x"])) == m["n_test"]
+    assert f"R² {m['r2_score']:.3f}" in parity["layout"]["title"]["text"]
+    residuals = _ok(_run(client, user, scored, "generate_residuals_plot"))["plot_data"]
+    assert len(_points(residuals["data"][0]["x"])) == len(_points(residuals["data"][1]["x"])) == m["n_test"]
+    curve = _ok(_run(client, user, scored, "generate_learning_curve", cv_folds=5))["plot_data"]
+    assert _points(curve["data"][1]["x"]).max() == m["n_train"] - math.ceil(m["n_train"] / 5)
 
 
 # ── Assistant tool selection ─────────────────────────────────────────────
@@ -464,8 +524,8 @@ def test_tool_selection_keeps_the_payload_small():
     assert "statistical_test" in chosen and set(CORE_TOOLS) <= set(chosen) and "train_soft_sensor" not in chosen
     vague = select_tool_names(names, user_input="what next?", step_hint="Modeling")
     assert "train_soft_sensor" in vague and "statistical_test" not in vague
-    used = select_tool_names(names, user_input="again", step_hint="Export", used=["vectorize_text"])
-    assert "vectorize_text" in used
+    used = select_tool_names(names, user_input="again", step_hint="Export", used=["resample_time_series"])
+    assert "resample_time_series" in used
     schemas, omitted = select_schemas(_ALL_TOOL_SCHEMAS, user_input="merge with weights.csv", step_hint="Data quality")
     assert {"combine_datasets", "list_datasets"} <= {s["function"]["name"] for s in schemas}
     assert set(omitted) | {s["function"]["name"] for s in schemas} == set(names)

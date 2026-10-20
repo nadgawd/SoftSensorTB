@@ -28,6 +28,7 @@ from backend.database import AsyncSessionLocal
 from backend.limits import manual_limit_per_hour, manual_limiter
 from backend.mcp_server import LLM_TOOL_SCHEMAS, TOOL_FUNCTIONS
 from backend.mcp_server.eda_tools import _validate_uuid_str
+from backend.mcp_server.safe_expr import FUNCTIONS as SAFE_FUNCTIONS
 from backend.services.projects import owned_version
 
 logger = logging.getLogger(__name__)
@@ -42,8 +43,7 @@ MULTI_COLUMN_FIELDS = frozenset({
 })
 SINGLE_COLUMN_FIELDS = frozenset({
     "x_column", "z_column", "color_column", "target_column", "column", "stratify_column", "group_column",
-    "pivot_column", "column_b", "value_column", "lat_column", "lon_column", "lat2_column", "lon2_column",
-    "location_column", "time_column", "condition_column",
+    "pivot_column", "column_b", "value_column", "time_column", "condition_column",
 })
 CODE_FIELDS = frozenset({"sql_query", "formula", "query"})
 # Widgets a JSON schema cannot express: another of the user's datasets, and a
@@ -146,32 +146,81 @@ _LABELS = {
     "value_mapping": "Value mapping",
     "unmapped": "Unmapped values",
     "in_place": "Replace the columns",
-    "max_features": "Max features",
-    "ngram_max": "Longest n-gram",
-    "stop_words": "Remove English stop words",
-    "binary": "Binary counts",
-    "drop_original": "Drop the text column",
-    "lat_column": "Latitude column",
-    "lon_column": "Longitude column",
-    "lat2_column": "Second latitude column",
-    "lon2_column": "Second longitude column",
-    "ref_lat": "Reference latitude",
-    "ref_lon": "Reference longitude",
+    "frequency": "New time step",
+    "fill": "Fill new time steps with",
+    "fill_limit": "Max steps filled in a row",
+    "drop_empty": "Drop empty intervals",
     "n_features": "Features to keep",
     "n_repeats": "Permutation repeats",
     "value_column": "Value column",
     "path_columns": "Path / hierarchy columns",
-    "location_column": "Location column",
-    "location_mode": "Location codes",
     "n_clusters": "Clusters (k)",
     "positive_when": "Event when target is",
-    "rows": "Rows evaluated",
     "n_points": "Training sizes",
 }
 
 _STRATIFIED_CV = ["stratified_kfold", "repeated_stratified_kfold", "stratified_shuffle_split"]
 _STRATIFIED = [{"split_strategy": ["stratified"]}, {"cv_strategy": _STRATIFIED_CV}]
 _RANDOM_CV = ["repeated_kfold", "repeated_stratified_kfold", "shuffle_split", "stratified_shuffle_split", "bootstrap"]
+
+_NAMES_RULE = "Refer to a column by its name. Names with spaces or symbols go in backticks or square brackets: `Feed temp` or [Feed temp]."
+_FORMULA_HELP = {
+    "syntax": [
+        _NAMES_RULE,
+        "Arithmetic: +  −  *  /  ** (power)  // (whole division)  % (remainder); use ( ) to group.",
+        "Functions: " + ", ".join(SAFE_FUNCTIONS) + " (log is the natural log).",
+        "Comparisons (>  <  >=  <=  ==  !=) give True/False; combine them with & (and), | (or), ~ (not).",
+        "Not allowed: other functions, methods such as .mean(), @variables and indexing.",
+    ],
+    "examples": [
+        ["[Unnamed: 8] * [Unnamed: 8]", "square of a column whose name has a space and a colon"],
+        ["(`Feed temp` - 273.15) * flow", "temperature in °C times flow"],
+        ["log(pressure) + sqrt(abs(dP))", "math functions of columns"],
+        ["(temp > 350) & (flow < 10)", "True where both hold"],
+    ],
+}
+_QUERY_HELP = {
+    "syntax": [
+        _NAMES_RULE,
+        "Compare with >  <  >=  <=  ==  !=; text values go in quotes: status == 'ok'.",
+        "Combine with and / or / not (or & | ~); a list of values: unit in ['A', 'B'].",
+        "Arithmetic and the formula functions work too: abs(error) > 3.",
+        "Rows where the query is true are dropped (or, with 'Keep only the matching rows', kept).",
+    ],
+    "examples": [
+        ["temp > 350 and status == 'ok'", "hot rows marked ok"],
+        ["[flow rate] <= 0 or [flow rate] > 500", "flow outside 0–500"],
+        ["unit in ['A', 'C']", "rows of units A or C"],
+    ],
+}
+_SQL_HELP = {
+    "syntax": [
+        "DuckDB SQL over the active dataset, which is the table named dataset.",
+        'Quote names with spaces or symbols in double quotes: "Feed temp".',
+        "Read-only: SELECT or WITH queries (WHERE, GROUP BY, ORDER BY, LIMIT, window functions…), DESCRIBE and SUMMARIZE.",
+    ],
+    "examples": [
+        ["SELECT * FROM dataset LIMIT 10", "first 10 rows"],
+        ['SELECT unit, avg("Feed temp") AS mean_temp FROM dataset GROUP BY unit', "mean per unit"],
+        ["SELECT * FROM dataset WHERE flow > 5 ORDER BY ts DESC", "filter and sort"],
+    ],
+}
+
+_FREQUENCY_HELP = {
+    "syntax": [
+        "A number and a unit: s (seconds), min (minutes), h (hours), D (days), W (weeks), MS (months).",
+        "Downsample: a step longer than the spacing of the rows, e.g. 1-min data to 1h.",
+        "Upsample: a step shorter than the spacing, e.g. 4-hourly lab samples to 15min.",
+        "Intervals start on round times (00:00, 01:00…) and are labelled by their start; W weeks end on Sunday.",
+    ],
+    "examples": [
+        ["1h", "hourly"],
+        ["15min", "every 15 minutes"],
+        ["30s", "every 30 seconds"],
+        ["1D", "daily"],
+        ["1MS", "monthly"],
+    ],
+}
 
 _TRAIN_SHOW_WHEN = {
     "n_components": {"algorithm": ["PLS", "PCR"]},
@@ -209,21 +258,15 @@ _PLOT_FIELDS: dict[str, tuple[str, ...]] = {
     "color_column": (
         "scatter", "time_series", "histogram", "box_plot", "violin_plot", "scatter_3d", "pair_plot", "kde",
         "ridgeline", "ecdf", "bar", "count", "strip", "point", "joint", "bubble", "contour",
-        "parallel_coordinates", "radviz", "andrews_curves", "network", "dendrogram", "chord", "bubble_map",
-        "silhouette",
+        "parallel_coordinates", "radviz", "andrews_curves", "network", "dendrogram", "chord", "silhouette",
     ),
     "trendline": ("scatter",),
     "z_column": ("scatter_3d",),
     "value_column": (
         "pie", "donut", "bubble", "histogram_2d", "treemap", "sunburst", "sankey", "network", "chord",
-        "choropleth", "bubble_map", "density_map",
     ),
     "path_columns": ("treemap", "sunburst", "sankey", "network", "chord"),
-    "agg_func": ("bar", "lollipop", "pie", "donut", "histogram_2d", "choropleth"),
-    "lat_column": ("bubble_map", "density_map"),
-    "lon_column": ("bubble_map", "density_map"),
-    "location_column": ("choropleth",),
-    "location_mode": ("choropleth",),
+    "agg_func": ("bar", "lollipop", "pie", "donut", "histogram_2d"),
     "bins": ("hexbin", "contour", "histogram_2d", "candlestick"),
     "lags": ("acf", "pacf"),
     "n_clusters": ("silhouette",),
@@ -322,6 +365,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "label": "SQL query",
         "steps": ("ingestion", "quality", "export"),
         "defaults": {"sql_query": "SELECT * FROM dataset LIMIT 10"},
+        "help": {"sql_query": _SQL_HELP},
     },
     "convert_types": {
         "label": "Convert types / parse dates",
@@ -352,6 +396,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
             "start_row": {"mode": ["row_range"]},
             "end_row": {"mode": ["row_range"]},
         },
+        "help": {"query": _QUERY_HELP},
     },
     "mask_values": {
         "label": "Replace where a condition holds (mask / where)",
@@ -482,22 +527,22 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
             "holiday_country": {"strategy": ["datetime"]},
         },
     },
-    "vectorize_text": {
-        "label": "Text vectorization (TF-IDF, counts, hashing, LSA)",
-        "steps": ("preprocessing",),
+    "resample_time_series": {
+        "label": "Resample time series (downsample / upsample)",
+        "steps": ("quality", "preprocessing"),
+        "defaults": {"frequency": "1h", "mode": "downsample"},
         "show_when": {
-            "n_components": {"method": ["lsa"]},
-            "binary": {"method": ["count"]},
+            "aggregation": {"mode": ["downsample"]},
+            "drop_empty": {"mode": ["downsample"]},
+            "fill": {"mode": ["upsample"]},
+            "fill_limit": {"mode": ["upsample"], "fill": ["interpolate", "ffill", "bfill", "nearest"]},
         },
-    },
-    "geo_features": {
-        "label": "Geospatial distance (haversine)",
-        "steps": ("preprocessing",),
-        "numeric": ("lat_column", "lon_column", "lat2_column", "lon2_column"),
+        "help": {"frequency": _FREQUENCY_HELP},
     },
     "execute_formula": {
         "label": "Formula column",
         "steps": ("preprocessing",),
+        "help": {"formula": _FORMULA_HELP},
     },
     "balance_data": {
         "label": "Balance classes (SMOTE, ADASYN, over/undersampling)",
@@ -665,6 +710,8 @@ def _field_spec(tool: str, name: str, raw: dict[str, Any], required: bool, defs:
         "nullable": nullable,
         "advanced": name in ui.get("advanced", ()),
     }
+    if name in ui.get("help", {}):
+        spec["help"] = ui["help"][name]
     if "enum" in node:
         spec["options"] = list(node["enum"])
     for key, out in (

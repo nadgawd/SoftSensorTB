@@ -6,7 +6,7 @@ const OPTION_WORDS = {
   acf: 'ACF', adasyn: 'ADASYN', adf: 'ADF', anova: 'ANOVA', ecdf: 'ECDF', f: 'F', iqr: 'IQR',
   kde: 'KDE', kfold: 'K-fold', knn: 'KNN', lda: 'LDA', lsa: 'LSA', mi: 'MI', pacf: 'PACF',
   pca: 'PCA', pchip: 'PCHIP', qq: 'Q-Q', r2: 'R²', rmse: 'RMSE', shap: 'SHAP', smote: 'SMOTE',
-  svd: 'SVD', 't-test': 't-test', tfidf: 'TF-IDF', tsne: 't-SNE', woe: 'WoE', '2d': '2D', '3d': '3D',
+  svd: 'SVD', 't-test': 't-test', tsne: 't-SNE', woe: 'WoE', '2d': '2D', '3d': '3D',
 }
 
 function optionLabel(value) {
@@ -40,17 +40,30 @@ function SelectInput({ field, value, onChange, id }) {
   )
 }
 
+/** Spin-button step: whole numbers by 1, fractions by 0.05 (0.01 in narrow ranges), others by a tenth of their size. */
+function numberStep(field) {
+  if (field.widget === 'integer') return 1
+  const lo = field.min ?? field.exclusive_min
+  const hi = field.max ?? field.exclusive_max
+  if (lo !== undefined && hi !== undefined && hi - lo <= 1) return hi - lo <= 0.2 ? 0.01 : 0.05
+  const size = Math.abs(Number(field.default)) || 1
+  return 10 ** (Math.floor(Math.log10(size)) - 1)
+}
+
 function NumberInput({ field, value, onChange, id }) {
   const placeholder = field.nullable && (field.default === null || field.default === undefined) ? 'Auto' : ''
+  const step = numberStep(field)
+  const min = field.min ?? (field.exclusive_min !== undefined ? field.exclusive_min + step : undefined)
+  const max = field.max ?? (field.exclusive_max !== undefined ? field.exclusive_max - step : undefined)
   return (
     <input
       id={id}
       type="number"
       className="input-base manual-input"
       value={value}
-      step={field.widget === 'integer' ? 1 : 'any'}
-      min={field.min}
-      max={field.max}
+      step={step}
+      min={min}
+      max={max}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
     />
@@ -286,6 +299,29 @@ function FieldControl({ field, value, onChange, schema, values, id }) {
   }
 }
 
+/** Syntax rules and worked examples of a free-text field; an example can be copied into it. */
+function SyntaxHelp({ help, onUse }) {
+  return (
+    <div className="manual-syntax">
+      <p className="manual-syntax-title">Syntax</p>
+      <ul>
+        {help.syntax.map((line) => <li key={line}>{line}</li>)}
+      </ul>
+      <p className="manual-syntax-title">Examples <span className="manual-hint">(click one to use it)</span></p>
+      <ul className="manual-syntax-examples">
+        {help.examples.map(([code, meaning]) => (
+          <li key={code}>
+            <button type="button" className="manual-syntax-code" onClick={() => onUse(code)} title="Use this example">
+              {code}
+            </button>
+            <span className="manual-hint">{meaning}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 function Field({ tool, field, value, values, onChange, schema, error, optionHelp }) {
   const id = `manual-${tool.name}-${field.name}`
   const wide = ['columns', 'mapping', 'value_mapping', 'code'].includes(field.widget)
@@ -301,10 +337,10 @@ function Field({ tool, field, value, values, onChange, schema, error, optionHelp
         </label>
       )}
       <FieldControl field={field} value={value} onChange={onChange} schema={schema} values={values} id={id} />
-      {note ? (
-        <p className="manual-option-help">{note}</p>
-      ) : (
-        field.description && <p className="manual-hint manual-desc" title={field.description}>{field.description}</p>
+      {note && <p className="manual-option-help">{note}</p>}
+      {field.help && <SyntaxHelp help={field.help} onUse={onChange} />}
+      {!note && !field.help && field.description && (
+        <p className="manual-hint manual-desc" title={field.description}>{field.description}</p>
       )}
       {error && <p className="manual-error">{error}</p>}
     </div>

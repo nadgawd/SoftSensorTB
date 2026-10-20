@@ -434,11 +434,6 @@ class GenerateDiagnosticPlotArgs(BaseModel):
 GenerateParityPlotArgs = GenerateDiagnosticPlotArgs
 
 
-class EvaluatedRows(str, Enum):
-    test = "test"
-    all = "all"
-
-
 class GenerateClassificationCurveArgs(GenerateDiagnosticPlotArgs):
     """ROC and precision-recall curves of a regression soft sensor used as an alarm."""
 
@@ -454,10 +449,6 @@ class GenerateClassificationCurveArgs(GenerateDiagnosticPlotArgs):
         default="above",
         description="'above': values above threshold are the event; 'below': values below it are.",
         json_schema_extra={"enum": ["above", "below"]},
-    )
-    rows: EvaluatedRows = Field(
-        default=EvaluatedRows.test,
-        description="test: the model's held-out test rows (recreated from its training split); all: every complete row of this version.",
     )
 
     @field_validator("positive_when")
@@ -478,7 +469,7 @@ class GenerateLearningCurveArgs(GenerateDiagnosticPlotArgs):
     """Learning curve of a trained model's settings refit on growing training sets."""
 
     cv_folds: int = Field(default=5, description="Cross-validation folds at each training size.", ge=2, le=10)
-    n_points: int = Field(default=6, description="Number of training sizes, from small to all.", ge=3, le=10)
+    n_points: int = Field(default=6, description="Number of training sizes, from small to all of the model's training rows.", ge=3, le=10)
     metric: LearningCurveMetric = Field(default=LearningCurveMetric.rmse, description="Score plotted: rmse or r2.")
     random_state: int = Field(default=_RANDOM_STATE, description="Seed of the shuffled folds.")
 
@@ -1080,6 +1071,8 @@ async def train_soft_sensor(
             "validation": validation,
             "coefficients": coefficients,
             "train_size": int(len(X_train)),
+            "train_index": X_train.index.tolist(),
+            "test_index": X_test.index.tolist(),
             "validation_rows": int(len(X_val)) if X_val is not None else 0,
             "test_size": int(len(X_test)),
             "trained_at": datetime.now(timezone.utc).isoformat(),
@@ -1137,23 +1130,14 @@ async def generate_parity_plot(
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
-        version = await _get_version(db, args.dataset_version_id)
-        df = _load_dataframe(version)
         artifact = _load_model_artifact(
             (await resolve_model(db, args.dataset_version_id, args.model_id)).artifact_key
         )
-
-        feature_columns: list[str] = list(artifact["feature_columns"])
         target_column: str = str(artifact["target_column"])
-        model = artifact["model"]
-
-        X, y = _prepare_xy(
-            df,
-            feature_columns=feature_columns,
-            target_column=target_column,
-        )
-        y_hat = _predict(model, X)
+        _X_train, _y_train, X, y = await _model_split(db, artifact)
+        y_hat = _predict(artifact["model"], X)
         y_true = y.to_numpy(dtype=float)
+        scores = _test_scores(y_true, y_hat)
 
         lo = float(min(y_true.min(), y_hat.min()))
         hi = float(max(y_true.max(), y_hat.max()))
@@ -1166,7 +1150,7 @@ async def generate_parity_plot(
                 x=y_true,
                 y=y_hat,
                 mode="markers",
-                name="Soft sensor",
+                name="Test rows",
                 marker={"size": 8, "opacity": 0.75},
             )
         )
@@ -1181,8 +1165,8 @@ async def generate_parity_plot(
         )
         fig.update_layout(
             title=(
-                f"Parity plot — {artifact.get('algorithm', 'model')} "
-                f"(target: {target_column})"
+                f"Parity plot — {artifact.get('algorithm', 'model')} (target: {target_column}) · "
+                f"{len(y_true)} held-out test rows · {scores}"
             ),
             xaxis_title="Actual (y)",
             yaxis_title="Predicted (ŷ)",
@@ -1228,19 +1212,15 @@ async def generate_residuals_plot(
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
-        version = await _get_version(db, args.dataset_version_id)
-        df = _load_dataframe(version)
         artifact = _load_model_artifact(
             (await resolve_model(db, args.dataset_version_id, args.model_id)).artifact_key
         )
-
-        feature_columns: list[str] = list(artifact["feature_columns"])
         target_column: str = str(artifact["target_column"])
-        model = artifact["model"]
-
-        X, y = _prepare_xy(df, feature_columns=feature_columns, target_column=target_column)
-        y_hat = _predict(model, X)
+        _X_train, _y_train, X, y = await _model_split(db, artifact)
+        X, y = X.sort_index(), y.sort_index()
+        y_hat = _predict(artifact["model"], X)
         residuals = np.asarray(y.to_numpy(dtype=float)) - y_hat
+        positions = [int(p) for p in X.index] if pd.api.types.is_integer_dtype(X.index) else list(range(len(X)))
 
         from plotly.subplots import make_subplots
         fig = make_subplots(
@@ -1263,7 +1243,7 @@ async def generate_residuals_plot(
         # Panel 2: Residuals vs observation index (time drift)
         fig.add_trace(
             go.Scatter(
-                x=list(range(len(residuals))), y=residuals.tolist(),
+                x=positions, y=residuals.tolist(),
                 mode="markers+lines",
                 name="Residuals (index)",
                 marker={"size": 4, "opacity": 0.5, "color": "steelblue"},
@@ -1274,13 +1254,16 @@ async def generate_residuals_plot(
         fig.add_hline(y=0, line_dash="dot", line_color="red", row=1, col=2)
 
         fig.update_layout(
-            title=f"Residuals diagnostic — {artifact.get('algorithm', 'model')} (target: {target_column})",
+            title=(
+                f"Residuals diagnostic — {artifact.get('algorithm', 'model')} (target: {target_column}) · "
+                f"{len(residuals)} held-out test rows"
+            ),
             template="plotly_white",
             showlegend=False,
         )
         fig.update_xaxes(title_text="Predicted (ŷ)", row=1, col=1)
         fig.update_yaxes(title_text="Residuals (y − ŷ)", row=1, col=1)
-        fig.update_xaxes(title_text="Observation index", row=1, col=2)
+        fig.update_xaxes(title_text="Row number in the dataset", row=1, col=2)
         fig.update_yaxes(title_text="Residuals (y − ŷ)", row=1, col=2)
 
         return json.loads(fig.to_json())
@@ -1425,22 +1408,28 @@ def _artifact_args(artifact: dict[str, Any]) -> TrainSoftSensorArgs:
     )
 
 
-async def _evaluation_rows(
-    db: AsyncSession, args: GenerateClassificationCurveArgs, artifact: dict[str, Any]
-) -> tuple[pd.DataFrame, pd.Series, str]:
-    """(X, y, description): the model's test rows, or every complete row of the active version."""
-    if args.rows == EvaluatedRows.test:
-        try:
-            train_args = _artifact_args(artifact)
-            trained_on = _load_dataframe(await _get_version(db, train_args.dataset_version_id))
-            X, y, strata, groups = _training_rows(trained_on, train_args)
-            _X_train, _X_val, X_test, _y_train, _y_val, y_test = _holdout(X, y, train_args, strata, groups)
-            return X_test, y_test, f"{len(X_test)} held-out test rows"
-        except (KeyError, ValueError) as exc:
-            raise ValueError(f"Could not recreate this model's test rows ({exc}); use rows='all'") from exc
-    df = _load_dataframe(await _get_version(db, args.dataset_version_id))
-    X, y = _prepare_xy(df, feature_columns=list(artifact["feature_columns"]), target_column=str(artifact["target_column"]))
-    return X, y, f"all {len(X)} complete rows (includes training rows, so optimistic)"
+async def _model_split(
+    db: AsyncSession, artifact: dict[str, Any]
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame, pd.Series]:
+    """(X_train, y_train, X_test, y_test) of the dataset version the model was trained on."""
+    try:
+        train_args = _artifact_args(artifact)
+        trained_on = _load_dataframe(await _get_version(db, train_args.dataset_version_id))
+        X, y, strata, groups = _training_rows(trained_on, train_args)
+        if "test_index" in artifact and "train_index" in artifact:
+            train_index, test_index = artifact["train_index"], artifact["test_index"]
+            return X.loc[train_index], y.loc[train_index], X.loc[test_index], y.loc[test_index]
+        X_train, _X_val, X_test, y_train, _y_val, y_test = _holdout(X, y, train_args, strata, groups)
+        return X_train, y_train, X_test, y_test
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Could not recover this model's train/test split ({exc}); retrain the model") from exc
+
+
+def _test_scores(y_true: np.ndarray, y_hat: np.ndarray) -> str:
+    if len(y_true) < 2:
+        return "too few rows for R²"
+    rmse = float(np.sqrt(mean_squared_error(y_true, y_hat)))
+    return f"R² {r2_score(y_true, y_hat):.3f}, RMSE {rmse:.3g}"
 
 
 def _events(y: np.ndarray, scores: np.ndarray, args: GenerateClassificationCurveArgs) -> tuple[np.ndarray, np.ndarray, str]:
@@ -1466,7 +1455,8 @@ async def _classification_curve(
         artifact = _load_model_artifact(
             (await resolve_model(db, args.dataset_version_id, args.model_id)).artifact_key
         )
-        X, y, rows = await _evaluation_rows(db, args, artifact)
+        _X_train, _y_train, X, y = await _model_split(db, artifact)
+        rows = f"{len(X)} held-out test rows"
         y_true = y.to_numpy(dtype=float)
         truth, scores, event = _events(y_true, _predict(artifact["model"], X), args)
         positives = int(truth.sum())
@@ -1513,14 +1503,13 @@ async def generate_roc_curve(
     model_id: Optional[str] = None,
     threshold: Optional[float] = None,
     positive_when: str = "above",
-    rows: str = "test",
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
-    """ROC curve of the soft sensor used to flag rows where the target crosses a threshold."""
+    """ROC curve, on the model's held-out test rows, of the soft sensor used to flag a threshold crossing."""
     args = GenerateClassificationCurveArgs(
         dataset_version_id=dataset_version_id, model_id=model_id, threshold=threshold,
-        positive_when=positive_when, rows=rows,  # type: ignore[arg-type]
+        positive_when=positive_when,
     )
     return await _classification_curve(args, session, "roc")
 
@@ -1530,14 +1519,13 @@ async def generate_pr_curve(
     model_id: Optional[str] = None,
     threshold: Optional[float] = None,
     positive_when: str = "above",
-    rows: str = "test",
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
-    """Precision-recall curve of the soft sensor used to flag rows where the target crosses a threshold."""
+    """Precision-recall curve, on the model's held-out test rows, of the soft sensor used to flag a threshold crossing."""
     args = GenerateClassificationCurveArgs(
         dataset_version_id=dataset_version_id, model_id=model_id, threshold=threshold,
-        positive_when=positive_when, rows=rows,  # type: ignore[arg-type]
+        positive_when=positive_when,
     )
     return await _classification_curve(args, session, "pr")
 
@@ -1572,15 +1560,14 @@ async def generate_learning_curve(
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
-        df = _load_dataframe(await _get_version(db, args.dataset_version_id))
         artifact = _load_model_artifact(
             (await resolve_model(db, args.dataset_version_id, args.model_id)).artifact_key
         )
-        X, y = _prepare_xy(df, feature_columns=list(artifact["feature_columns"]), target_column=str(artifact["target_column"]))
+        X, y, _X_test, _y_test = await _model_split(db, artifact)
         largest = len(X) - math.ceil(len(X) / args.cv_folds)
         smallest = max(_smallest_training_size(artifact), int(0.1 * largest))
         if largest < smallest:
-            raise ValueError(f"Too few complete rows ({len(X)}) for a learning curve with {args.cv_folds} folds")
+            raise ValueError(f"Too few training rows ({len(X)}) for a learning curve with {args.cv_folds} folds")
         sizes = np.unique(np.linspace(smallest, largest, args.n_points).astype(int))
         scoring = "neg_root_mean_squared_error" if args.metric == LearningCurveMetric.rmse else "r2"
         sizes, train_scores, val_scores = learning_curve(
@@ -1600,7 +1587,10 @@ async def generate_learning_curve(
             ))
             fig.add_trace(go.Scatter(x=sizes, y=mean, mode="lines+markers", name=name, line={"color": color}))
         fig.update_layout(
-            title=f"Learning curve — {artifact.get('algorithm', 'model')} (target: {artifact['target_column']}, {args.cv_folds}-fold CV)",
+            title=(
+                f"Learning curve — {artifact.get('algorithm', 'model')} (target: {artifact['target_column']}, "
+                f"{args.cv_folds}-fold CV on the {len(X)} training rows; test rows unused)"
+            ),
             xaxis_title="Training rows", yaxis_title=f"{label} (mean ± std over folds)",
             template="plotly_white", legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
         )
@@ -1656,19 +1646,19 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="generate_parity_plot",
         description=(
-            "Load a trained soft-sensor .pkl model and a dataset version, compute "
-            "predicted vs actual values, and return a Plotly parity scatter plot "
-            "(Actual on X, Predicted on Y) with a red y = x reference line for "
-            "UI rendering."
+            "Load a trained soft-sensor .pkl model, predict its held-out test rows only "
+            "(never the training rows) and return a Plotly parity scatter plot "
+            "(Actual on X, Predicted on Y) with a red y = x reference line and the test R² "
+            "and RMSE in the title."
         ),
         args_model=GenerateParityPlotArgs,
     ),
     _openai_tool_schema(
         name="generate_residuals_plot",
         description=(
-            "Generate a two-panel residuals diagnostic plot for a trained model: "
-            "(1) Residuals vs Predicted — to detect heteroscedasticity or bias, "
-            "(2) Residuals vs Index — to detect time drift. "
+            "Generate a two-panel residuals diagnostic plot of a trained model on its held-out "
+            "test rows only: (1) Residuals vs Predicted — to detect heteroscedasticity or bias, "
+            "(2) Residuals vs row number — to detect time drift. "
             "Returns Plotly JSON for UI rendering."
         ),
         args_model=GenerateDiagnosticPlotArgs,
@@ -1696,8 +1686,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="generate_roc_curve",
         description=(
             "ROC curve (with AUC) of a trained soft sensor used as an alarm: rows whose target "
-            "is above (or below) threshold are events and the prediction is the score. Defaults "
-            "to the model's held-out test rows. Returns Plotly JSON."
+            "is above (or below) threshold are events and the prediction is the score. Uses the "
+            "model's held-out test rows only. Returns Plotly JSON."
         ),
         args_model=GenerateClassificationCurveArgs,
     ),
@@ -1705,8 +1695,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="generate_pr_curve",
         description=(
             "Precision-recall curve (with average precision) of a trained soft sensor used as an "
-            "alarm for target values above (or below) threshold. Better than ROC for rare events. "
-            "Returns Plotly JSON."
+            "alarm for target values above (or below) threshold, on the model's held-out test rows "
+            "only. Better than ROC for rare events. Returns Plotly JSON."
         ),
         args_model=GenerateClassificationCurveArgs,
     ),
@@ -1714,8 +1704,9 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
         name="generate_learning_curve",
         description=(
             "Learning curve of a trained model's algorithm and settings: training and "
-            "cross-validated RMSE (or R²) as the number of training rows grows, to diagnose "
-            "under- vs over-fitting and whether more data would help. Returns Plotly JSON."
+            "cross-validated RMSE (or R²) as the number of training rows grows, using only the "
+            "model's training rows (its test rows stay unseen), to diagnose under- vs over-fitting "
+            "and whether more data would help. Returns Plotly JSON."
         ),
         args_model=GenerateLearningCurveArgs,
     ),
