@@ -18,6 +18,7 @@ export default function StepSidebar({
   modelMetrics,
   versionCount,
   onNewProject,
+  compact,
 }) {
   function isStepDisabled(stepId, index) {
     if (index > 0 && !fileName) return true
@@ -56,11 +57,13 @@ export default function StepSidebar({
   }
 
   return (
-    <aside className="panel step-sidebar">
-      <div className="step-sidebar-project">
-        <p className="step-sidebar-kicker">Project</p>
-        <p className="step-sidebar-file" title={fileName || undefined}>{fileName || 'No dataset loaded'}</p>
-      </div>
+    <aside className={`panel step-sidebar${compact ? ' compact' : ''}`}>
+      {!compact && (
+        <div className="step-sidebar-project">
+          <p className="step-sidebar-kicker">Project</p>
+          <p className="step-sidebar-file" title={fileName || undefined}>{fileName || 'No dataset loaded'}</p>
+        </div>
+      )}
 
       <nav className="step-sidebar-nav">
         {STEPS.map((step, index) => {
@@ -73,7 +76,10 @@ export default function StepSidebar({
             <div key={step.id}>
               <button
                 type="button"
-                title={isDisabled ? 'Complete the previous steps first' : step.description}
+                title={compact
+                  ? [step.label, text, isDisabled ? 'Complete the previous steps first' : null].filter(Boolean).join(' · ')
+                  : isDisabled ? 'Complete the previous steps first' : step.description}
+                aria-label={compact ? step.label : undefined}
                 disabled={isDisabled}
                 onClick={() => onStepChange(step.id)}
                 className={`step-item${isActive ? ' active' : isDone ? ' completed' : ''}${isDisabled ? ' disabled' : ''}`}
@@ -83,10 +89,13 @@ export default function StepSidebar({
                     : isDisabled ? <Lock size={10} />
                     : <span className="step-dot-num">{index + 1}</span>}
                 </div>
-                <div style={{ minWidth: 0 }}>
-                  <div className="step-item-label">{step.label}</div>
-                  {text && <div className={`step-item-status${tone ? ` tone-${tone}` : ''}`}>{text}</div>}
-                </div>
+                {!compact && (
+                  <div style={{ minWidth: 0 }}>
+                    <div className="step-item-label">{step.label}</div>
+                    {text && <div className={`step-item-status${tone ? ` tone-${tone}` : ''}`}>{text}</div>}
+                  </div>
+                )}
+                {compact && tone && <span className={`step-item-flag tone-${tone}`} aria-hidden="true" />}
               </button>
               {index < STEPS.length - 1 && <div className={`step-connector${!isDone ? ' incomplete' : ''}`} />}
             </div>
@@ -99,11 +108,13 @@ export default function StepSidebar({
           <button
             type="button"
             className="step-sidebar-new"
+            title="New project"
+            aria-label="New project"
             onClick={() => {
               if (window.confirm('Start a new project? This will clear all current progress.')) onNewProject()
             }}
           >
-            <RotateCcw size={12} aria-hidden="true" /> New project
+            <RotateCcw size={12} aria-hidden="true" /> {!compact && 'New project'}
           </button>
         </div>
       )}

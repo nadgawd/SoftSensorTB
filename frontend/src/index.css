@@ -248,6 +248,15 @@
     color: var(--color-mist); font-size: 11px; font-family: var(--font-mono);
     cursor: pointer; transition: all 150ms ease;
   }
+  .step-sidebar.compact { width: 56px; min-width: 56px; }
+  .step-sidebar.compact .step-sidebar-nav { padding: 12px 8px; }
+  .step-sidebar.compact .step-item { padding: 8px 9px; }
+  .step-sidebar.compact .step-connector { margin-left: 19px; }
+  .step-sidebar.compact .step-sidebar-footer { padding: 10px 8px; }
+  .step-item-flag { position: absolute; top: 6px; left: 27px; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--color-panel); }
+  .step-item-flag.tone-ok { background: var(--color-success); }
+  .step-item-flag.tone-warn { background: var(--color-ember); }
+  .step-item-flag.tone-alert { background: var(--color-alert); }
   .step-sidebar-new:hover { border-color: color-mix(in srgb, var(--color-alert) 45%, transparent); color: var(--color-alert); }
 
   .badge {
@@ -970,14 +979,39 @@
 .manual-panel-fixed { margin-bottom: 0; border: none; background: transparent; padding: 10px 14px; }
 
 /* ── App header ───────────────────────────────────────────── */
+.app-main {
+  flex: 1; min-width: 0; height: 100%;
+  display: flex; flex-direction: column; overflow: hidden;
+  container: main / inline-size;
+}
+.step-main { flex: 1; overflow-y: auto; padding: 20px 28px; }
 .app-header {
   display: flex; align-items: center; gap: 8px;
   height: 44px; padding: 0 16px 0 20px; flex-shrink: 0;
   border-bottom: 1px solid var(--color-line);
   background: var(--header-bg); backdrop-filter: blur(8px);
 }
-.app-brand { flex: 1; font-family: var(--font-mono); font-size: 11px; color: var(--color-mist); letter-spacing: 0.04em; }
+.app-header > * { flex-shrink: 0; white-space: nowrap; }
+.app-header > .app-brand { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.app-brand { font-family: var(--font-mono); font-size: 11px; color: var(--color-mist); letter-spacing: 0.04em; }
 .app-saved { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 10.5px; color: var(--color-mist); margin-right: 4px; }
+.account-trigger-text { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+
+@container main (max-width: 760px) {
+  .app-header { padding: 0 10px 0 14px; gap: 6px; }
+  .app-header .btn-label, .account-trigger-text { display: none; }
+  .app-header-btn { padding: 0 8px; }
+  .step-header, .history-strip { padding-left: 16px; padding-right: 16px; }
+  .step-header-desc { display: none; }
+  .step-main { padding: 16px; }
+  .dock-graph { flex-direction: column; }
+  .dock-graph-form { width: auto; max-height: 45%; border-right: none; border-bottom: 1px solid var(--color-line); }
+}
+@container main (max-width: 520px) {
+  .app-header > .app-brand { visibility: hidden; }
+}
+
+.assistant-panel.floating { box-shadow: -16px 0 48px rgba(0, 0, 0, 0.28); }
 .app-saved svg { color: var(--color-success); }
 .app-header-btn {
   display: inline-flex; align-items: center; gap: 6px;
@@ -1123,7 +1157,9 @@
 }
 .colmenu-item:hover:not(:disabled) { background: var(--step-hover-bg); color: var(--color-foam); }
 .colmenu-item:disabled { opacity: 0.4; cursor: default; }
-.colmenu-roles { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 8px 4px; margin-top: 4px; border-top: 1px solid var(--color-line); font-size: 11px; color: var(--color-mist); }
+.colmenu-roles { display: flex; flex-direction: column; gap: 6px; padding: 8px 8px 4px; margin-top: 4px; border-top: 1px solid var(--color-line); font-size: 11px; color: var(--color-mist); }
+.colmenu-roles .vars-roles { display: flex; }
+.colmenu-roles .vars-role { flex: 1; }
 .colmenu-error { margin: 6px 8px 2px; font-size: 11.5px; }
 
 /* ── Ingestion: upload and variables ──────────────────────── */
@@ -1453,8 +1489,9 @@
 .dock.open { min-height: 180px; }
 .dock-resize { position: absolute; top: -4px; left: 0; right: 0; height: 8px; cursor: ns-resize; z-index: 5; }
 .dock-resize:hover, .dock-resize:active { background: color-mix(in srgb, var(--color-signal) 35%, transparent); }
-.dock-bar { display: flex; align-items: center; gap: 10px; padding: 0 20px 0 18px; flex-shrink: 0; }
-.dock-tabs { display: flex; gap: 2px; flex: 1; min-width: 0; }
+.dock-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 0 10px; padding: 0 20px 0 18px; flex-shrink: 0; }
+.dock-tab { white-space: nowrap; }
+.dock-tabs { display: flex; gap: 2px; flex: 1 0 auto; }
 .dock-tab {
   display: flex;
   align-items: center;

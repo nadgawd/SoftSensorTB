@@ -766,6 +766,19 @@ def _clean_description(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
+# Field text for people where the schema description is written for the assistant.
+FIELD_DESCRIPTIONS = {
+    "model_id": "The trained model to use. Latest model is the one trained most recently on this data.",
+}
+
+
+def _form_description(name: str, text: str) -> str:
+    if name in FIELD_DESCRIPTIONS:
+        return FIELD_DESCRIPTIONS[name]
+    text = _clean_description(text)
+    return re.sub(r"\bOmit(?: it)? (to|for)\b", r"Leave empty \1", text)
+
+
 def _field_spec(tool: str, name: str, raw: dict[str, Any], required: bool, defs: dict[str, Any]) -> dict[str, Any]:
     ui = MANUAL_TOOLS[tool]
     node, nullable = _unwrap_nullable(raw, defs)
@@ -773,7 +786,7 @@ def _field_spec(tool: str, name: str, raw: dict[str, Any], required: bool, defs:
         "name": name,
         "label": _label(name),
         "widget": _widget(name, node),
-        "description": _clean_description(node.get("description", "")),
+        "description": _form_description(name, node.get("description", "")),
         "required": required,
         "nullable": nullable,
         "advanced": name in ui.get("advanced", ()),

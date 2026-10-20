@@ -41,6 +41,8 @@ const ASSISTANT_MIN_WIDTH = 320
 const ASSISTANT_MAX_WIDTH = 1200
 // Space kept for the step sidebar plus a usable slice of the main canvas.
 const MAIN_MIN_WIDTH = 480
+const SIDEBAR_COMPACT_WIDTH = 56
+const SIDEBAR_COMPACT_BELOW = 1000
 
 const CHAT_MAX_AGE = 24 * 60 * 60 * 1000
 const MAX_MANUAL_ACTIONS_IN_CONTEXT = 10
@@ -232,6 +234,11 @@ export default function App() {
 
   const assistantWidth = clampAssistantWidth(dragAssistantWidth ?? savedAssistantWidth)
   const isResizingAssistant = dragAssistantWidth !== null
+  // Narrow windows: the Assistant floats over the page instead of squeezing it, and
+  // the sidebar shrinks to the step icons once the main area gets tight.
+  const assistantFloats = assistantOpen && viewportWidth - assistantWidth - SIDEBAR_COMPACT_WIDTH < MAIN_MIN_WIDTH
+  const mainAreaWidth = viewportWidth - (assistantOpen && !assistantFloats ? assistantWidth : 0)
+  const sidebarCompact = mainAreaWidth < SIDEBAR_COMPACT_BELOW
 
   const commitAssistantWidth = useCallback((w) => {
     setSavedAssistantWidth(clampAssistantWidth(w))
@@ -424,7 +431,8 @@ export default function App() {
     roleOf: columnRoles.roleOf,
     setRole: columnRoles.setRole,
     run: runToolNow,
-  }), [roleColumns, effectiveTimeColumn, columnRoles.roleOf, columnRoles.setRole, runToolNow])
+    busy: toolsBusy || assistantBusy,
+  }), [roleColumns, effectiveTimeColumn, columnRoles.roleOf, columnRoles.setRole, runToolNow, toolsBusy, assistantBusy])
 
   // ── Assistant tool calls → the same tool's form shows what it used ──
   const handleAssistantToolCalls = useCallback((calls) => {
@@ -541,34 +549,30 @@ export default function App() {
         versionCount={versionHistory?.length || 0}
         onStepChange={handleStepChange}
         onNewProject={hasSession ? handleNewProject : null}
+        compact={sidebarCompact}
       />
 
       {/* ── Main content area ──────────────────────────────── */}
       <div
+        className="app-main"
         style={{
-          flex: 1,
-          display: 'flex',
-          flexDirection: 'column',
-          minWidth: 0,
-          height: '100%',
-          overflow: 'hidden',
           transition: isResizingAssistant ? 'none' : 'margin-right 320ms cubic-bezier(0.22,1,0.36,1)',
-          marginRight: assistantOpen ? `${assistantWidth}px` : '0',
+          marginRight: assistantOpen && !assistantFloats ? `${assistantWidth}px` : '0',
         }}
       >
         <header className="app-header">
           <span className="app-brand">Soft Sensor Toolbox</span>
           {hasSession && (
             <span className="app-saved" title="Every change is saved to your account until you start a new project">
-              <Check size={12} aria-hidden="true" /> Saved
+              <Check size={12} aria-hidden="true" /> <span className="btn-label">Saved</span>
             </span>
           )}
           <button type="button" className="app-header-btn app-find-btn" onClick={() => setPaletteOpen(true)}
-            title="Find any tool by name or by what it does">
-            <Search size={14} aria-hidden="true" /> Find a tool <kbd>{shortcutLabel('K')}</kbd>
+            title="Find any tool by name or by what it does" aria-label="Find a tool">
+            <Search size={14} aria-hidden="true" /> <span className="btn-label">Find a tool</span> <kbd>{shortcutLabel('K')}</kbd>
           </button>
-          <button type="button" className="app-header-btn" onClick={() => setDocOpen(true)}>
-            <BookOpen size={14} aria-hidden="true" /> Docs
+          <button type="button" className="app-header-btn" onClick={() => setDocOpen(true)} title="Documentation" aria-label="Docs">
+            <BookOpen size={14} aria-hidden="true" /> <span className="btn-label">Docs</span>
           </button>
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
           <AccountMenu />
@@ -576,8 +580,9 @@ export default function App() {
             type="button"
             className={`app-header-btn app-assistant-btn${assistantOpen ? ' active' : ''}`}
             onClick={() => setAssistantOpen((v) => !v)}
+            aria-label="Assistant"
           >
-            <Sparkles size={14} aria-hidden="true" /> Assistant
+            <Sparkles size={14} aria-hidden="true" /> <span className="btn-label">Assistant</span>
           </button>
         </header>
 
@@ -599,7 +604,7 @@ export default function App() {
           previewMeta={previewMeta}
           onPreviewPageChange={setPreviewPage}
           columnChanges={columnChanges}
-          columnActions={toolsBusy || assistantBusy ? null : columnActions}
+          columnActions={columnActions}
           profile={profile}
           timeColumn={effectiveTimeColumn}
           onTimeColumnChange={setTimeColumn}
@@ -661,6 +666,7 @@ export default function App() {
         onWidthPreview={setDragAssistantWidth}
         onWidthCommit={commitAssistantWidth}
         onWidthReset={() => commitAssistantWidth(ASSISTANT_DEFAULT_WIDTH)}
+        floating={assistantFloats}
       />
 
       {changeToast && columnChanges && (

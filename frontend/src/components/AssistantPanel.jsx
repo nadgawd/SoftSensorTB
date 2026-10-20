@@ -67,6 +67,7 @@ export default function AssistantPanel({
   onWidthPreview,
   onWidthCommit,
   onWidthReset,
+  floating,
 }) {
   const [resizing, setResizing] = useState(false)
   const resizingRef = useRef(false)
@@ -306,7 +307,7 @@ export default function AssistantPanel({
 
   return (
     <div
-      className={`assistant-panel panel-elevated${open ? ' open' : ''}`}
+      className={`assistant-panel panel-elevated${open ? ' open' : ''}${floating ? ' floating' : ''}`}
       style={{ borderLeft: '1px solid var(--color-line-2)', width: `${width}px` }}
     >
       {/* Resize handle */}

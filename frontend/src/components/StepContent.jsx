@@ -196,7 +196,7 @@ export default function StepContent({
       )}
 
       {/* Main step content */}
-      <div style={{ flex: 1, overflowY: 'auto', padding: '20px 28px' }}>
+      <div className="step-main">
         {activeStep === 'modeling' && (
           <div className="model-tabs" role="tablist" aria-label="Model">
             {MODEL_TABS.map((t) => (

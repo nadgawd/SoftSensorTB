@@ -43,7 +43,7 @@ export default function ColumnMenu({ column, anchor, actions, onClose }) {
   const top = Math.min(anchor.bottom + 4, window.innerHeight - 330)
   const left = Math.min(anchor.left, window.innerWidth - 270)
   const item = (key, Icon, label, onClick, disabled, title) => (
-    <button type="button" className="colmenu-item" disabled={Boolean(busy) || disabled} onClick={onClick} title={title}>
+    <button type="button" className="colmenu-item" disabled={Boolean(busy) || actions.busy || disabled} onClick={onClick} title={title}>
       <Icon size={14} aria-hidden="true" /> {busy === key ? <>Working… <Elapsed /></> : label}
     </button>
   )
