@@ -49,7 +49,7 @@ function describe(status, error) {
 }
 
 /**
- * Sidebar chip showing which LLM backend chat will use. Click to re-check.
+ * Assistant-header chip showing which LLM backend chat will use. Click to re-check.
  */
 export default function LlmStatus() {
   const [status, setStatus] = useState(null)
@@ -85,14 +85,13 @@ export default function LlmStatus() {
       style={{
         display: 'flex',
         alignItems: 'center',
-        justifyContent: 'center',
-        gap: '8px',
-        width: '100%',
-        padding: '8px 12px',
-        borderRadius: '8px',
+        gap: '6px',
+        maxWidth: '170px',
+        padding: '3px 9px',
+        borderRadius: '99px',
         background: `color-mix(in srgb, ${tone} 10%, transparent)`,
         border: `1px solid color-mix(in srgb, ${tone} 35%, transparent)`,
-        fontSize: '11px',
+        fontSize: '10.5px',
         fontFamily: 'var(--font-mono)',
         color: tone,
         cursor: checking ? 'progress' : 'pointer',

@@ -1,18 +1,9 @@
+import { Check, Lock, RotateCcw } from 'lucide-react'
 import { STEPS } from '../constants/steps'
-import LlmStatus from './LlmStatus'
 import { formatCount } from '../utils/format'
 
-
-function CheckIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-      <path d="M2 6l3 3 5-5" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
 /**
- * Left sidebar with 7-step pipeline navigation.
+ * Left sidebar: the 7 steps, each with its live status (what has been done, what needs attention).
  */
 export default function StepSidebar({
   fileName,
@@ -20,9 +11,12 @@ export default function StepSidebar({
   activeStep,
   onStepChange,
   completedSteps,
-  tablePreview,
+  profile,
   rowCount,
+  columnCount,
+  selectedFeatures,
   modelMetrics,
+  versionCount,
   onNewProject,
 }) {
   function isStepDisabled(stepId, index) {
@@ -31,176 +25,90 @@ export default function StepSidebar({
     return false
   }
 
-  function getSubText(stepId) {
-    if (stepId === 'ingestion' && fileName) {
-      if (tablePreview && tablePreview.length > 0) {
-        const cols = Object.keys(tablePreview[0]).length
-        return rowCount != null ? `${formatCount(rowCount)} rows · ${cols} columns` : `${cols} columns loaded`
+  /** `[text, tone]` — tone is one of ok / warn / alert / undefined. */
+  function status(stepId) {
+    if (!fileName) return stepId === 'ingestion' ? ['Upload a file'] : [null]
+    switch (stepId) {
+      case 'ingestion':
+        return [rowCount != null ? `${formatCount(rowCount)} rows · ${columnCount ?? '?'} tags` : 'Loading…']
+      case 'quality': {
+        const s = profile?.data?.summary
+        if (!s) return [profile?.loading ? 'Checking…' : null]
+        if (s.problem) return [`${s.problem} problem${s.problem > 1 ? 's' : ''}${s.warning ? ` · ${s.warning} to check` : ''}`, 'alert']
+        if (s.warning) return [`${s.warning} tag${s.warning > 1 ? 's' : ''} to check`, 'warn']
+        return ['All tags look fine', 'ok']
       }
-      return 'Dataset loaded'
+      case 'preprocessing':
+        return [versionCount > 1 ? `${versionCount - 1} change${versionCount > 2 ? 's' : ''} so far` : null]
+      case 'feature-selection':
+        if (!targetVariable) return ['Pick a target', 'warn']
+        if (!selectedFeatures?.length) return [`${targetVariable} ← all numeric tags`]
+        return [`${targetVariable} ← ${selectedFeatures.length} input${selectedFeatures.length === 1 ? '' : 's'}`]
+      case 'modeling':
+        if (!targetVariable) return ['Needs a target']
+        if (!modelMetrics) return ['No model yet']
+        return typeof modelMetrics.r2_score === 'number'
+          ? [`${modelMetrics.algorithm} · test R² ${modelMetrics.r2_score.toFixed(2)}`, modelMetrics.r2_score >= 0.5 ? 'ok' : 'warn']
+          : [`${modelMetrics.algorithm} · not tested yet`, 'warn']
+      case 'validation':
+        return [modelMetrics ? null : 'Train a model first']
+      default:
+        return [null]
     }
-    if (stepId === 'feature-selection' && targetVariable) return `Target: ${targetVariable}`
-    if (stepId === 'modeling' && modelMetrics) {
-      return typeof modelMetrics.r2_score === 'number'
-        ? `${modelMetrics.algorithm} test R²: ${modelMetrics.r2_score.toFixed(2)}`
-        : `${modelMetrics.algorithm} · not tested yet`
-    }
-    return null
   }
 
   return (
-    <aside
-      className="panel"
-      style={{
-        width: '220px',
-        minWidth: '220px',
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        borderRadius: '0',
-        borderTop: 'none',
-        borderBottom: 'none',
-        borderLeft: 'none',
-      }}
-    >
-      {/* Project info */}
-      <div style={{ padding: '20px 16px 16px', borderBottom: '1px solid var(--color-line)' }}>
-        <p
-          style={{
-            fontFamily: 'var(--font-mono)',
-            fontSize: '10px',
-            textTransform: 'uppercase',
-            letterSpacing: '0.12em',
-            color: 'var(--color-mist)',
-            margin: '0 0 4px',
-          }}
-        >
-          Project
-        </p>
-        <p
-          style={{
-            fontWeight: 600,
-            fontSize: '0.9375rem',
-            color: 'var(--color-foam)',
-            margin: '0 0 6px',
-            lineHeight: 1.3,
-            wordBreak: 'break-all',
-          }}
-        >
-          {fileName || 'No dataset loaded'}
-        </p>
-        {targetVariable && (
-          <span className="badge badge-signal" style={{ fontSize: '10px' }}>
-            {targetVariable}
-          </span>
-        )}
+    <aside className="panel step-sidebar">
+      <div className="step-sidebar-project">
+        <p className="step-sidebar-kicker">Project</p>
+        <p className="step-sidebar-file" title={fileName || undefined}>{fileName || 'No dataset loaded'}</p>
       </div>
 
-      {/* Steps */}
-      <nav style={{ flex: 1, overflowY: 'auto', padding: '12px 8px' }}>
+      <nav className="step-sidebar-nav">
         {STEPS.map((step, index) => {
           const isDone = completedSteps?.includes(step.id)
           const isActive = activeStep === step.id
           const isDisabled = isStepDisabled(step.id, index)
-          const dynamicSubText = getSubText(step.id)
+          const [text, tone] = status(step.id)
 
           return (
             <div key={step.id}>
               <button
                 type="button"
-                title={isDisabled ? 'Complete previous steps first' : step.tooltip}
+                title={isDisabled ? 'Complete the previous steps first' : step.description}
                 disabled={isDisabled}
                 onClick={() => onStepChange(step.id)}
                 className={`step-item${isActive ? ' active' : isDone ? ' completed' : ''}${isDisabled ? ' disabled' : ''}`}
-                style={{ 
-                  width: '100%', 
-                  textAlign: 'left', 
-                  background: 'none', 
-                  border: 'none',
-                  opacity: isDisabled ? 0.4 : 1,
-                  cursor: isDisabled ? 'not-allowed' : 'pointer'
-                }}
               >
-                {/* Step dot */}
-                <div
-                  className={`step-dot ${isDone ? 'done' : isActive ? 'active' : 'pending'}`}
-                  style={{ filter: isDisabled ? 'grayscale(100%)' : 'none' }}
-                >
-                  {isDone ? <CheckIcon /> : (
-                    <span style={{ fontSize: '10px', fontFamily: 'var(--font-mono)' }}>
-                      {isDisabled ? '🔒' : index + 1}
-                    </span>
-                  )}
+                <div className={`step-dot ${isDone ? 'done' : isActive ? 'active' : 'pending'}`}>
+                  {isDone ? <Check size={12} strokeWidth={3} color="#fff" />
+                    : isDisabled ? <Lock size={10} />
+                    : <span className="step-dot-num">{index + 1}</span>}
                 </div>
-
-                <div>
-                  <div style={{ fontSize: '0.8125rem', fontWeight: 500, lineHeight: 1.3 }}>
-                    {step.label}
-                  </div>
-                  {(dynamicSubText || step.tooltip) && (
-                    <div style={{ fontSize: '10px', color: 'var(--color-mist)', marginTop: '2px', lineHeight: 1.2 }}>
-                      {dynamicSubText || step.tooltip}
-                    </div>
-                  )}
+                <div style={{ minWidth: 0 }}>
+                  <div className="step-item-label">{step.label}</div>
+                  {text && <div className={`step-item-status${tone ? ` tone-${tone}` : ''}`}>{text}</div>}
                 </div>
               </button>
-
-              {/* Connector line between steps */}
-              {index < STEPS.length - 1 && (
-                <div
-                  className={`step-connector${!isDone ? ' incomplete' : ''}`}
-                />
-              )}
+              {index < STEPS.length - 1 && <div className={`step-connector${!isDone ? ' incomplete' : ''}`} />}
             </div>
           )
         })}
       </nav>
 
-      {/* Footer */}
-      <div
-        style={{
-          padding: '12px 16px',
-          borderTop: '1px solid var(--color-line)',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '8px',
-        }}
-      >
-        <LlmStatus />
-        {onNewProject && (
+      {onNewProject && (
+        <div className="step-sidebar-footer">
           <button
             type="button"
+            className="step-sidebar-new"
             onClick={() => {
-              if (window.confirm('Start a new project? This will clear all current progress.')) {
-                onNewProject()
-              }
-            }}
-            style={{
-              width: '100%',
-              padding: '7px',
-              borderRadius: '8px',
-              background: 'transparent',
-              border: '1px solid var(--color-line-2)',
-              color: 'var(--color-mist)',
-              fontSize: '11px',
-              cursor: 'pointer',
-              fontFamily: 'var(--font-mono)',
-              transition: 'all 150ms ease',
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.borderColor = 'rgba(228,87,46,0.4)'
-              e.currentTarget.style.color = 'var(--color-alert)'
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.borderColor = 'var(--color-line-2)'
-              e.currentTarget.style.color = 'var(--color-mist)'
+              if (window.confirm('Start a new project? This will clear all current progress.')) onNewProject()
             }}
           >
-            ✕ New project
+            <RotateCcw size={12} aria-hidden="true" /> New project
           </button>
-        )}
-      </div>
+        </div>
+      )}
     </aside>
   )
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { CircleUser, Cloud } from 'lucide-react'
 import {
   authEnabled,
   currentUser,
@@ -87,7 +88,7 @@ export default function AccountMenu() {
         onClick={() => { setOpen((v) => !v); setNotice(null) }}
         title={label ? `Signed in as ${label}` : 'Your project is kept on this device. Save it to an account to keep it anywhere.'}
       >
-        <span aria-hidden>{label ? '●' : '☁'}</span>
+        {label ? <CircleUser size={14} aria-hidden /> : <Cloud size={14} aria-hidden />}
         <span className="account-trigger-text">{label || 'Save your project'}</span>
       </button>
 

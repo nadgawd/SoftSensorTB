@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { TriangleAlert } from 'lucide-react'
 import { errorDetail, runManualTool } from '../../api/client'
 import { CV_LABELS, cvUnit, splitLabel } from '../../utils/splits'
 
@@ -36,7 +37,6 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, onToolRes
   if (!modelMetrics) {
     return (
       <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
-        <p style={{ fontSize: '1.5rem', marginBottom: '8px' }}>⚙️</p>
         <p style={{ fontSize: '0.875rem' }}>
           {datasetVersionId
             ? 'Pick a model, its parameters and the split above, then press Split & train. Test the model afterwards on the held-out rows. Or ask the Assistant.'
@@ -265,7 +265,8 @@ function TestingPanel({ metrics: m, datasetVersionId, onToolResult, busy }) {
           </div>
           {train && Number.isFinite(train.r2) && Number.isFinite(test.r2) && train.r2 - test.r2 > 0.1 && (
             <p className="model-warning">
-              ⚠ Train R² is {formatMetric(train.r2 - test.r2)} higher than test R²: the model may be overfitting.
+              <TriangleAlert size={13} aria-hidden="true" style={{ verticalAlign: '-2px', marginRight: 4 }} />
+              Train R² is {formatMetric(train.r2 - test.r2)} higher than test R²: the model may be overfitting.
               Try fewer components, a larger alpha, more neighbours or fewer features.
             </p>
           )}

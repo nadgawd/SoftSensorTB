@@ -1,7 +1,8 @@
 import { useState } from 'react'
+import { History } from 'lucide-react'
+import { STEP_BY_ID } from '../constants/steps'
 import DataIngestionStep from './steps/DataIngestionStep'
 import DataQualityStep from './steps/DataQualityStep'
-import PreprocessingStep from './steps/PreprocessingStep'
 import FeatureSelectionStep from './steps/FeatureSelectionStep'
 import ModelingStep from './steps/ModelingStep'
 import ValidationStep from './steps/ValidationStep'
@@ -17,38 +18,8 @@ const HISTORY_VIEWS = [
   { id: 'timeline', label: 'Timeline' },
 ]
 
-const STEP_LABELS = {
-  ingestion: 'Data Ingestion',
-  quality: 'Data Quality',
-  preprocessing: 'Preprocessing',
-  'feature-selection': 'Feature Selection',
-  modeling: 'Modeling',
-  validation: 'Validation',
-  export: 'Export',
-}
-
-const STEP_SUBTITLES = {
-  ingestion: 'Upload historian and lab data, review tag classifications',
-  quality: 'Assess sensor health, identify data issues',
-  preprocessing: 'Resample and clean data for analysis',
-  'feature-selection': 'Select process variables for the soft-sensor model',
-  modeling: 'Split the data, train a model on the training rows, then test it on the held-out rows',
-  validation: 'Evaluate model performance on the reserved validation set',
-  export: 'Package model, data, and decision log for deployment',
-}
-
 // Steps whose own panel is an overview that tells you which tool to use, so it comes before the tools.
 const PANEL_FIRST = new Set(['ingestion', 'quality'])
-
-const STEP_NUMBERS = {
-  ingestion: 1,
-  quality: 2,
-  preprocessing: 3,
-  'feature-selection': 4,
-  modeling: 5,
-  validation: 6,
-  export: 7,
-}
 
 /**
  * Central content area that renders the correct panel for the active step.
@@ -83,7 +54,11 @@ export default function StepContent({
 }) {
   const [showHistory, setShowHistory] = useState(false)
   const [historyView, setHistoryView] = usePersisted('historyView', 'tree')
-  const stepNum = STEP_NUMBERS[activeStep] || 1
+  const step = STEP_BY_ID[activeStep] || STEP_BY_ID.ingestion
+  const roleProps = {
+    profile, timeColumn, targetVariable, selectedFeatures,
+    onTargetSelect, onFeaturesChange, onTimeColumnChange,
+  }
 
   function renderStepPanel() {
     switch (activeStep) {
@@ -92,9 +67,9 @@ export default function StepContent({
           <DataIngestionStep
             fileName={fileName}
             tablePreview={tablePreview}
-            targetVariable={targetVariable}
+            rowCount={previewMeta?.rowCount}
+            {...roleProps}
             onUploadSuccess={onUploadSuccess}
-            onTargetSelect={onTargetSelect}
           />
         )
       case 'quality':
@@ -105,21 +80,9 @@ export default function StepContent({
             onOpenTool={onOpenTool}
           />
         )
-      case 'preprocessing':
-        return (
-          <PreprocessingStep
-            tablePreview={tablePreview}
-            datasetVersionId={datasetVersionId}
-          />
-        )
       case 'feature-selection':
         return (
-          <FeatureSelectionStep
-            tablePreview={tablePreview}
-            targetVariable={targetVariable}
-            selectedFeatures={selectedFeatures}
-            onFeaturesChange={onFeaturesChange}
-          />
+          <FeatureSelectionStep tablePreview={tablePreview} {...roleProps} />
         )
       case 'modeling':
         return (
@@ -154,75 +117,20 @@ export default function StepContent({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, height: '100%', overflow: 'hidden' }}>
-      {/* Step header */}
-      <div
-        style={{
-          padding: '16px 28px 14px',
-          borderBottom: '1px solid var(--color-line)',
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'flex-start',
-          flexShrink: 0,
-        }}
-      >
-        <div>
-          <p
-            style={{
-              fontFamily: 'var(--font-mono)',
-              fontSize: '11px',
-              textTransform: 'uppercase',
-              letterSpacing: '0.14em',
-              color: 'var(--color-mist)',
-              margin: '0 0 3px',
-            }}
+      <div className="step-header">
+        <span className="step-header-num">Step {step.number}</span>
+        <h2 className="step-header-title">{step.label}</h2>
+        <p className="step-header-desc" title={step.description}>{step.description}</p>
+        {versionHistory?.length > 0 && (
+          <button
+            type="button"
+            className={`app-header-btn${showHistory ? ' active' : ''}`}
+            onClick={() => setShowHistory((v) => !v)}
           >
-            Step {stepNum}
-          </p>
-          <h2
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontSize: '1.4rem',
-              fontWeight: 700,
-              color: 'var(--color-foam)',
-              margin: '0 0 3px',
-              letterSpacing: '-0.01em',
-            }}
-          >
-            {STEP_LABELS[activeStep]}
-          </h2>
-          <p style={{ fontSize: '0.8125rem', color: 'var(--color-mist)', margin: 0 }}>
-            {STEP_SUBTITLES[activeStep]}
-          </p>
-        </div>
-
-        {/* Version history toggle + active version badge */}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexShrink: 0 }}>
-          {datasetVersionId && (
-            <div
-              style={{
-                padding: '5px 10px',
-                borderRadius: '8px',
-                background: 'var(--version-badge-bg)',
-                border: '1px solid var(--color-line)',
-                fontSize: '11px',
-                fontFamily: 'var(--font-mono)',
-                color: 'var(--color-mist)',
-              }}
-            >
-              v/{datasetVersionId.slice(0, 8)}
-            </div>
-          )}
-          {versionHistory?.length > 0 && (
-            <button
-              type="button"
-              className="btn-ghost"
-              onClick={() => setShowHistory((v) => !v)}
-              style={{ fontSize: '12px', padding: '5px 10px' }}
-            >
-              {showHistory ? 'Hide history' : `History (${versionHistory.length})`}
-            </button>
-          )}
-        </div>
+            <History size={13} aria-hidden="true" />
+            {showHistory ? 'Hide history' : `History (${versionHistory.length})`}
+          </button>
+        )}
       </div>
 
       {/* Version history drawer */}
@@ -294,6 +202,7 @@ export default function StepContent({
           datasetVersionId={datasetVersionId}
           targetVariable={targetVariable}
           selectedFeatures={selectedFeatures}
+          timeColumn={timeColumn}
           modelKey={modelMetrics?.model_id}
           {...manualTools}
         />
@@ -319,6 +228,7 @@ export default function StepContent({
             datasetVersionId,
             targetVariable,
             selectedFeatures,
+            timeColumn,
             modelKey: modelMetrics?.model_id,
           }}
         />

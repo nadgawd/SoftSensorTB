@@ -24,7 +24,6 @@ export default function DynamicGraph({ data, minHeight = 400 }) {
           color: 'var(--color-mist)',
         }}
       >
-        <p style={{ fontSize: '1.5rem' }}>📈</p>
         <p style={{ fontFamily: 'var(--font-display)', fontSize: '1rem', color: 'var(--color-foam)' }}>
           Visual canvas
         </p>

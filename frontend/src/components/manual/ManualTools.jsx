@@ -76,6 +76,7 @@ export default function ManualTools({
   datasetVersionId,
   targetVariable,
   selectedFeatures,
+  timeColumn,
   modelKey,
   tools,
   specError,
@@ -103,7 +104,10 @@ export default function ManualTools({
     || stepTools.find((t) => t.name === PREFERRED_TOOL[activeStep])
     || stepTools[0]
 
-  const app = useMemo(() => ({ targetVariable, selectedFeatures }), [targetVariable, selectedFeatures])
+  const app = useMemo(
+    () => ({ targetVariable, selectedFeatures, timeColumn }),
+    [targetVariable, selectedFeatures, timeColumn],
+  )
   const values = useMemo(
     () => (tool ? formValues(tool, edits[tool.name], schema, app) : {}),
     [tool, edits, schema, app],
@@ -189,7 +193,7 @@ export default function ManualTools({
         )}
       </div>
 
-      {!fixedTool && <p className="manual-tool-desc" title={tool.description}>{tool.description}</p>}
+      {!fixedTool && <p className="manual-tool-desc">{tool.summary || tool.description}</p>}
 
       {schemaError && <p className="manual-error">Could not load the dataset columns: {schemaError}</p>}
       {!schema && schemaLoading ? (

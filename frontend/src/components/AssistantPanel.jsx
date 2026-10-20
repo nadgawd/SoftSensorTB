@@ -1,4 +1,6 @@
+import { Brain, Sparkles, Trash2, X } from 'lucide-react'
 import { fetchLlmStatus, postChat } from '../api/client'
+import LlmStatus from './LlmStatus'
 import ChatMarkdown from './ChatMarkdown'
 import { useEffect, useRef, useState } from 'react'
 import { usePersisted } from '../hooks/usePersisted'
@@ -39,7 +41,7 @@ function IntentBadge({ intent, uiUpdate }) {
 function ManualEntry({ msg }) {
   return (
     <div className="chat-manual animate-slide-up">
-      <p className="chat-manual-head">⚙ You ran <strong>{msg.label || msg.tool}</strong> from the Tools panel</p>
+      <p className="chat-manual-head">You ran <strong>{msg.label || msg.tool}</strong> from the Tools panel</p>
       {msg.content && <p className="chat-manual-body">{msg.content}</p>}
     </div>
   )
@@ -335,11 +337,12 @@ export default function AssistantPanel({
           flexShrink: 0,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ color: 'var(--color-ember)', fontSize: '18px' }}>✦</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+          <Sparkles size={16} color="var(--color-ember)" aria-hidden="true" />
           <span style={{ fontWeight: 600, fontSize: '1rem', color: 'var(--color-foam)' }}>
             Assistant
           </span>
+          <LlmStatus />
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
           {/* Clear button */}
@@ -370,7 +373,7 @@ export default function AssistantPanel({
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-foam)')}
             onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-mist)')}
           >
-            🗑
+            <Trash2 size={15} aria-hidden="true" />
           </button>
           <button
             type="button"
@@ -390,7 +393,7 @@ export default function AssistantPanel({
             onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--color-foam)')}
             onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--color-mist)')}
           >
-            ×
+            <X size={17} aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -544,7 +547,7 @@ export default function AssistantPanel({
               onClick={() => setThink((t) => !t)}
               title="Let the model reason step by step before answering. Slower, better on multi-step requests."
             >
-              ✦ Think {think ? 'on' : 'off'}
+              <Brain size={12} aria-hidden="true" /> Think {think ? 'on' : 'off'}
             </button>
             {think && (
               <span style={{ fontSize: '11px', color: 'var(--color-mist)' }}>

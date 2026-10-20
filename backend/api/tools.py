@@ -293,8 +293,8 @@ _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 # for a tool with its own panel, named by "panel"), and optional: numeric (column pickers limited to numeric
 # columns), show_when ({field: {other_field: [values]}}, all of which must
 # hold, or a list of such dicts of which any may hold), defaults (form
-# defaults for required fields), app_defaults (fill from the workbench:
-# "target" or "features"), advanced (fields folded under "Advanced").
+# defaults for required fields), app_defaults (fill from the workbench's
+# column roles: "target", "features" or "time"), advanced (fields folded under "Advanced").
 MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     "inspect_data": {
         "label": "Inspect data (head, info, describe…)",
@@ -425,6 +425,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
             "limit_direction": {"strategy": ["interpolate"]},
             "time_column": {"strategy": ["interpolate"], "interpolation_method": ["time"]},
         },
+        "app_defaults": {"time_column": "time"},
         "advanced": ("max_iter", "random_state"),
     },
     "remove_outliers": {
@@ -532,6 +533,7 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "label": "Resample time series (downsample / upsample)",
         "steps": ("preprocessing",),
         "defaults": {"frequency": "1h", "mode": "downsample"},
+        "app_defaults": {"time_column": "time"},
         "show_when": {
             "aggregation": {"mode": ["downsample"]},
             "drop_empty": {"mode": ["downsample"]},
@@ -640,6 +642,58 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     "generate_roc_curve": {"label": "ROC curve", **_DIAGNOSTIC},
     "generate_pr_curve": {"label": "Precision-recall curve", **_DIAGNOSTIC},
     "generate_learning_curve": {"label": "Learning curve", **_DIAGNOSTIC, "advanced": ("random_state",)},
+}
+
+# One line of help per tool for people, shown under the tool picker. The function
+# docstring stays the description for the assistant and the documentation.
+TOOL_SUMMARIES: dict[str, str] = {
+    "inspect_data": "Look at the data without changing it: first rows, types, summary statistics, value counts, correlations.",
+    "aggregate_data": "Summarise groups of rows: averages per group, pivot tables and frequency tables.",
+    "statistical_test": "Test a hypothesis on your data: compare means, check normality or check whether a signal is stationary.",
+    "list_datasets": "See the other files you have uploaded, to combine with this one.",
+    "sort_data": "Put the rows in order by one or more columns.",
+    "combine_datasets": "Bring in another uploaded file: match rows on key columns, place it side by side, or append its rows.",
+    "reshape_data": "Switch between wide tables (one column per tag) and long tables (one row per reading).",
+    "get_column_statistics": "Count, missing values, mean, spread and range of every column.",
+    "run_duckdb_query": "Ask a question of the data in SQL. Read-only: the data is not changed.",
+    "convert_types": "Change what kind of values a column holds: numbers, text, categories, true/false or dates and times.",
+    "clean_text": "Tidy text columns: trim spaces, change case, find and replace, or pull parts out with a pattern.",
+    "drop_rows": "Remove the rows that match a condition or a range, or keep only those rows.",
+    "mask_values": "Replace the values where a condition holds (or where it doesn't) with a fixed value or a blank.",
+    "map_values": "Recode values through a lookup table, for example low/medium/high to 1/2/3.",
+    "drop_duplicates": "Remove repeated rows.",
+    "remove_missing_data": "Fill in blanks (mean, previous value, interpolation, nearest neighbours…) or drop the rows that have them.",
+    "remove_outliers": "Find extreme values and drop those rows, cap the values, or clip to fixed limits.",
+    "detect_anomalies": "Find unusual rows across several tags at once, then flag or drop them.",
+    "drop_columns": "Remove columns you don't need.",
+    "rename_columns": "Give columns new names.",
+    "normalize_data": "Put tags on a common scale (standardise, min–max, robust or max-abs).",
+    "transform_features": "Reshape a tag's distribution (log, square root, Box-Cox…) or cut it into bins.",
+    "encode_categorical": "Turn text categories into numbers a model can use.",
+    "rolling_aggregate": "Add moving averages and other window statistics over past rows.",
+    "create_lag_features": "Add past or future values of a tag, or its change since n rows earlier: useful for process delays.",
+    "apply_function": "Apply a function to every value (abs, round, log…), a running total or rank, or group statistics.",
+    "feature_engineer": "Build new inputs: powers and products of tags, date parts, cyclical time, or ratios.",
+    "resample_time_series": "Put the rows on a regular time step: average to coarser steps or fill in finer ones.",
+    "execute_formula": "Add a column computed from a formula over other columns, like a spreadsheet.",
+    "balance_data": "Even out how many rows each class has (classification targets only).",
+    "generate_custom_plot": "Draw a chart of the data.",
+    "select_features_rfe": "Keep the best inputs by repeatedly fitting a linear model and removing the weakest tag.",
+    "select_k_best": "Score each input against the target and keep the best k.",
+    "drop_collinear_features": "Drop one tag of each pair that moves almost identically.",
+    "reduce_dimensions": "Compress many tags into a few components (PCA and others), or drop near-constant ones.",
+    "select_features_model": "Rank inputs by how much a model relies on them, and keep the most useful.",
+    "train_soft_sensor": "Split the rows into training and test sets and fit a model on the training rows.",
+    "evaluate_on_test_set": "Score the trained model on the test rows it has never seen.",
+    "view_data_split": "See which rows went into training, validation and test.",
+    "list_trained_models": "Every model trained on this dataset, with its scores.",
+    "generate_parity_plot": "Predicted against measured values: points on the diagonal are perfect predictions.",
+    "generate_residuals_plot": "Prediction errors: look for patterns or drift that the model misses.",
+    "generate_importance_plot": "Which inputs the model relies on most.",
+    "generate_coefficients_plot": "The weight of each input in a linear model.",
+    "generate_roc_curve": "How well a classifier separates the classes at every threshold.",
+    "generate_pr_curve": "Precision against recall of a classifier at every threshold.",
+    "generate_learning_curve": "Whether more training rows would still improve the model.",
 }
 
 
@@ -763,6 +817,7 @@ def manual_tool_specs() -> list[dict[str, Any]]:
         out.append({
             "name": name,
             "label": ui["label"],
+            "summary": TOOL_SUMMARIES[name],
             "description": _clean_description(fn["description"]),
             "steps": list(ui["steps"]),
             "panel": ui.get("panel"),

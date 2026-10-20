@@ -1,3 +1,4 @@
+import { ChartScatter } from 'lucide-react'
 import PlotCanvas from '../PlotCanvas'
 import { CV_LABELS, cvUnit, splitLabel } from '../../utils/splits'
 
@@ -20,7 +21,7 @@ export default function ValidationStep({ modelMetrics, plotHistory }) {
         plotHistory={plotHistory}
         emptyState={
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: 'var(--color-mist)', padding: '30px', gap: '8px' }}>
-            <p style={{ fontSize: '1.5rem' }}>📉</p>
+            <ChartScatter size={24} aria-hidden="true" />
             <p style={{ fontSize: '0.875rem', textAlign: 'center' }}>
               Choose <strong style={{ color: 'var(--color-ember)' }}>Parity plot</strong> in the Tools panel above, or ask the Assistant, to visualize model performance
             </p>

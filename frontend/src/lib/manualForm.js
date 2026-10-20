@@ -27,9 +27,10 @@ function columnChoices(field, schema, values) {
   return target ? names.filter((c) => c !== target) : names
 }
 
-function defaultFeatures(schema, target) {
+/** With no features chosen, the inputs are every numeric column except the target and the time column. */
+export function defaultFeatures(schema, target, timeColumn) {
   return (schema?.columns || [])
-    .filter((c) => c.numeric && c.name !== target && !c.name.startsWith('Predicted_'))
+    .filter((c) => c.numeric && c.name !== target && c.name !== timeColumn && !c.name.startsWith('Predicted_'))
     .map((c) => c.name)
 }
 
@@ -38,10 +39,13 @@ function appDefault(field, schema, app) {
   if (field.app_default === 'target') {
     return app.targetVariable && choices.has(app.targetVariable) ? app.targetVariable : undefined
   }
+  if (field.app_default === 'time') {
+    return app.timeColumn && choices.has(app.timeColumn) ? app.timeColumn : undefined
+  }
   if (field.app_default === 'features') {
     const target = app.targetVariable
     const picked = (app.selectedFeatures || []).filter((c) => choices.has(c) && c !== target)
-    return picked.length ? picked : defaultFeatures(schema, target).filter((c) => choices.has(c))
+    return picked.length ? picked : defaultFeatures(schema, target, app.timeColumn).filter((c) => choices.has(c))
   }
   return undefined
 }

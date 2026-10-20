@@ -1,136 +1,116 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { useDropzone } from 'react-dropzone'
-import { uploadDataset } from '../../api/client'
+import { FileSpreadsheet, Upload } from 'lucide-react'
+import { errorDetail, uploadDataset } from '../../api/client'
+import { formatBytes, formatCount } from '../../utils/format'
+import VariablesTable from '../VariablesTable'
+
+const ACCEPT = {
+  'text/csv': ['.csv'],
+  'text/plain': ['.txt'],
+  'application/octet-stream': ['.parquet', '.pq', '.csv'],
+}
+
+function UploadProgress({ upload }) {
+  const { name, size, fraction, loaded } = upload
+  const sent = fraction != null && fraction >= 1
+  return (
+    <div className="upload-progress" role="status">
+      <div className="upload-progress-text">
+        <span>{name}</span>
+        <span>
+          {sent ? 'Reading the file on the server…'
+            : fraction != null ? `${Math.round(fraction * 100)}% · ${formatBytes(loaded)} of ${formatBytes(size)}`
+            : `${formatBytes(loaded)} sent`}
+        </span>
+      </div>
+      <div className="upload-progress-bar">
+        <div className={sent ? 'indeterminate' : ''} style={{ width: `${Math.round((fraction ?? 0) * 100)}%` }} />
+      </div>
+    </div>
+  )
+}
 
 /**
- * Step 1 — Data Ingestion
+ * Step 1 — Data ingestion: upload a file, then give each column its role.
  */
 export default function DataIngestionStep({
-  fileName, tablePreview, targetVariable,
-  onUploadSuccess, onTargetSelect,
+  fileName, tablePreview, rowCount, profile, timeColumn, targetVariable, selectedFeatures,
+  onUploadSuccess, onTargetSelect, onFeaturesChange, onTimeColumnChange,
 }) {
-  const [uploading, setUploading] = useState(false)
+  const [upload, setUpload] = useState(null)
   const [uploadError, setUploadError] = useState(null)
 
   const onDrop = useCallback(async (acceptedFiles) => {
     const file = acceptedFiles?.[0]
     if (!file) return
     setUploadError(null)
-    setUploading(true)
+    setUpload({ name: file.name, size: file.size, fraction: 0, loaded: 0 })
     try {
-      const result = await uploadDataset(file)
+      const result = await uploadDataset(file, {
+        onProgress: (fraction, loaded) => setUpload((u) => u && { ...u, fraction, loaded }),
+      })
       onUploadSuccess?.(result)
     } catch (err) {
-      const detail = err?.response?.data?.detail || err.message || 'Upload failed'
-      setUploadError(typeof detail === 'string' ? detail : JSON.stringify(detail))
+      setUploadError(errorDetail(err, 'Upload failed.'))
     } finally {
-      setUploading(false)
+      setUpload(null)
     }
   }, [onUploadSuccess])
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({
-    onDrop, multiple: false,
-    accept: {
-      'text/csv': ['.csv'],
-      'text/plain': ['.txt'],
-      'application/octet-stream': ['.parquet', '.pq', '.csv'],
-    },
-    disabled: uploading,
+  const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
+    onDrop, multiple: false, accept: ACCEPT, disabled: Boolean(upload), noClick: Boolean(fileName),
   })
 
-  const columns = useMemo(() => {
-    if (!tablePreview?.length) return []
-    return Object.keys(tablePreview[0])
-  }, [tablePreview])
+  const previewColumns = tablePreview?.length ? Object.keys(tablePreview[0]) : []
 
   return (
-    <div className="animate-rise" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {/* Drop zone */}
-      <div
-        {...getRootProps()}
-        className={`dropzone${isDragActive ? ' active' : ''}`}
-        style={{ opacity: uploading ? 0.6 : 1 }}
-      >
-        <input {...getInputProps()} />
-        <div style={{ marginBottom: '8px', fontSize: '26px' }}>
-          {uploading ? '⏳' : isDragActive ? '📂' : '📁'}
+    <div className="animate-rise ingest">
+      {fileName ? (
+        <div {...getRootProps()} className={`ingest-file panel${isDragActive ? ' active' : ''}`}>
+          <input {...getInputProps()} />
+          {upload ? <UploadProgress upload={upload} /> : (
+            <>
+              <FileSpreadsheet size={18} aria-hidden="true" className="ingest-file-icon" />
+              <div className="ingest-file-text">
+                <span className="ingest-file-name">{fileName}</span>
+                <span className="ingest-file-meta">
+                  {rowCount != null ? `${formatCount(rowCount)} rows × ${previewColumns.length} tags` : ''}
+                  {isDragActive ? ' · drop to replace' : ''}
+                </span>
+              </div>
+              <button type="button" className="btn-ghost ingest-replace" onClick={open}>
+                <Upload size={13} aria-hidden="true" /> Replace file
+              </button>
+            </>
+          )}
         </div>
-        <p style={{ fontWeight: 600, fontSize: '0.9375rem', color: 'var(--color-foam)', margin: '0 0 4px' }}>
-          {uploading ? 'Ingesting dataset…' : isDragActive ? 'Drop to upload' : 'Drop CSV / TXT / Parquet here'}
-        </p>
-        <p style={{ fontSize: '0.8125rem', color: 'var(--color-mist)', margin: 0 }}>
-          Creates a root dataset version in <code style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--color-signal)' }}>/data_storage</code>
-        </p>
-        {fileName && (
-          <p style={{ marginTop: '8px', fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--color-signal)' }}>
-            ✓ {fileName}
-          </p>
-        )}
-      </div>
-
-      {uploadError && (
-        <div className="badge badge-alert" style={{ display: 'block', padding: '10px 14px', borderRadius: '8px', fontSize: '12px', lineHeight: 1.5 }}>
-          {uploadError}
+      ) : (
+        <div {...getRootProps()} className={`dropzone${isDragActive ? ' active' : ''}`}>
+          <input {...getInputProps()} />
+          {upload ? <UploadProgress upload={upload} /> : (
+            <>
+              <Upload size={26} aria-hidden="true" className="dropzone-icon" />
+              <p className="dropzone-title">{isDragActive ? 'Drop to upload' : 'Drop a CSV, TXT or Parquet file here'}</p>
+              <p className="dropzone-sub">or click to choose one. Large historian exports are fine.</p>
+            </>
+          )}
         </div>
       )}
 
-      {/* Column / tag table */}
-      {columns.length > 0 && (
-        <div className="panel" style={{ borderRadius: '14px', overflow: 'hidden' }}>
-          <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--color-line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <div>
-              <p style={{ fontFamily: 'var(--font-mono)', fontSize: '10px', textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--color-mist)', margin: 0 }}>
-                Tag Columns
-              </p>
-              <p style={{ fontSize: '0.875rem', color: 'var(--color-foam)', margin: '2px 0 0', fontWeight: 500 }}>
-                {columns.length} tags · {tablePreview.length} rows
-              </p>
-            </div>
-            {targetVariable && (
-              <span className="badge badge-signal">{targetVariable} (target)</span>
-            )}
-          </div>
-          <div style={{ overflowY: 'auto', maxHeight: '300px' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Tag name</th>
-                  <th>Sample value</th>
-                  <th>Target?</th>
-                </tr>
-              </thead>
-              <tbody>
-                {columns.map((col) => {
-                  const sample = tablePreview[0]?.[col]
-                  const isTarget = targetVariable === col
-                  return (
-                    <tr key={col} style={isTarget ? { background: 'rgba(46,196,182,0.06)' } : {}}>
-                      <td style={{ color: 'var(--color-foam)', fontWeight: isTarget ? 600 : 400 }}>{col}</td>
-                      <td>{sample === null || sample === undefined ? '—' : String(sample)}</td>
-                      <td>
-                        {isTarget ? (
-                          <span className="badge badge-signal" style={{ fontSize: '10px' }}>Target ✓</span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => onTargetSelect?.(col)}
-                            style={{
-                              background: 'none', border: '1px solid var(--color-line-2)',
-                              borderRadius: '6px', padding: '2px 8px', fontSize: '10px',
-                              color: 'var(--color-mist)', cursor: 'pointer', fontFamily: 'var(--font-mono)',
-                            }}
-                          >
-                            Set target
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {uploadError && <p className="manual-error">{uploadError}</p>}
+
+      {fileName && previewColumns.length > 0 && (
+        <VariablesTable
+          profile={profile}
+          previewColumns={previewColumns}
+          timeColumn={timeColumn}
+          targetVariable={targetVariable}
+          selectedFeatures={selectedFeatures}
+          onTimeColumnChange={onTimeColumnChange}
+          onTargetSelect={onTargetSelect}
+          onFeaturesChange={onFeaturesChange}
+        />
       )}
     </div>
   )

@@ -9,7 +9,7 @@ const STEP_BLURBS = {
   'feature-selection': 'Choose the inputs (SelectKBest, RFE, model importance, permutation, SHAP), drop collinear or unwanted columns, and reduce dimensions (PCA, SVD, t-SNE…).',
   modeling: 'Split the rows into training, validation and test sets, train a model on the training rows, then test it separately on the held-out test rows.',
   validation: 'Diagnostic plots of a trained model on its test rows: parity, residuals, importances, coefficients, ROC and precision-recall curves, learning curves.',
-  export: 'SQL queries on the active version and the list of trained models.',
+  export: 'Download the prepared dataset (CSV or Parquet), a trained model, the pipeline recipe (every step with its parameters) and an HTML report. Also SQL queries on the active version and the list of trained models.',
 };
 
 const EXTRA_NODES = [
@@ -61,7 +61,7 @@ function resolveArg(arg, defs) {
 function matchesQuery(tool, query) {
   if (!query) return true;
   const fn = tool.function || {};
-  return [fn.name, tool.label, fn.description, ...Object.keys(fn.parameters?.properties || {})]
+  return [fn.name, tool.label, tool.summary, fn.description, ...Object.keys(fn.parameters?.properties || {})]
     .join(' ')
     .toLowerCase()
     .includes(query);
@@ -75,14 +75,14 @@ function buildTree(tools, manualSpecs) {
   }
   const specs = new Map((manualSpecs || []).map((s) => [s.name, s]));
   const byName = new Map(tools.map((t) => [t.function?.name, t]));
-  const withLabel = (spec) => ({ ...byName.get(spec.name), label: spec.label });
+  const withLabel = (spec) => ({ ...byName.get(spec.name), label: spec.label, summary: spec.summary });
   const known = (manualSpecs || []).filter((s) => byName.has(s.name));
 
   const nodes = STEPS.map((step, i) => ({
     id: step.id,
     number: i + 1,
     label: step.label,
-    blurb: STEP_BLURBS[step.id] || step.tooltip,
+    blurb: STEP_BLURBS[step.id] || step.description,
     items: known.filter((s) => s.steps.includes(step.id)).map(withLabel),
   }));
   nodes.push({ ...EXTRA_NODES[0], number: '◫', items: known.filter((s) => !s.steps.length && s.panel).map(withLabel) });
@@ -239,11 +239,12 @@ function ToolNode({ tool, open, onToggle }) {
             {tool.label}
             {tool.label !== fn.name && <code>{fn.name}</code>}
           </span>
-          {!open && <span className="doc-tool-summary">{summary(fn.description)}</span>}
+          {!open && <span className="doc-tool-summary">{tool.summary || summary(fn.description)}</span>}
         </span>
       </button>
       {open && (
         <div className="doc-tool-body">
+          {tool.summary && <p className="doc-tool-desc"><strong>{tool.summary}</strong></p>}
           <p className="doc-tool-desc">{fn.description}</p>
           {properties.length > 0 && (
             <table className="doc-args">

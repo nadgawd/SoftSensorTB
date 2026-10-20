@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from backend.api.tools import MANUAL_TOOLS, STEPS, manual_tool_specs
+from backend.api.tools import MANUAL_TOOLS, STEPS, TOOL_SUMMARIES, manual_tool_specs
 from backend.limits import manual_limiter
 from backend.mcp_server import LLM_TOOL_SCHEMAS, TOOL_FUNCTIONS
 from backend.mcp_server.eda_tools import (
@@ -53,6 +53,7 @@ def _run(client, user, version, tool, **arguments):  # noqa: F811
 
 def test_every_tool_has_a_manual_form():
     assert set(MANUAL_TOOLS) == set(TOOL_FUNCTIONS)
+    assert set(TOOL_SUMMARIES) == set(MANUAL_TOOLS)
     for name, ui in MANUAL_TOOLS.items():
         assert set(ui["steps"]) <= set(STEPS), name
         assert len(ui["steps"]) == 1 or (not ui["steps"] and ui.get("panel")), f"{name} must sit in exactly one step"
@@ -79,6 +80,7 @@ def test_form_overrides_name_real_fields_and_options(name):
         assert set(ui.get(key, ())) <= set(fields), (name, key)
     for key in ("defaults", "app_defaults", "show_when"):
         assert set(ui.get(key, {})) <= set(fields), (name, key)
+    assert set(ui.get("app_defaults", {}).values()) <= {"target", "features", "time"}, name
     for field, when in ui.get("show_when", {}).items():
         for conditions in _alternatives(when):
             for controller, values in conditions.items():

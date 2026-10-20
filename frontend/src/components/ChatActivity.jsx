@@ -61,7 +61,7 @@ function ToolChip({ name, n, failed }) {
       style={{ fontSize: '10px' }}
       title={failed ? `${failed} of ${n} call(s) failed and were retried or skipped` : undefined}
     >
-      ⚙ {toolLabel(name)}{n > 1 ? ` ×${n}` : ''}
+      {toolLabel(name)}{n > 1 ? ` ×${n}` : ''}
     </span>
   )
 }

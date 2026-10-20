@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { BookOpen, Check, CircleCheck, RefreshCw, Sparkles, TriangleAlert } from 'lucide-react'
 import StepSidebar from './components/StepSidebar'
 import { STEPS } from './constants/steps'
 import StepContent from './components/StepContent'
@@ -59,6 +60,8 @@ export default function App() {
   const [timeColumn, setTimeColumn] = usePersisted('timeColumn', null)
   const [modelMetrics, setModelMetrics] = usePersisted('modelMetrics', null)
   const profile = useVersionProfile(datasetVersionId, { target: targetVariable, timeColumn })
+  // A chosen time column, else the one the profile detected.
+  const effectiveTimeColumn = timeColumn || profile.data?.time_column || null
 
   // Table preview is kept in memory (not persisted) to allow large row limits without breaking localStorage quotas.
   // It is automatically re-fetched on load via useEffect.
@@ -418,9 +421,12 @@ export default function App() {
         targetVariable={targetVariable}
         activeStep={activeStep}
         completedSteps={completedSteps}
-        tablePreview={tablePreview}
+        profile={profile}
         rowCount={previewMeta.rowCount}
+        columnCount={tablePreview?.length ? Object.keys(tablePreview[0]).length : null}
+        selectedFeatures={selectedFeatures}
         modelMetrics={modelMetrics}
+        versionCount={versionHistory?.length || 0}
         onStepChange={handleStepChange}
         onNewProject={hasSession ? handleNewProject : null}
       />
@@ -438,110 +444,26 @@ export default function App() {
           marginRight: assistantOpen ? `${assistantWidth}px` : '0',
         }}
       >
-        {/* Top bar */}
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'flex-end',
-            padding: '10px 20px',
-            borderBottom: '1px solid var(--color-line)',
-            background: 'var(--header-bg)',
-            backdropFilter: 'blur(8px)',
-            flexShrink: 0,
-            gap: '10px',
-          }}
-        >
-          <span style={{ flex: 1, fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--color-mist)' }}>
-            Soft Sensor Toolbox
-            {fileName && <> · <span style={{ color: 'var(--color-foam)' }}>{fileName}</span></>}
-          </span>
-
-          <ThemeToggle theme={theme} onToggle={toggleTheme} />
-
-          <AccountMenu />
-
-          {/* Documentation button */}
-          <button
-            type="button"
-            onClick={() => setDocOpen(true)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '6px',
-              padding: '4px 10px',
-              borderRadius: '6px',
-              background: 'var(--header-btn-bg)',
-              border: '1px solid var(--color-line-2)',
-              color: 'var(--color-foam)',
-              cursor: 'pointer',
-              fontSize: '0.8rem',
-              fontFamily: 'var(--font-heading)',
-              transition: 'background 0.2s',
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--header-btn-bg-hover)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'var(--header-btn-bg)')}
-          >
-            <span style={{ fontSize: '14px' }}>📄</span> Documentation
-          </button>
-
-          {/* Session save indicator */}
+        <header className="app-header">
+          <span className="app-brand">Soft Sensor Toolbox</span>
           {hasSession && (
-            <span
-              title="Project saved until you start a new one"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '5px',
-                fontFamily: 'var(--font-mono)',
-                fontSize: '10px',
-                color: 'var(--color-success)',
-                padding: '4px 8px',
-                borderRadius: '6px',
-                background: 'rgba(60,179,113,0.08)',
-                border: '1px solid rgba(60,179,113,0.2)',
-              }}
-            >
-              <span style={{ fontSize: '8px', animation: 'pulse-ember 3s ease-in-out infinite' }}>●</span>
-              auto-saved
+            <span className="app-saved" title="Every change is saved to your account until you start a new project">
+              <Check size={12} aria-hidden="true" /> Saved
             </span>
           )}
-
-          {/* ✦ Assistant button */}
+          <button type="button" className="app-header-btn" onClick={() => setDocOpen(true)}>
+            <BookOpen size={14} aria-hidden="true" /> Docs
+          </button>
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <AccountMenu />
           <button
             type="button"
+            className={`app-header-btn app-assistant-btn${assistantOpen ? ' active' : ''}`}
             onClick={() => setAssistantOpen((v) => !v)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: '8px',
-              padding: '7px 14px',
-              borderRadius: '8px',
-              border: `1px solid ${assistantOpen ? 'rgba(212,165,53,0.5)' : 'var(--color-line-2)'}`,
-              background: assistantOpen ? 'rgba(212,165,53,0.1)' : 'transparent',
-              color: assistantOpen ? 'var(--color-ember)' : 'var(--color-mist)',
-              cursor: 'pointer',
-              fontSize: '0.875rem',
-              fontWeight: 500,
-              transition: 'all 150ms ease',
-            }}
-            onMouseEnter={(e) => {
-              if (!assistantOpen) {
-                e.currentTarget.style.color = 'var(--color-foam)'
-                e.currentTarget.style.borderColor = 'var(--color-line)'
-              }
-            }}
-            onMouseLeave={(e) => {
-              if (!assistantOpen) {
-                e.currentTarget.style.color = 'var(--color-mist)'
-                e.currentTarget.style.borderColor = 'var(--color-line-2)'
-              }
-            }}
           >
-            <span style={{ fontSize: '15px' }}>✦</span>
-            <span>Assistant</span>
+            <Sparkles size={14} aria-hidden="true" /> Assistant
           </button>
-        </div>
+        </header>
 
         {/* Step content */}
         <StepContent
@@ -558,7 +480,7 @@ export default function App() {
           previewMeta={previewMeta}
           onPreviewPageChange={setPreviewPage}
           profile={profile}
-          timeColumn={timeColumn}
+          timeColumn={effectiveTimeColumn}
           onTimeColumnChange={setTimeColumn}
           onOpenTool={openTool}
           selectedFeatures={selectedFeatures}
@@ -602,6 +524,7 @@ export default function App() {
         uiContext={JSON.stringify({
           targetVariable,
           selectedFeatures,
+          timeColumn: effectiveTimeColumn,
           activePlot: plotHistory.activePlot?.title ?? null,
           modelMetrics: modelMetrics || null,
           manualActions,
@@ -664,8 +587,8 @@ function RestoreBanner({ status, fileName, onNewProject, onDismiss }) {
         animation: 'slide-up 300ms ease',
       }}
     >
-      <span style={{ fontSize: '16px', flexShrink: 0 }}>
-        {isRestoring ? '🔄' : isFailed ? '⚠️' : '✅'}
+      <span style={{ display: 'flex', flexShrink: 0, color: isFailed ? 'var(--color-alert)' : isRestoring ? 'var(--color-mist)' : 'var(--color-success)' }}>
+        {isRestoring ? <RefreshCw size={16} /> : isFailed ? <TriangleAlert size={16} /> : <CircleCheck size={16} />}
       </span>
       <div style={{ flex: 1 }}>
         <p style={{ margin: 0, fontSize: '0.875rem', fontWeight: 600, color: 'var(--color-foam)', lineHeight: 1.3 }}>
