@@ -8,7 +8,7 @@ import DocumentationModal from './components/DocumentationModal'
 import ThemeToggle from './components/ThemeToggle'
 import AccountMenu from './components/AccountMenu'
 import {
-  errorDetail, fetchDatasetHistory, fetchVersionDiff, fetchVersionPreview, rollbackVersion, runManualTool,
+  errorDetail, fetchDatasetHistory, fetchModelReport, fetchVersionDiff, fetchVersionPreview, rollbackVersion, runManualTool,
 } from './api/client'
 import { useColumnRoles } from './hooks/useColumnRoles'
 import ChangeToast from './components/ChangeToast'
@@ -208,14 +208,14 @@ export default function App() {
   const { theme, toggleTheme } = useTheme()
 
   // Suggested prompts shown in the assistant chat.
-  const suggestions = useMemo(() => getSuggestions(toolStep, {
+  const suggestions = useMemo(() => getSuggestions(toolStep || activeStep, {
     columns: tablePreview?.length ? Object.keys(tablePreview[0]) : [],
     hasTarget: Boolean(targetVariable),
     targetVariable,
     selectedFeatures: selectedFeatures || [],
     hasModel: Boolean(modelMetrics),
     r2Score: modelMetrics?.r2_score ?? null,
-  }), [toolStep, tablePreview, targetVariable, selectedFeatures, modelMetrics])
+  }), [toolStep, activeStep, tablePreview, targetVariable, selectedFeatures, modelMetrics])
 
   // ── Assistant panel width (drag its left edge) ────────────
   const [savedAssistantWidth, setSavedAssistantWidth] = usePersisted('assistantWidth', ASSISTANT_DEFAULT_WIDTH)
@@ -321,7 +321,7 @@ export default function App() {
       if (response.model_metrics) {
         setModelMetrics(response.model_metrics)
         markStepComplete('modeling')
-        if (!nextStep) {
+        if (!nextStep && activeStep !== 'modeling') {
           nextStep = 'modeling'
           setModelTab('train')
         }
@@ -434,6 +434,10 @@ export default function App() {
     run: runToolNow,
     busy: toolsBusy || assistantBusy,
   }), [roleColumns, effectiveTimeColumn, columnRoles.roleOf, columnRoles.setRole, runToolNow, toolsBusy, assistantBusy])
+
+  const activateModel = useCallback(async (modelId) => {
+    setModelMetrics(await fetchModelReport(datasetVersionId, modelId))
+  }, [datasetVersionId, setModelMetrics])
 
   // ── Assistant tool calls → the same tool's form shows what it used ──
   const handleAssistantToolCalls = useCallback((calls) => {
@@ -603,6 +607,7 @@ export default function App() {
           toolStep={toolStep}
           modelTab={modelTab}
           onModelTabChange={setModelTab}
+          onModelActivate={activateModel}
           fileName={fileName}
           datasetVersionId={datasetVersionId}
           tablePreview={tablePreview}

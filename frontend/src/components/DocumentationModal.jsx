@@ -7,7 +7,7 @@ const STEP_BLURBS = {
   quality: 'Missing values (fill, KNN, MICE, interpolation), duplicates, outliers, anomalies, dropping or filtering rows, masking and recoding values, text and regex, and statistical tests.',
   preprocessing: 'Scaling and transforms, encoding, lags and rolling windows, resampling to a regular time grid, formula columns, feature engineering, reshaping and class balancing.',
   'feature-selection': 'Choose the inputs (SelectKBest, RFE, model importance, permutation, SHAP), drop collinear or unwanted columns, and reduce dimensions (PCA, SVD, t-SNE…).',
-  modeling: 'Train & test tab: split the rows into training, validation and test sets, train a model on the training rows, then test it on the held-out test rows. Diagnostics tab: parity, residual, importance and coefficient plots, ROC and precision-recall curves, learning curves.',
+  modeling: 'Train & test tab: split the rows into training, validation and test sets, train a model on the training rows, then test it on the held-out test rows. Diagnostics tab: parity, residual, importance and coefficient plots, ROC and precision-recall curves, learning curves. Compare models tab: every model side by side with its train, validation, CV and test scores; make one active or plot its parity.',
   export: 'Download the prepared dataset (CSV or Parquet), a trained model, the pipeline recipe (every step with its parameters) and an HTML report. Also SQL queries on the active version and the list of trained models.',
 };
 

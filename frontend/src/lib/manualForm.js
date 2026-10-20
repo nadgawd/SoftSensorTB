@@ -35,6 +35,9 @@ export function defaultFeatures(schema, target, timeColumn) {
 }
 
 function appDefault(field, schema, app) {
+  if (field.widget === 'model') {
+    return app.modelId && (schema?.models || []).some((m) => m.model_id === app.modelId) ? app.modelId : undefined
+  }
   const choices = new Set(columnChoices(field, schema))
   if (field.app_default === 'target') {
     return app.targetVariable && choices.has(app.targetVariable) ? app.targetVariable : undefined

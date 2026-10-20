@@ -127,6 +127,18 @@ export async function fetchVersionDiff(datasetVersionId) {
   return data
 }
 
+/** Models trained on this version or the versions it came from, newest first. */
+export async function fetchVersionModels(datasetVersionId) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/models`)
+  return data.models
+}
+
+/** One model's full report (as training returns it), to make it the active model. */
+export async function fetchModelReport(datasetVersionId, modelId) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/models/${modelId}`)
+  return data
+}
+
 /**
  * Download an export (the request needs the auth header, so it is fetched as a blob and saved).
  * `onProgress(fraction|null, loadedBytes)`; the file name comes from the server.

@@ -6,6 +6,7 @@ import DataQualityStep from './steps/DataQualityStep'
 import FeatureSelectionStep from './steps/FeatureSelectionStep'
 import ModelingStep from './steps/ModelingStep'
 import DiagnosticsTab from './steps/DiagnosticsTab'
+import CompareModelsTab from './steps/CompareModelsTab'
 import ExportStep from './steps/ExportStep'
 import VersionHistory from './VersionHistory'
 import ManualTools from './manual/ManualTools'
@@ -29,6 +30,7 @@ export default function StepContent({
   toolStep,
   modelTab,
   onModelTabChange,
+  onModelActivate,
   fileName,
   datasetVersionId,
   tablePreview,
@@ -90,6 +92,17 @@ export default function StepContent({
           <FeatureSelectionStep tablePreview={tablePreview} {...roleProps} />
         )
       case 'modeling':
+        if (modelTab === 'compare') {
+          return (
+            <CompareModelsTab
+              datasetVersionId={datasetVersionId}
+              modelMetrics={modelMetrics}
+              busy={columnActions?.busy}
+              onRunTool={columnActions?.run}
+              onActivate={onModelActivate}
+            />
+          )
+        }
         return modelTab === 'diagnostics' ? (
           <DiagnosticsTab modelMetrics={modelMetrics} plotHistory={plotHistory} />
         ) : (

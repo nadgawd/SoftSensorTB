@@ -107,8 +107,8 @@ export default function ManualTools({
     || stepTools[0]
 
   const app = useMemo(
-    () => ({ targetVariable, selectedFeatures, timeColumn }),
-    [targetVariable, selectedFeatures, timeColumn],
+    () => ({ targetVariable, selectedFeatures, timeColumn, modelId: modelKey }),
+    [targetVariable, selectedFeatures, timeColumn, modelKey],
   )
   const values = useMemo(
     () => (tool ? formValues(tool, edits[tool.name], schema, app) : {}),

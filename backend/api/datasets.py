@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import uuid
 from pathlib import Path
 from typing import Any, BinaryIO, Optional
@@ -13,6 +14,7 @@ import pyarrow.parquet as pq
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 
 from backend.agents.context import _is_numeric
 from backend.auth import User, get_current_user
@@ -20,7 +22,8 @@ from backend.database import AsyncSessionLocal
 from backend.mcp_server.eda_tools import _load_dataframe, _resolve_storage_path, _write_parquet
 from backend.mcp_server.manipulation_tools import owner_datasets
 from backend.mcp_server.model_registry import lineage_models
-from backend.models import Dataset, DatasetVersion
+from backend.mcp_server.modeling_tools import _load_model_artifact, _model_report
+from backend.models import Dataset, DatasetVersion, TrainedModel
 from backend.services.lineage_service import (
     LineageService,
     build_parquet_path,
@@ -30,6 +33,7 @@ from backend.services.profile import cached_profile
 from backend.services.projects import evict_old_datasets, owned_dataset, owned_version
 
 router = APIRouter(tags=["datasets"])
+logger = logging.getLogger(__name__)
 
 _PREVIEW_ROWS = 50
 
@@ -310,6 +314,60 @@ async def version_schema(
             "models": models,
             "datasets": datasets,
         }
+
+
+@router.get("/datasets/versions/{dataset_version_id}/models")
+async def version_models(
+    dataset_version_id: str,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Models trained on this version or the versions it came from, newest first, with their scores."""
+    async with AsyncSessionLocal() as session:
+        version = await owned_version(session, dataset_version_id, user)
+        await _backfill_training_scores(session, version.dataset_id)
+        return {"models": await lineage_models(session, str(version.id))}
+
+
+async def _backfill_training_scores(session, dataset_id: uuid.UUID) -> None:
+    """Models saved before the index kept training scores get them from their artifact, once."""
+    rows = await session.execute(select(TrainedModel).where(TrainedModel.dataset_id == dataset_id))
+    stale = [row for row in rows.scalars().all() if "train" not in (row.meta or {})]
+    for row in stale:
+        try:
+            artifact = await run_in_threadpool(_load_model_artifact, row.artifact_key)
+        except Exception:  # noqa: BLE001 — a missing or unreadable file leaves the scores blank
+            logger.warning("Could not read model %s for its training scores", row.id, exc_info=True)
+            continue
+        row.meta = {
+            **(row.meta or {}),
+            "train": artifact.get("train") or None,
+            "n_train": artifact.get("train_size"),
+            "n_test": artifact.get("test_size"),
+        }
+    if stale:
+        await session.commit()
+
+
+@router.get("/datasets/versions/{dataset_version_id}/models/{model_id}")
+async def model_report(
+    dataset_version_id: str,
+    model_id: str,
+    user: User = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Everything the Model step shows about one model (the same report training returns)."""
+    async with AsyncSessionLocal() as session:
+        version = await owned_version(session, dataset_version_id, user)
+        try:
+            row = await session.get(TrainedModel, uuid.UUID(model_id))
+        except ValueError:
+            row = None
+        if row is None or row.dataset_id != version.dataset_id:
+            raise HTTPException(status_code=404, detail="Model not found.")
+        try:
+            artifact = await run_in_threadpool(_load_model_artifact, row.artifact_key)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="The model file is missing.") from exc
+        return _model_report(artifact)
 
 
 @router.get("/datasets/versions/{dataset_version_id}/profile")

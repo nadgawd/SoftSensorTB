@@ -40,7 +40,10 @@ def _meta_from_artifact(artifact: dict[str, Any], trained_at: str) -> dict[str, 
         "rmse": metrics.get("rmse"),
         "hyperparameters": dict(artifact.get("hyperparameters") or {}),
         "cv": {k: v for k, v in (artifact.get("cv") or {}).items() if k != "folds"} or None,
+        "train": artifact.get("train") or None,
         "validation": artifact.get("validation") or None,
+        "n_train": artifact.get("train_size"),
+        "n_test": artifact.get("test_size"),
         "trained_at": artifact.get("trained_at") or trained_at,
     }
 
