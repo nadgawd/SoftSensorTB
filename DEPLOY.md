@@ -186,8 +186,13 @@ reachable.
 - **Render deploy never starts.** It waits for the *Backend CI* checks on the
   commit; see the *Actions* tab. A commit that touches only the frontend does
   not redeploy the API.
-- **Service restarts with "out of memory".** A large upload or training ran
-  past 512 MB. Lower `MAX_UPLOAD_MB`, or move to Render's paid 2 GB instance.
+- **Service restarts with "out of memory".** Uploads have no size cap, so a
+  large file can push the parsed table (several times the file size in RAM)
+  past the free instance's 512 MB. Move to a larger Render instance for big
+  plant datasets.
+- **"The dataset file is larger than the storage bucket accepts."** Supabase
+  caps each stored file (50 MB on the free plan). Raise the global limit under
+  Storage → Settings (paid plans) and the `sst-data` bucket's own limit.
 - **"Your session has expired" (401).** The browser's token is older than the
   API accepts or Supabase keys were rotated; reloading signs in again. Check
   `SUPABASE_URL` matches the frontend's.

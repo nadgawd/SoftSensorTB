@@ -1,8 +1,9 @@
 """Request limits for the public deployment.
 
-Chat turns spend LLM credit and uploads spend storage, so both are capped per
-user. The window is kept in process memory: the backend runs as one replica,
-and a restart forgetting the counts is harmless.
+Chat turns spend LLM credit, so they are capped per user. Uploads are not
+size-capped: plant historian exports can be very large. The window is kept in
+process memory: the backend runs as one replica, and a restart forgetting the
+counts is harmless.
 """
 
 from __future__ import annotations
@@ -19,10 +20,6 @@ def _env_int(name: str, default: int) -> int:
         return int(os.getenv(name, str(default)))
     except ValueError:
         return default
-
-
-def max_upload_bytes() -> int:
-    return _env_int("MAX_UPLOAD_MB", 25) * 1024 * 1024
 
 
 def chat_limit_per_hour() -> int:

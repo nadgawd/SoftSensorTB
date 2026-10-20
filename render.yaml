@@ -25,10 +25,6 @@ services:
         value: https://nadgawd.github.io
       - key: SUPABASE_URL
         value: https://qqawziocwyecgzozbmll.supabase.co
-      # The free instance has 512 MB of RAM; a parsed upload takes several
-      # times its file size.
-      - key: MAX_UPLOAD_MB
-        value: "10"
       - key: STORAGE_CACHE_MB
         value: "256"
       - key: DATABASE_URL

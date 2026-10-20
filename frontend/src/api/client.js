@@ -89,6 +89,8 @@ export async function uploadDataset(file, { keepVersionId } = {}) {
   form.append('file', file)
   const { data } = await api.post('/datasets/upload', form, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    // Large plant exports can take longer than the default request timeout.
+    timeout: 0,
     params: keepVersionId ? { keep_version_id: keepVersionId } : undefined,
   })
   return data

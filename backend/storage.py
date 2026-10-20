@@ -142,13 +142,20 @@ class SupabaseStorage:
         path = self._cache_path(key)
         path.parent.mkdir(parents=True, exist_ok=True)
         writer(path)
-        resp = self._client.post(
-            self._object_url(key),
-            content=path.read_bytes(),
-            headers={"Content-Type": "application/octet-stream", "x-upsert": "true"},
-        )
+        with path.open("rb") as body:
+            resp = self._client.post(
+                self._object_url(key),
+                content=body,
+                headers={"Content-Type": "application/octet-stream", "x-upsert": "true"},
+            )
         if resp.status_code >= 300:
+            size_mb = path.stat().st_size / (1024 * 1024)
             path.unlink(missing_ok=True)
+            if resp.status_code == 413 or "maximum allowed size" in resp.text.lower():
+                raise RuntimeError(
+                    f"The dataset file ({size_mb:.0f} MB) is larger than the storage bucket accepts. "
+                    "Raise the file size limit in Supabase (Storage → Settings, and the bucket's own limit)."
+                )
             raise RuntimeError(f"Storage upload failed ({resp.status_code}): {resp.text[:200]}")
         self._prune_cache()
 
@@ -156,15 +163,18 @@ class SupabaseStorage:
         path = self._cache_path(key)
         if path.exists():
             return path
-        resp = self._client.get(self._object_url(key))
-        # Supabase answers a missing object with 400 or 404.
-        if resp.status_code in (400, 404):
-            raise FileNotFoundError(f"Stored file missing: {key}")
-        if resp.status_code >= 300:
-            raise RuntimeError(f"Storage download failed ({resp.status_code}): {resp.text[:200]}")
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_name(f".{path.name}.part")
-        tmp.write_bytes(resp.content)
+        with self._client.stream("GET", self._object_url(key)) as resp:
+            # Supabase answers a missing object with 400 or 404.
+            if resp.status_code in (400, 404):
+                raise FileNotFoundError(f"Stored file missing: {key}")
+            if resp.status_code >= 300:
+                resp.read()
+                raise RuntimeError(f"Storage download failed ({resp.status_code}): {resp.text[:200]}")
+            with tmp.open("wb") as out:
+                for chunk in resp.iter_bytes(1024 * 1024):
+                    out.write(chunk)
         tmp.replace(path)
         self._prune_cache()
         return path

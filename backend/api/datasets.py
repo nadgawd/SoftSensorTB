@@ -5,17 +5,17 @@ from __future__ import annotations
 import io
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, BinaryIO, Optional
 
 import pandas as pd
 import pyarrow.parquet as pq
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from backend.agents.context import _is_numeric
 from backend.auth import User, get_current_user
 from backend.database import AsyncSessionLocal
-from backend.limits import max_upload_bytes
 from backend.mcp_server.eda_tools import _load_dataframe, _resolve_storage_path, _write_parquet
 from backend.mcp_server.manipulation_tools import owner_datasets
 from backend.mcp_server.model_registry import lineage_models
@@ -76,9 +76,8 @@ def _df_preview(df: pd.DataFrame, limit: int = 50) -> list[dict[str, Any]]:
     return preview.astype(object).where(pd.notnull(preview), None).to_dict(orient="records")
 
 
-def _read_upload_dataframe(filename: str, raw: bytes) -> pd.DataFrame:
+def _read_upload_dataframe(filename: str, buffer: BinaryIO) -> pd.DataFrame:
     name = filename.lower()
-    buffer = io.BytesIO(raw)
     if name.endswith(".csv"):
         return pd.read_csv(buffer)
     if name.endswith(".txt"):
@@ -121,18 +120,16 @@ async def upload_dataset(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename.")
 
-    limit = max_upload_bytes()
-    raw = await file.read(limit + 1)
-    if len(raw) > limit:
-        raise HTTPException(
-            status_code=413,
-            detail=f"File is larger than the {limit // (1024 * 1024)} MB upload limit.",
-        )
-    if not raw:
+    # Starlette spools the upload to a temporary file on disk, so it is parsed
+    # from there instead of being copied into memory first.
+    buffer = file.file
+    buffer.seek(0, io.SEEK_END)
+    if buffer.tell() == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+    buffer.seek(0)
 
     try:
-        df = _read_upload_dataframe(file.filename, raw)
+        df = await run_in_threadpool(_read_upload_dataframe, file.filename, buffer)
     except HTTPException:
         raise
     except Exception as exc:  # noqa: BLE001

@@ -55,7 +55,7 @@ def client(monkeypatch, storage):
     monkeypatch.setenv("AUTH_REQUIRED", "true")
     monkeypatch.setenv("SUPABASE_URL", SUPABASE_URL)
     for name in ("SUPABASE_JWT_SECRET", "MAX_DATASETS_PER_USER", "CHAT_RATE_LIMIT_PER_HOUR",
-                 "MAX_UPLOAD_MB", "MAX_PROJECT_STATE_MB"):
+                 "MAX_PROJECT_STATE_MB"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(auth, "_jwks_client", lambda url: FakeJWKS())
     chat_limiter.reset()
@@ -194,11 +194,21 @@ def test_oldest_dataset_is_evicted_past_the_cap(client, storage, monkeypatch):
         assert client.get(f"/datasets/{up['dataset_id']}/history", headers=h).status_code == 200
 
 
-def test_upload_size_is_capped(client, monkeypatch):
-    monkeypatch.setattr(datasets_api, "max_upload_bytes", lambda: len(CSV) - 1)
+def test_large_upload_is_accepted(client):
+    """No upload size cap: a multi-megabyte file (spooled to disk by Starlette) is ingested whole."""
+    rows = 150_000
+    big = "t,x,y\n" + "".join(f"{i},{i * 0.5},{i % 7}\n" for i in range(rows))
+    assert len(big) > 2 * 1024 * 1024
     resp = client.post("/datasets/upload", headers=as_user(new_user()),
-                       files={"file": ("data.csv", CSV, "text/csv")})
-    assert resp.status_code == 413
+                       files={"file": ("big.csv", big.encode(), "text/csv")})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["row_count"] == rows
+
+
+def test_empty_upload_is_rejected(client):
+    resp = client.post("/datasets/upload", headers=as_user(new_user()),
+                       files={"file": ("empty.csv", b"", "text/csv")})
+    assert resp.status_code == 400
 
 
 def test_project_state_size_is_capped(client, monkeypatch):
