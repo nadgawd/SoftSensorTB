@@ -13,6 +13,7 @@ import {
 import { useColumnRoles } from './hooks/useColumnRoles'
 import ChangeToast from './components/ChangeToast'
 import ToolPalette from './components/ToolPalette'
+import DataSummaryBar from './components/DataSummaryBar'
 import { shortcutLabel } from './utils/keys'
 import { actionLabel } from './utils/versions'
 import { usePersisted, clearPersistedSession } from './hooks/usePersisted'
@@ -585,6 +586,16 @@ export default function App() {
             <Sparkles size={14} aria-hidden="true" /> <span className="btn-label">Assistant</span>
           </button>
         </header>
+
+        {hasSession && (
+          <DataSummaryBar
+            profile={profile}
+            rowCount={previewMeta.rowCount}
+            columnCount={tablePreview?.length ? Object.keys(tablePreview[0]).length : null}
+            targetVariable={targetVariable}
+            onOpenQuality={() => handleStepChange('quality')}
+          />
+        )}
 
         {/* Step content */}
         <StepContent

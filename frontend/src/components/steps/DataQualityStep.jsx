@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { formatCount, formatDuration } from '../../utils/format'
+import { formatCount, formatDuration, formatTime } from '../../utils/format'
 
 const STATUS = {
   ok: { label: 'OK', cls: 'badge-success' },
@@ -27,10 +27,6 @@ function formatNumber(v) {
   if (v === null || v === undefined) return '—'
   const a = Math.abs(v)
   return a !== 0 && (a >= 1e5 || a < 1e-3) ? v.toExponential(2) : Number(v.toPrecision(4)).toString()
-}
-
-function formatTime(iso) {
-  return iso ? iso.replace('T', ' ').replace(/(:\d\d)(\.\d+)?(\+00:00|Z)?$/, '$1') : '—'
 }
 
 /**

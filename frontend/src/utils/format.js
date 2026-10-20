@@ -16,6 +16,11 @@ export function formatDuration(seconds) {
   return `${seconds} s`
 }
 
+/** ISO timestamp → "2024-01-01 06:30:00" (no fraction, no zone); empty → "—". */
+export function formatTime(iso) {
+  return iso ? iso.replace('T', ' ').replace(/(:\d\d)(\.\d+)?(\+00:00|Z)?$/, '$1') : '—'
+}
+
 /** Bytes → "12.3 MB". */
 export function formatBytes(bytes) {
   if (!Number.isFinite(bytes)) return '—'
