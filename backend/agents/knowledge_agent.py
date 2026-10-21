@@ -15,6 +15,7 @@ from backend.agents.context import (
     render_tool_history,
 )
 from backend.agents.llm_client import get_llm_client
+from backend.agents.router import SCOPE_RULE
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _failure_message(err: Exception, partial: bool) -> str:
         f"Please try again in a minute.*\n\n`{type(err).__name__}: {str(err)[:200]}`"
     )
 
-_BASE_SYSTEM_PROMPT = """You are a senior chemical engineering and soft-sensor expert embedded \
+_BASE_SYSTEM_PROMPT = f"""You are a senior chemical engineering and soft-sensor expert embedded \
 in the Soft Sensor Toolbox workbench.
 Provide clear, high-reasoning conceptual explanations about process data analytics,
 EDA, PLS/OLS soft sensors, parity plots, preprocessing, and related ML concepts.
@@ -39,6 +40,7 @@ Rules:
 - Prefer precise engineering language with brief intuition when helpful.
 - If the user should instead run a data/ML action in the toolbox, say so briefly.
 - Format your answer with markdown (headers, bold, lists) for readability.
+- {SCOPE_RULE}
 """
 
 

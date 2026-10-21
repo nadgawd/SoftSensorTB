@@ -11,8 +11,10 @@ const EMPTY_LIVE = { intent: null, status: 'Sending', steps: [], draft: '', reas
 
 /** Earlier turns sent with each request so the assistant can resolve follow-ups. */
 function toHistory(messages) {
+  // A refused question is left out too, so a follow-up cannot pick it up again.
+  const refused = (i) => messages.slice(i + 1).find((m) => m.role === 'assistant')?.intent === 'OFF_TOPIC'
   return messages
-    .filter((m) => m.role === 'user' || m.intent === 'EXECUTE' || m.intent === 'RAG')
+    .filter((m, i) => (m.role === 'user' && !refused(i)) || m.intent === 'EXECUTE' || m.intent === 'RAG')
     .filter((m) => m.content && !m.content.startsWith('*Generation stopped'))
     .slice(-HISTORY_TURNS)
     .map((m) => ({

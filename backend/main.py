@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from backend.agents.execution_agent import run_execution_agent
 from backend.agents.knowledge_agent import run_knowledge_agent
-from backend.agents.router import classify_intent
+from backend.agents.router import OFF_TOPIC_REPLY, classify_intent
 from backend.api.datasets import router as datasets_router
 from backend.api.exports import router as exports_router
 from backend.api.project import router as project_router
@@ -210,6 +210,18 @@ async def chat(request: ChatRequest, user: User = Depends(get_current_user)) -> 
 
     async def event_generator():
         yield f"data: {json.dumps({'event': 'intent', 'data': intent})}\n\n"
+        if intent == "OFF_TOPIC":
+            yield f"data: {json.dumps({'event': 'token', 'data': OFF_TOPIC_REPLY})}\n\n"
+            final = {
+                "ui_update_required": False,
+                "active_dataset_version_id": request.dataset_version_id,
+                "plot_data": None,
+                "table_preview": None,
+                "model_metrics": None,
+                "tool_calls_made": [],
+            }
+            yield f"data: {json.dumps({'event': 'final_state', 'data': final})}\n\n"
+            return
         route = "execution agent (tools)" if intent == "EXECUTE" and request.dataset_version_id else "knowledge agent"
         yield f"data: {json.dumps({'event': 'status', 'data': f'Routed to the {route}'})}\n\n"
 

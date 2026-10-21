@@ -7,6 +7,7 @@ intent no matter how good the router model is. These cases pin that layer down.
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -59,12 +60,35 @@ RULE_CASES = [
     ("how do i drop nulls", "EXECUTE"),
     ("how well does my model perform", "EXECUTE"),
     ("just drop the duplicate rows", "EXECUTE"),  # lead-in must not swallow the verb
+    # --- off-topic: the assistant is not a general coding or writing helper ---
+    ("reverse a linked list", "OFF_TOPIC"),
+    ("how do I reverse a linked list in python", "OFF_TOPIC"),
+    ("write a python program to reverse a string", "OFF_TOPIC"),
+    ("implement merge sort", "OFF_TOPIC"),         # "merge" and "sort" are data verbs too
+    ("explain recursion", "OFF_TOPIC"),
+    ("write a binary search in java", "OFF_TOPIC"),
+    ("solve leetcode two sum", "OFF_TOPIC"),
+    ("what is a hash map", "OFF_TOPIC"),
+    ("write a function to compute fibonacci numbers", "OFF_TOPIC"),
+    ("give me code for a todo app in react", "OFF_TOPIC"),
+    ("build me a website", "OFF_TOPIC"),
+    ("write an essay on climate change", "OFF_TOPIC"),
+    ("do it in python", "OFF_TOPIC"),
+    # --- in scope despite sharing words with the off-topic list ---
+    ("sort the rows by time", "EXECUTE"),
+    ("merge my datasets", "EXECUTE"),
+    ("write python code to train a PLS model", "EXECUTE"),
+    ("resume training", "EXECUTE"),
+    ("how does a distillation column work", "RAG"),
 ]
 
 # Genuinely ambiguous turns belong to the model, not the regexes.
 AMBIGUOUS = [
     "is PLS better than PCR for my data",
     "tell me about my data",
+    "explain quantum computing",      # phrased like theory, but not this toolbox's theory
+    "how does a car engine work",
+    "hi",
 ]
 
 
@@ -124,3 +148,30 @@ def test_only_valid_intents_are_returned(monkeypatch) -> None:
     monkeypatch.setattr("backend.agents.router.get_llm_client", lambda **kw: _Client())
     intent = asyncio.run(classify_intent(AMBIGUOUS[0], has_dataset=True))
     assert intent in {"EXECUTE", "RAG"}
+
+
+@pytest.mark.parametrize("reply", ["OFF_TOPIC", "off-topic"])
+def test_router_model_can_rule_a_turn_off_topic(reply: str, monkeypatch) -> None:
+    class _Completions:
+        async def create(self, **kwargs):
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=reply))])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    monkeypatch.setattr("backend.agents.router.get_llm_client", lambda **kw: client)
+    assert asyncio.run(classify_intent("explain quantum computing", has_dataset=True)) == "OFF_TOPIC"
+
+
+def test_off_topic_beats_an_execute_follow_up(monkeypatch) -> None:
+    """After a data command, a no-cue turn stays EXECUTE — but not a coding exercise."""
+    monkeypatch.setattr("backend.agents.router.get_llm_client", lambda **kw: pytest.fail("LLM called"))
+    intent = asyncio.run(classify_intent("now reverse a linked list", has_dataset=True, previous_intent="EXECUTE"))
+    assert intent == "OFF_TOPIC"
+
+
+def test_agents_carry_the_scope_rule() -> None:
+    from backend.agents.execution_agent import _execution_system_prompt
+    from backend.agents.knowledge_agent import _system_prompt
+    from backend.agents.router import OFF_TOPIC_REPLY
+
+    assert OFF_TOPIC_REPLY in _system_prompt()
+    assert OFF_TOPIC_REPLY in _execution_system_prompt(None, {})

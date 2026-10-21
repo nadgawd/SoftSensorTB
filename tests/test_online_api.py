@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 import uuid
 from types import SimpleNamespace
@@ -229,6 +230,27 @@ def test_chat_is_rate_limited_per_user(client, monkeypatch):
     assert limited.status_code == 429
     assert int(limited.headers["Retry-After"]) > 0
     assert client.post("/chat", headers=as_user(alice), json={**body, "dataset_version_id": str(uuid.uuid4())}).status_code == 404
+
+
+def test_off_topic_chat_is_refused_without_any_model(client, monkeypatch):
+    from backend.agents.router import OFF_TOPIC_REPLY
+
+    def _no_llm(*args, **kwargs):  # pragma: no cover - must never run
+        raise AssertionError("an LLM was called for an off-topic message")
+
+    for target in ("backend.agents.router.get_llm_client", "backend.main.run_knowledge_agent",
+                   "backend.main.run_execution_agent"):
+        monkeypatch.setattr(target, _no_llm)
+    alice = new_user()
+    version = upload(client, alice)["dataset_version_id"]
+    resp = client.post("/chat", headers=as_user(alice),
+                       json={"message": "reverse a linked list in C++", "dataset_version_id": version})
+    assert resp.status_code == 200
+    events = [json.loads(line[len("data: "):]) for line in resp.text.splitlines() if line.startswith("data: ")]
+    assert events[0] == {"event": "intent", "data": "OFF_TOPIC"}
+    assert "".join(e["data"] for e in events if e["event"] == "token") == OFF_TOPIC_REPLY
+    assert events[-1]["event"] == "final_state"
+    assert events[-1]["data"]["ui_update_required"] is False
 
 
 def test_local_mode_needs_no_token(client, monkeypatch):

@@ -18,6 +18,7 @@ from backend.agents.context import (
     render_ui_state,
 )
 from backend.agents.llm_client import get_llm_client
+from backend.agents.router import SCOPE_RULE
 from backend.agents.tool_selection import select_schemas
 from backend.agents.ui_tools import SET_MODEL_FEATURES, UI_TOOL_SCHEMAS, apply_feature_selection
 from backend.mcp_server import LLM_TOOL_SCHEMAS, TOOL_FUNCTIONS
@@ -180,6 +181,7 @@ Rules:
 - The final answer is a concise engineering summary of what was done and the
   key results (column names, row counts, metric values). Do not claim UI
   updates that the tools did not produce.
+- {SCOPE_RULE}
 """
 
 
