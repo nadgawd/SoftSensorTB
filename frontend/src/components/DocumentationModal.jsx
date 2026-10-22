@@ -9,6 +9,19 @@ const STEP_BLURBS = {
   'feature-selection': 'Choose the inputs (SelectKBest, RFE, model importance, permutation, SHAP), drop collinear or unwanted columns, and reduce dimensions (PCA, SVD, t-SNE…).',
   modeling: 'Train & test tab: split the rows into training, validation and test sets, train a model on the training rows, then test it on the held-out test rows. Diagnostics tab: parity, residual, importance and coefficient plots, ROC and precision-recall curves, learning curves. Compare models tab: every model side by side with its train, validation, CV and test scores; make one active or plot its parity.',
   export: 'Download the prepared dataset (CSV or Parquet), a trained model, the pipeline recipe (every step with its parameters) and an HTML report. Also SQL queries on the active version and the list of trained models.',
+  deployment: 'Put a trained model on live plant data: readings arrive over an API, every pipeline step is replayed on them, and each prediction comes back checked and corrected with lab results.',
+};
+
+/** Steps with no tools of their own get a short guide instead of a tool list. */
+const STEP_GUIDES = {
+  deployment: [
+    ['Plan', 'Pick a trained model. Every step between the upload and the model is checked: steps run as is, with values learnt in training (means, scalers, caps, categories), or on recent rows (lags, windows). Three checks must pass: the steps reproduce the training inputs, only the live columns give the same inputs, and rows sent a few at a time with the kept history give them too. Steps that cannot run on live rows block the deployment and are named.'],
+    ['Live data', 'Plant sensors reach a PLC or DCS, then a historian, OPC UA server or MQTT broker. A connector next to the plant reads the inputs every cycle and sends them over HTTPS (outbound only) to POST /live/{id}/predict with the X-API-Key header, oldest first. Rows not newer than the last one are ignored, so resending after a reconnect is safe.'],
+    ['Each prediction', 'Comes back as ok, warning or suppressed. Warning: an input is outside the training range, a sensor is stuck, a category is new, an input was filled in, or T² / SPE is above its 99% training limit (the inputs are far from, or break the relationships of, the training data). Suppressed, with no value: a filter step removes the row, a required input is missing, there is not enough history yet, or a step fails.'],
+    ['Lab results', 'POST /live/{id}/lab with the sample time and value. Each is matched to the prediction for that time; the bias becomes (1 − gain)·bias + gain·(lab − prediction) and is added to later predictions. A sample whose prediction was suppressed does not change the bias. The Monitor tab raises an alarm when the error of the last 20 lab results is more than twice the test RMSE.'],
+    ['Connector', 'Download it from the Connect tab: a Python script with its config for CSV exports, OPC UA, MQTT or the PI Web API. It keeps rows on disk while the network is down, sends lab results, and can write the prediction back to a tag. Run it with --check first.'],
+    ['Simulate', 'Replays this dataset through the live endpoint, with lab values arriving some rows later, to see the whole loop before connecting a plant.'],
+  ],
 };
 
 const EXTRA_NODES = [
@@ -82,6 +95,7 @@ function buildTree(tools, manualSpecs) {
     number: i + 1,
     label: step.label,
     blurb: STEP_BLURBS[step.id] || step.description,
+    guide: STEP_GUIDES[step.id],
     items: known.filter((s) => s.steps.some((id) => uiPlaceOf(id).step === step.id)).map(withLabel),
   }));
   nodes.push({ ...EXTRA_NODES[0], number: '◫', items: known.filter((s) => !s.steps.length && s.panel).map(withLabel) });
@@ -90,7 +104,11 @@ function buildTree(tools, manualSpecs) {
     number: '✦',
     items: tools.filter((t) => !specs.has(t.function?.name)).map((t) => ({ ...t, label: t.function?.name })),
   });
-  return nodes.filter((n) => n.items.length);
+  return nodes.filter((n) => n.items.length || n.guide);
+}
+
+function guideMatches(node, query) {
+  return Boolean(node.guide) && [node.label, node.blurb, ...node.guide.flat()].join(' ').toLowerCase().includes(query);
 }
 
 export default function DocumentationModal({ onClose, manualSpecs }) {
@@ -117,10 +135,12 @@ export default function DocumentationModal({ onClose, manualSpecs }) {
   const tree = useMemo(() => buildTree(tools, manualSpecs), [tools, manualSpecs]);
   const q = query.trim().toLowerCase();
   const visible = useMemo(
-    () => tree.map((n) => ({ ...n, items: n.items.filter((t) => matchesQuery(t, q)) })).filter((n) => n.items.length),
+    () => tree
+      .map((n) => ({ ...n, items: n.items.filter((t) => matchesQuery(t, q)), guide: !q || guideMatches(n, q) ? n.guide : null }))
+      .filter((n) => n.items.length || n.guide),
     [tree, q],
   );
-  const matchCount = visible.reduce((n, s) => n + s.items.length, 0);
+  const matchCount = visible.reduce((n, s) => n + s.items.length + (s.guide ? 1 : 0), 0);
   const allOpen = visible.length > 0 && visible.every((n) => openSteps.has(n.id));
 
   const toggle = (setter, id) => setter((prev) => {
@@ -191,13 +211,22 @@ export default function DocumentationModal({ onClose, manualSpecs }) {
                         <span className="doc-step-text">
                           <span className="doc-step-label">
                             {node.label}
-                            <span className="doc-step-count">{node.items.length} tool{node.items.length === 1 ? '' : 's'}</span>
+                            <span className="doc-step-count">
+                              {node.items.length ? `${node.items.length} tool${node.items.length === 1 ? '' : 's'}` : 'guide'}
+                            </span>
                           </span>
                           <span className="doc-step-blurb">{node.blurb}</span>
                         </span>
                         <span className="doc-chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
                       </button>
-                      {open && (
+                      {open && node.guide && (
+                        <dl className="doc-guide">
+                          {node.guide.map(([title, text]) => (
+                            <div key={title}><dt>{title}</dt><dd>{text}</dd></div>
+                          ))}
+                        </dl>
+                      )}
+                      {open && node.items.length > 0 && (
                         <ul className="doc-tools">
                           {node.items.map((tool) => (
                             <ToolNode

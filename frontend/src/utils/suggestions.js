@@ -124,6 +124,15 @@ export function getSuggestions(step, ctx = {}) {
         'What deployment considerations should I be aware of?',
       ]
 
+    case 'deployment':
+      return [
+        'How does live data reach a deployed soft sensor?',
+        'What do the T² and SPE warnings mean?',
+        'Why would a live prediction be suppressed?',
+        'How does the bias correction from lab results work?',
+        'How do I connect an OPC UA server or a PI historian?',
+      ]
+
     default:
       return []
   }

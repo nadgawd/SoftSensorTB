@@ -51,6 +51,8 @@ export default function StepSidebar({
         return typeof modelMetrics.r2_score === 'number'
           ? [`${modelMetrics.algorithm} · test R² ${modelMetrics.r2_score.toFixed(2)}`, modelMetrics.r2_score >= 0.5 ? 'ok' : 'warn']
           : [`${modelMetrics.algorithm} · not tested yet`, 'warn']
+      case 'deployment':
+        return [modelMetrics ? 'Put a model on live data' : 'Needs a trained model']
       default:
         return [null]
     }

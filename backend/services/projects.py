@@ -16,8 +16,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.auth import User, auth_required
+from backend.deployment import service as deployment_service
 from backend.mcp_server.eda_tools import _validate_uuid_str
-from backend.models import Dataset, DatasetVersion, ProjectState, TrainedModel
+from backend.models import Dataset, DatasetVersion, Deployment, ProjectState, TrainedModel
 from backend.storage import get_storage
 
 
@@ -54,10 +55,15 @@ async def _delete_datasets(session: AsyncSession, datasets: Sequence[Dataset]) -
     version_keys = (
         await session.execute(select(DatasetVersion.file_path).where(DatasetVersion.dataset_id.in_(ids)))
     ).scalars().all()
-    model_keys = (
-        await session.execute(select(TrainedModel.artifact_key).where(TrainedModel.dataset_id.in_(ids)))
-    ).scalars().all()
+    model_rows = (
+        await session.execute(select(TrainedModel.id, TrainedModel.artifact_key).where(TrainedModel.dataset_id.in_(ids)))
+    ).all()
+    model_keys = [key for _, key in model_rows]
     # SQLite does not enforce ON DELETE CASCADE unless asked to, so children go first.
+    bundle_keys = await deployment_service.delete_deployment_rows(
+        session, await deployment_service.deployments_of_datasets(session, ids)
+    )
+    deployment_service.forget_models([str(model_id) for model_id, _ in model_rows])
     await session.execute(delete(TrainedModel).where(TrainedModel.dataset_id.in_(ids)))
     await session.execute(
         DatasetVersion.__table__.update()
@@ -67,7 +73,7 @@ async def _delete_datasets(session: AsyncSession, datasets: Sequence[Dataset]) -
     await session.execute(delete(DatasetVersion).where(DatasetVersion.dataset_id.in_(ids)))
     await session.execute(delete(Dataset).where(Dataset.id.in_(ids)))
     await session.flush()
-    get_storage().delete([*version_keys, *model_keys])
+    get_storage().delete([*version_keys, *model_keys, *bundle_keys])
 
 
 async def delete_project(session: AsyncSession, user: User) -> dict[str, Any]:
@@ -100,16 +106,24 @@ async def evict_old_datasets(
 
     ``protect`` (a dataset id, e.g. the one open in the workbench while a second
     file is uploaded to combine with it) is never evicted; it takes one of the
-    ``keep`` places.
+    ``keep`` places. Datasets with a deployment are never evicted either (a
+    plant may be sending live data to it) and do not count; deployments are
+    capped separately.
     """
     keep = max_datasets_per_user() if keep is None else keep
     if keep <= 0:
         return 0
-    datasets = (
-        await session.execute(
-            select(Dataset).where(Dataset.owner_id == user.id).order_by(Dataset.created_at.desc())
-        )
-    ).scalars().all()
+    deployed = set(
+        (await session.execute(select(Deployment.dataset_id).where(Deployment.owner_id == user.id))).scalars().all()
+    )
+    datasets = [
+        d for d in (
+            await session.execute(
+                select(Dataset).where(Dataset.owner_id == user.id).order_by(Dataset.created_at.desc())
+            )
+        ).scalars().all()
+        if d.id not in deployed
+    ]
     if protect is not None and any(d.id == protect for d in datasets):
         others = [d for d in datasets if d.id != protect]
         stale = others[max(keep - 2, 0):]

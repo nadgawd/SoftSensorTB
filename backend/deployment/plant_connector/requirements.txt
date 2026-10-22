@@ -1,0 +1,5 @@
+requests>=2.28
+# Only for source.type "opcua":
+# asyncua>=1.1
+# Only for source.type "mqtt":
+# paho-mqtt>=2.0

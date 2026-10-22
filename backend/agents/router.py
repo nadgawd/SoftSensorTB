@@ -104,7 +104,9 @@ _DOMAIN_RE = re.compile(
     r"scal\w*|standardi[sz]\w*|normali[sz]\w*|plots?|charts?|graphs?|parity|residual\w*|"
     r"train\w*|test\w*|validat\w*|metrics?|accuracy|error|bias|overfit\w*|underfit\w*|"
     r"pls|pca|pcr|ols|mlr|knn|k[\s-]nn|ridge|lasso|rmse|mae|r2|r²|shap|vip|"
-    r"toolbox|tools?|steps?|upload\w*|export\w*|csv|parquet|sql|quer\w*|duckdb"
+    r"toolbox|tools?|steps?|upload\w*|export\w*|csv|parquet|sql|quer\w*|duckdb|"
+    r"deploy\w*|live|real[\s-]?time|online|predict\w*|connectors?|historians?|opc(?:[\s-]?ua)?|mqtt|"
+    r"pi\s+web\s+api|scada|dcs|plc|lims|api\s+keys?|endpoints?|drift|t2|t²|spe|hotelling"
     r")\b",
     re.IGNORECASE,
 )

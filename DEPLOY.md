@@ -118,7 +118,9 @@ whose GitHub checks pass.
 upload limit. The image sets `AUTH_REQUIRED=true`, `STORAGE_BACKEND=supabase`
 and `LLM_MODE=local_first`. Other optional limits (defaults in brackets):
 `CHAT_RATE_LIMIT_PER_HOUR` (40 per user), `MAX_DATASETS_PER_USER` (3; uploading
-a fourth deletes the oldest), `MAX_PROJECT_STATE_MB` (5).
+a fourth deletes the oldest), `MAX_PROJECT_STATE_MB` (5),
+`MAX_DEPLOYMENTS_PER_USER` (3 live deployments; 0 = no limit),
+`LIVE_RATE_LIMIT_PER_MINUTE` (120 live requests per deployment).
 
 **Free-plan limits.** 512 MB of RAM and a tenth of a CPU: fine for chat and
 datasets of a few MB, slow for large trainings. The service sleeps after 15
@@ -180,6 +182,35 @@ reachable.
    again: within about half a minute chats use the HPC model again.
 6. *New project*: the dataset, models, plots and chat are gone, and the
    Supabase bucket has no files left under that user's id.
+
+## Live deployments (Deployment step)
+
+A deployed model takes live readings at `<render url>/live/<id>/predict` and
+lab results at `<render url>/live/<id>/lab`, authenticated by the deployment's
+API key in the `X-API-Key` header (only its hash is stored). The plant side
+runs the connector downloaded from the Connect tab (Python; CSV, OPC UA, MQTT
+or PI Web API); it only makes outbound HTTPS requests and keeps rows on disk
+while the API is unreachable. Plant connectors call the API directly, so CORS
+does not apply to them.
+
+- **Free plan sleep.** A connector sending every minute keeps the service
+  awake. After a sleep the first request takes about a minute; the connector
+  times out, keeps the rows and sends them on the next cycle.
+- **Storage.** The deployment bundle is a file next to the dataset in the
+  storage bucket; predictions (the last 5000) and lab results (the last 2000)
+  per deployment are rows in Postgres. Datasets with a deployment are not
+  evicted by `MAX_DATASETS_PER_USER`; deleting the project deletes its
+  deployments.
+- **Checking it.** Train a model, open *Deployment*, deploy, and run
+  *Simulate*: the Monitor tab should fill with predictions and lab results.
+  For a real connector, `python softsensor_connector.py --check` reports
+  whether the key and the inputs are accepted.
+- **Restarts.** The tables are created at startup. Nothing is lost when the
+  service restarts; caches are rebuilt from the bundle on the next request.
+
+A fully on-premises package (API and connector inside the plant network, no
+cloud) is a possible later step for sites that do not allow outbound
+connections.
 
 ## Troubleshooting
 

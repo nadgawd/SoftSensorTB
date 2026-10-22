@@ -8,6 +8,7 @@ import ModelingStep from './steps/ModelingStep'
 import DiagnosticsTab from './steps/DiagnosticsTab'
 import CompareModelsTab from './steps/CompareModelsTab'
 import ExportStep from './steps/ExportStep'
+import DeploymentStep from './steps/DeploymentStep'
 import VersionHistory from './VersionHistory'
 import ManualTools from './manual/ManualTools'
 import ResultTable from './manual/ResultTable'
@@ -123,6 +124,8 @@ export default function StepContent({
             timeColumn={timeColumn}
           />
         )
+      case 'deployment':
+        return <DeploymentStep datasetVersionId={datasetVersionId} modelMetrics={modelMetrics} />
       default:
         return null
     }

@@ -10,6 +10,7 @@ export const STEPS = [
   { id: 'feature-selection', label: 'Feature selection', description: 'Pick the target and the input tags, and drop redundant ones.' },
   { id: 'modeling',          label: 'Model',             description: 'Split the data, train and test models, check them with diagnostic plots and compare them.' },
   { id: 'export',            label: 'Export',            description: 'Download the prepared data, the model, the pipeline recipe and a report.' },
+  { id: 'deployment',        label: 'Deployment',        description: 'Run a trained model on live plant data: connect the plant, watch the checked predictions, correct them with lab results.' },
 ]
 
 export const STEP_BY_ID = Object.fromEntries(STEPS.map((s, i) => [s.id, { ...s, number: i + 1 }]))

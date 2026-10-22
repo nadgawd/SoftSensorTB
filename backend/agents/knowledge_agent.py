@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, AsyncGenerator, Iterable, Optional
 
 from backend.agents.context import (
@@ -44,12 +45,39 @@ Rules:
 """
 
 
+DEPLOYMENT_NOTES = """How this toolbox deploys a model (the Deployment step):
+- Deploying compiles every step from the upload to the training data into steps that run on live rows. \
+Fitted steps (scaling, filling, encoding, PCA) reuse the values learnt on the training data. Window steps \
+(lags, rolling, EWM) keep a buffer of recent rows. Every step is checked to reproduce the stored version \
+exactly, and the whole chain is checked on the training rows, on the live columns only, and row by row as a stream.
+- A plant connector (a small Python script run next to the plant) reads the inputs from a CSV export, \
+OPC UA, MQTT or the PI Web API every cycle. It sends them over HTTPS with the deployment's API key \
+(outbound only) and can write the prediction back to a tag.
+- Each prediction has a status. It is ok, or warning when an input is outside the training range, a sensor \
+is stuck, or the plant is outside the training operating region (Hotelling T² or SPE above its 99% training \
+limit). It is suppressed when a training filter removes the row (such as a shutdown), when an input is \
+missing, or when there is not enough history yet. Repeated or older rows are ignored.
+- Lab results (with their sample time) are matched to the prediction at that time. They update a bias: \
+bias ← (1 − g)·bias + g·(lab − prediction), and the corrected value is prediction + bias. If the recent \
+lab error exceeds twice the test RMSE, the model should be retrained.
+- The Simulate panel replays the deployment's own data as a live feed to try all of this before connecting a plant."""
+
+_DEPLOYMENT_TOPIC = re.compile(
+    r"\b(?:deploy\w*|live|real[\s-]?time|connector|opc|mqtt|historian|pi\s+web|api\s+key|t2|t²|spe|"
+    r"hotelling|bias|drift|suppress\w*|simulat\w*)\b",
+    re.IGNORECASE,
+)
+
+
 def _system_prompt(
     step_hint: Optional[str] = None,
     ui_context: Optional[str] = None,
     dataset_context: Optional[str] = None,
+    user_input: Optional[str] = None,
 ) -> str:
     prompt = _BASE_SYSTEM_PROMPT
+    if (step_hint and "deploy" in step_hint.lower()) or (user_input and _DEPLOYMENT_TOPIC.search(user_input)):
+        prompt += "\n\n" + DEPLOYMENT_NOTES
     if dataset_context:
         prompt += (
             "\n\nThe user's loaded dataset, for grounding examples (only mention "
@@ -104,7 +132,7 @@ async def run_knowledge_agent(
                 {
                     "role": "system",
                     "content": _system_prompt(
-                        step_hint, ui_context, render_dataset_context(ctx) if ctx else None
+                        step_hint, ui_context, render_dataset_context(ctx) if ctx else None, user_input,
                     ) + (f"\n\n{tool_history}" if tool_history else ""),
                 },
                 *history_messages(history),

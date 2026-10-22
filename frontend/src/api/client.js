@@ -208,6 +208,79 @@ export async function saveProjectState(state) {
   return data
 }
 
+/** How a model would run on live rows: inputs, each step's live mode, checks, warnings, blockers. */
+export async function fetchDeploymentPlan(datasetVersionId, modelId) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/deployment-plan`, {
+    params: { model_id: modelId || undefined },
+    timeout: 0,
+  })
+  return data
+}
+
+/** `{ deployment, api_key }` — the key is only ever returned here and by rotateDeploymentKey. */
+export async function createDeployment({ datasetVersionId, modelId, name, biasGain }) {
+  const { data } = await api.post('/deployments', {
+    dataset_version_id: datasetVersionId,
+    model_id: modelId,
+    name: name || '',
+    bias_gain: biasGain,
+  }, { timeout: 0 })
+  return data
+}
+
+export async function fetchDeployments() {
+  const { data } = await api.get('/deployments')
+  return data
+}
+
+export async function fetchDeployment(deploymentId) {
+  const { data } = await api.get(`/deployments/${deploymentId}`)
+  return data
+}
+
+export async function updateDeployment(deploymentId, changes) {
+  const { data } = await api.patch(`/deployments/${deploymentId}`, changes)
+  return data
+}
+
+export async function deleteDeployment(deploymentId) {
+  const { data } = await api.delete(`/deployments/${deploymentId}`)
+  return data
+}
+
+export async function rotateDeploymentKey(deploymentId) {
+  const { data } = await api.post(`/deployments/${deploymentId}/rotate-key`)
+  return data
+}
+
+/** The latest records and lab results, and the lab accuracy. */
+export async function fetchDeploymentMonitor(deploymentId, limit = 500) {
+  const { data } = await api.get(`/deployments/${deploymentId}/monitor`, { params: { limit } })
+  return data
+}
+
+/** Rows of the deployment's own data in the live format, with the lab value of each row (or null). */
+export async function fetchSimulationRows(deploymentId, start, count) {
+  const { data } = await api.get(`/deployments/${deploymentId}/simulation`, { params: { start, count }, timeout: 0 })
+  return data
+}
+
+/** Send live rows as the owner (the in-app simulator); a plant connector sends its API key instead. */
+export async function sendLiveRows(deploymentId, rows) {
+  const { data } = await api.post(`/live/${deploymentId}/predict`, { rows })
+  return data.predictions
+}
+
+export async function sendLabResults(deploymentId, samples) {
+  const { data } = await api.post(`/live/${deploymentId}/lab`, { samples })
+  return data
+}
+
+/** The URL a plant connector posts to (the API's origin, which differs from the page's in production). */
+export function liveApiBase() {
+  return API_BASE_URL || window.location.origin
+}
+
 /** Delete the caller's datasets, models, files and saved state. */
 export async function deleteProject() {
   const { data } = await api.delete('/project', { timeout: 60_000 })

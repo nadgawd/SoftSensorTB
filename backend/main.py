@@ -17,6 +17,7 @@ from backend.agents.execution_agent import run_execution_agent
 from backend.agents.knowledge_agent import run_knowledge_agent
 from backend.agents.router import OFF_TOPIC_REPLY, classify_intent
 from backend.api.datasets import router as datasets_router
+from backend.api.deployments import router as deployments_router
 from backend.api.exports import router as exports_router
 from backend.api.project import router as project_router
 from backend.api.tools import router as tools_router
@@ -53,12 +54,13 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key"],
     expose_headers=["Retry-After", "Content-Disposition"],
 )
 
 app.include_router(datasets_router)
+app.include_router(deployments_router)
 app.include_router(exports_router)
 app.include_router(project_router)
 app.include_router(tools_router)

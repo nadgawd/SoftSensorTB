@@ -36,6 +36,10 @@ def model_key(owner_id: str, dataset_id: object, model_id: object) -> str:
     return f"{owner_id}/{dataset_id}/models/{model_id}.pkl"
 
 
+def deployment_key(owner_id: str, dataset_id: object, deployment_id: object) -> str:
+    return f"{owner_id}/{dataset_id}/deployments/{deployment_id}.pkl"
+
+
 def _check_key(key: str) -> str:
     parts = Path(key).parts
     if not key or Path(key).is_absolute() or any(p in {"..", ""} for p in parts):

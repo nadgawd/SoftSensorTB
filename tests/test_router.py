@@ -168,6 +168,28 @@ def test_off_topic_beats_an_execute_follow_up(monkeypatch) -> None:
     assert intent == "OFF_TOPIC"
 
 
+@pytest.mark.parametrize("utterance", [
+    "how does the live deployment handle a stuck sensor",
+    "what is OPC UA",
+    "how do I connect my historian to the deployment",
+    "what does the bias correction do",
+    "explain hotelling T2 and SPE",
+])
+def test_deployment_questions_are_in_scope(utterance: str) -> None:
+    from backend.agents.router import _is_off_topic, _mentions_domain
+
+    assert _mentions_domain(utterance) and not _is_off_topic(utterance)
+    assert _rule_based_intent(utterance) != "OFF_TOPIC"
+
+
+def test_deployment_notes_reach_the_knowledge_agent_only_when_relevant() -> None:
+    from backend.agents.knowledge_agent import DEPLOYMENT_NOTES, _system_prompt
+
+    assert DEPLOYMENT_NOTES in _system_prompt(step_hint="Deployment")
+    assert DEPLOYMENT_NOTES in _system_prompt(user_input="why is my live prediction suppressed?")
+    assert DEPLOYMENT_NOTES not in _system_prompt(step_hint="Data quality", user_input="what is a parity plot")
+
+
 def test_agents_carry_the_scope_rule() -> None:
     from backend.agents.execution_agent import _execution_system_prompt
     from backend.agents.knowledge_agent import _system_prompt

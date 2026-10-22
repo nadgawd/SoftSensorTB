@@ -19,6 +19,8 @@ const proxy = {
   '/project': backend,
   '/health': backend,
   '/api': backend,
+  '/deployments': backend,
+  '/live': backend,
 }
 
 // Tailscale Funnel/Serve forward requests with the machine's *.ts.net name as Host.
