@@ -39,7 +39,7 @@ STEPS = ("ingestion", "quality", "preprocessing", "feature-selection", "modeling
 
 MULTI_COLUMN_FIELDS = frozenset({
     "columns", "y_columns", "feature_columns", "group_by", "value_columns", "id_columns", "by",
-    "descending_columns", "path_columns", "on",
+    "descending_columns", "path_columns", "on", "keep_columns",
 })
 SINGLE_COLUMN_FIELDS = frozenset({
     "x_column", "z_column", "color_column", "target_column", "column", "stratify_column", "group_column",
@@ -289,12 +289,13 @@ _COLUMN_FUNCTIONS = [
 
 _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 
-# label, steps (the one pipeline step whose Tools list shows the tool; empty
-# for a tool with its own panel, named by "panel"), and optional: numeric (column pickers limited to numeric
+# label, steps (the pipeline steps whose Tools list shows the tool, normally
+# one; empty for a tool with its own panel, named by "panel"), and optional: numeric (column pickers limited to numeric
 # columns), show_when ({field: {other_field: [values]}}, all of which must
 # hold, or a list of such dicts of which any may hold), defaults (form
 # defaults for required fields), app_defaults (fill from the workbench's
-# column roles: "target", "features" or "time"), advanced (fields folded under "Advanced").
+# column roles: "target", "features", "time" or "target_time" for both target
+# and time), advanced (fields folded under "Advanced").
 MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     "inspect_data": {
         "label": "Inspect data (head, info, describe…)",
@@ -447,8 +448,13 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         "advanced": ("n_estimators", "random_state"),
     },
     "drop_columns": {
-        "label": "Drop columns",
-        "steps": ("feature-selection",),
+        "label": "Drop columns (by name, mostly missing, constant)",
+        "steps": ("quality", "feature-selection"),
+        "show_when": {
+            "missing_threshold": {"mode": ["missing"]},
+            "keep_columns": {"mode": ["missing", "constant"]},
+        },
+        "app_defaults": {"keep_columns": "target_time"},
     },
     "rename_columns": {
         "label": "Rename columns",
@@ -665,7 +671,7 @@ TOOL_SUMMARIES: dict[str, str] = {
     "remove_missing_data": "Fill in blanks (mean, previous value, interpolation, nearest neighbours…) or drop the rows that have them.",
     "remove_outliers": "Find extreme values and drop those rows, cap the values, or clip to fixed limits.",
     "detect_anomalies": "Find unusual rows across several tags at once, then flag or drop them.",
-    "drop_columns": "Remove columns you don't need.",
+    "drop_columns": "Remove columns you name, or every column that is mostly missing or constant.",
     "rename_columns": "Give columns new names.",
     "normalize_data": "Put tags on a common scale (standardise, min–max, robust or max-abs).",
     "transform_features": "Reshape a tag's distribution (log, square root, Box-Cox…) or cut it into bins.",

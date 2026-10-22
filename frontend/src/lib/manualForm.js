@@ -45,6 +45,9 @@ function appDefault(field, schema, app) {
   if (field.app_default === 'time') {
     return app.timeColumn && choices.has(app.timeColumn) ? app.timeColumn : undefined
   }
+  if (field.app_default === 'target_time') {
+    return [app.targetVariable, app.timeColumn].filter((c, i, all) => c && choices.has(c) && all.indexOf(c) === i)
+  }
   if (field.app_default === 'features') {
     const target = app.targetVariable
     const picked = (app.selectedFeatures || []).filter((c) => choices.has(c) && c !== target)

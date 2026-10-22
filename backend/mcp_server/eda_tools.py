@@ -361,6 +361,12 @@ class NormalizeDataArgs(BaseModel):
         return self
 
 
+class DropColumnsMode(str, Enum):
+    names = "names"
+    missing = "missing"
+    constant = "constant"
+
+
 class DropColumnsArgs(BaseModel):
     """Arguments for dropping columns."""
 
@@ -370,10 +376,33 @@ class DropColumnsArgs(BaseModel):
         min_length=36,
         max_length=36,
     )
-    columns: list[str] = Field(
-        ...,
-        description="List of column names to drop.",
-        min_length=1,
+    mode: DropColumnsMode = Field(
+        DropColumnsMode.names,
+        description=(
+            "names: drop the listed columns; missing: drop the columns where more than "
+            "missing_threshold of the values are missing (e.g. more than 50%); constant: drop the "
+            "columns with at most one distinct value (ignoring missing values)."
+        ),
+    )
+    columns: Optional[list[str]] = Field(
+        None,
+        description=(
+            "names mode: the columns to drop. missing and constant modes: the columns to check; "
+            "leave empty to check every column."
+        ),
+    )
+    missing_threshold: float = Field(
+        0.5,
+        ge=0.0,
+        lt=1.0,
+        description="missing mode: drop a column when its share of missing values is above this (0.5 = more than half).",
+    )
+    keep_columns: Optional[list[str]] = Field(
+        None,
+        description=(
+            "missing and constant modes: columns never dropped, such as the target (lab values are "
+            "often mostly missing) and the time column."
+        ),
     )
 
     @field_validator("dataset_version_id")
@@ -381,13 +410,18 @@ class DropColumnsArgs(BaseModel):
     def _valid_uuid(cls, value: str) -> str:
         return _validate_uuid_str(value)
 
-    @field_validator("columns")
+    @field_validator("columns", "keep_columns")
     @classmethod
-    def _non_empty_names(cls, value: list[str]) -> list[str]:
-        cleaned = [c.strip() for c in value if c and c.strip()]
-        if not cleaned:
-            raise ValueError("columns must contain at least one non-empty name")
-        return cleaned
+    def _clean_names(cls, value: Optional[list[str]]) -> Optional[list[str]]:
+        if value is None:
+            return None
+        return [c.strip() for c in value if c and c.strip()]
+
+    @model_validator(mode="after")
+    def _names_need_columns(self) -> "DropColumnsArgs":
+        if self.mode == DropColumnsMode.names and not self.columns:
+            raise ValueError("names mode needs at least one column to drop")
+        return self
 
 
 class ExecuteFormulaArgs(BaseModel):
@@ -1050,12 +1084,15 @@ async def run_duckdb_query(
 
 async def drop_columns(
     dataset_version_id: str,
-    columns: list[str],
+    columns: Optional[list[str]] = None,
+    mode: str = "names",
+    missing_threshold: float = 0.5,
+    keep_columns: Optional[list[str]] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> tuple[str, str]:
     """
-    Drop specified columns from the dataset.
+    Drop columns by name, or the columns that are mostly missing or constant.
 
     Returns:
         (new_version_id, summary_message)
@@ -1063,27 +1100,60 @@ async def drop_columns(
     args = DropColumnsArgs(
         dataset_version_id=dataset_version_id,
         columns=columns,
+        mode=mode,  # type: ignore[arg-type]
+        missing_threshold=missing_threshold,
+        keep_columns=keep_columns,
     )
 
     async def _run(db: AsyncSession) -> tuple[str, str]:
         parent = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(parent)
-        
-        cols_to_drop = [c for c in args.columns if c in df.columns]
-        if not cols_to_drop:
-            return str(parent.id), "No matching columns found to drop."
-            
+
+        kept_note = ""
+        if args.mode == DropColumnsMode.names:
+            cols_to_drop = [c for c in args.columns or [] if c in df.columns]
+            if not cols_to_drop:
+                return str(parent.id), "No matching columns found to drop."
+            summary = f"Dropped columns: {', '.join(cols_to_drop)}"
+        else:
+            checked = [c for c in args.columns if c in df.columns] if args.columns else list(df.columns)
+            if args.mode == DropColumnsMode.missing:
+                share = df[checked].isna().mean() if len(df) else pd.Series(0.0, index=checked)
+                hits = {c: float(share[c]) for c in checked if share[c] > args.missing_threshold}
+                rule = f"more than {args.missing_threshold:.0%} missing"
+                describe = lambda c: f"{c} ({hits[c]:.0%})"  # noqa: E731
+            else:
+                hits = {c: int(df[c].nunique(dropna=True)) for c in checked if df[c].nunique(dropna=True) <= 1}
+                rule = "constant (at most one distinct value)"
+                describe = lambda c: c  # noqa: E731
+            keep = set(args.keep_columns or [])
+            spared = [c for c in hits if c in keep]
+            cols_to_drop = [c for c in hits if c not in keep]
+            if spared:
+                kept_note = f" Kept {', '.join(describe(c) for c in spared)} (in keep_columns)."
+            if not cols_to_drop:
+                return str(parent.id), f"No column is {rule} among the {len(checked)} checked.{kept_note}"
+            if len(cols_to_drop) == len(df.columns):
+                return str(parent.id), f"Every column is {rule}; nothing was dropped."
+            summary = (
+                f"Dropped {len(cols_to_drop)} column(s) that are {rule}: "
+                f"{', '.join(describe(c) for c in cols_to_drop)}.{kept_note}"
+            )
+
         df = df.drop(columns=cols_to_drop)
-        
+        params: dict[str, Any] = {"mode": args.mode.value, "columns_dropped": cols_to_drop}
+        if args.mode == DropColumnsMode.missing:
+            params["missing_threshold"] = args.missing_threshold
+        if args.mode != DropColumnsMode.names and args.keep_columns:
+            params["keep_columns"] = args.keep_columns
+
         return await _persist_new_version(
             db,
             parent=parent,
             df=df,
             action_performed="drop_columns",
-            parameters_used={
-                "columns_dropped": cols_to_drop,
-            },
-            summary_message=f"Dropped columns: {', '.join(cols_to_drop)}",
+            parameters_used=params,
+            summary_message=summary,
         )
 
     if session is not None:
@@ -4619,8 +4689,10 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
         name="drop_columns",
         description=(
-            "Drop the specified columns from the dataset. "
-            "Saves a new dataset version and logs lineage. "
+            "Drop columns: the listed ones (mode=names), those with more than missing_threshold "
+            "of their values missing (mode=missing, e.g. 0.5 for more than 50%), or constant ones "
+            "(mode=constant). In missing and constant modes put the target and time column in "
+            "keep_columns. Saves a new dataset version and logs lineage. "
             "Returns (new_version_id, summary_message)."
         ),
         args_model=DropColumnsArgs,

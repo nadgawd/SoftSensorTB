@@ -54,8 +54,12 @@ def _run(client, user, version, tool, **arguments):  # noqa: F811
 def test_every_tool_has_a_manual_form():
     assert set(MANUAL_TOOLS) == set(TOOL_FUNCTIONS)
     assert set(TOOL_SUMMARIES) == set(MANUAL_TOOLS)
+    in_two_steps = {"drop_columns": ("quality", "feature-selection")}
     for name, ui in MANUAL_TOOLS.items():
         assert set(ui["steps"]) <= set(STEPS), name
+        if name in in_two_steps:
+            assert ui["steps"] == in_two_steps[name], name
+            continue
         assert len(ui["steps"]) == 1 or (not ui["steps"] and ui.get("panel")), f"{name} must sit in exactly one step"
     assert {s for ui in MANUAL_TOOLS.values() for s in ui["steps"]} == set(STEPS)
 
@@ -80,7 +84,7 @@ def test_form_overrides_name_real_fields_and_options(name):
         assert set(ui.get(key, ())) <= set(fields), (name, key)
     for key in ("defaults", "app_defaults", "show_when"):
         assert set(ui.get(key, {})) <= set(fields), (name, key)
-    assert set(ui.get("app_defaults", {}).values()) <= {"target", "features", "time"}, name
+    assert set(ui.get("app_defaults", {}).values()) <= {"target", "features", "time", "target_time"}, name
     for field, when in ui.get("show_when", {}).items():
         for conditions in _alternatives(when):
             for controller, values in conditions.items():
@@ -510,6 +514,34 @@ def test_drop_rows_by_condition_and_range(client):  # noqa: F811
                                   operator="less_than", value="abc").json()["detail"]
     assert "all 8 rows" in _run(client, alice, version, "drop_rows", mode="row_range").json()["detail"]
     assert _run(client, alice, version, "drop_rows", mode="condition", column="x").status_code == 422
+
+
+def test_drop_columns_that_are_mostly_missing_or_constant(client):  # noqa: F811
+    n = 20
+    df = pd.DataFrame({
+        "time": pd.date_range("2024-01-01", periods=n, freq="min").strftime("%Y-%m-%d %H:%M"),
+        "flow": np.arange(n, dtype=float),
+        "sparse": [1.0] * 8 + [None] * 12,          # 60% missing
+        "half": [2.0, None] * 10,                   # exactly 50% missing: kept at 0.5
+        "lab": [5.0 + i if i % 5 == 0 else None for i in range(n)],  # 80% missing, the target
+        "mode": ["A"] * n,                          # constant
+    })
+    alice = new_user()
+    version = upload(client, alice, body=df.to_csv(index=False).encode(), name="cols.csv")["dataset_version_id"]
+
+    missing = _ok(_run(client, alice, version, "drop_columns", mode="missing", missing_threshold=0.5,
+                       keep_columns=["lab", "time"]))
+    assert list(_preview(client, alice, missing["active_dataset_version_id"]).columns) == ["time", "flow", "half", "lab", "mode"]
+    assert "sparse (60%)" in missing["message"] and "Kept lab (80%)" in missing["message"]
+
+    constant = _ok(_run(client, alice, version, "drop_columns", mode="constant", columns=["flow", "mode"]))
+    assert "mode" not in _preview(client, alice, constant["active_dataset_version_id"]).columns
+
+    none = _ok(_run(client, alice, version, "drop_columns", mode="missing", missing_threshold=0.9))
+    assert none["active_dataset_version_id"] == version and "No column" in none["message"]
+
+    assert _run(client, alice, version, "drop_columns", mode="names").status_code == 422
+    assert _run(client, alice, version, "drop_columns", mode="missing", missing_threshold=1.0).status_code == 422
 
 
 def test_drop_duplicates_keep_options(client):  # noqa: F811

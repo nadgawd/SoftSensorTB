@@ -19,7 +19,7 @@ function fixFor(issue) {
   if (issue.includes('missing')) return ['quality', 'remove_missing_data', 'Handle missing values']
   if (issue.includes('outlier')) return ['quality', 'remove_outliers', 'Handle outliers']
   if (issue.includes('stored as text')) return ['ingestion', 'convert_types', 'Convert types']
-  if (issue.includes('constant') || issue.includes('stuck')) return ['feature-selection', 'drop_columns', 'Drop the column']
+  if (issue.includes('constant') || issue.includes('stuck')) return ['quality', 'drop_columns', 'Drop the column']
   return null
 }
 
