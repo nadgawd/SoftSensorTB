@@ -81,8 +81,8 @@ def test_dataset_context_lists_real_columns_and_models():
         models=[{"model_id": "m1", "algorithm": "PLS", "target_column": "S", "feature_columns": ["TI1"], "r2_score": 0.75, "rmse": 0.42}],
     )
     text = render_dataset_context(ctx)
-    assert "  - TI1 (double)" in text
-    assert "NUMERIC COLUMNS: TI1, S" in text
+    assert "  string (1): DT" in text
+    assert "  double, numeric (2): TI1, S" in text
     assert "m1: PLS predicting S" in text
     assert "schema unavailable" in render_dataset_context(None)
 
@@ -185,6 +185,8 @@ class ScriptedClient:
         self.prompts.append([dict(m) for m in kwargs["messages"]])
         self.think = kwargs.get("think")
         chunks = self.rounds.pop(0)
+        if isinstance(chunks, Exception):
+            raise chunks
 
         async def gen():
             for c in chunks:
@@ -256,7 +258,7 @@ def test_execution_agent_streams_steps_and_applies_feature_selection(monkeypatch
     assert final["data"]["tool_calls_made"] == ["run_duckdb_query", "set_model_features"]
 
     first_prompt = client.prompts[0]
-    assert "TI1_rolling5_mean (double)" in first_prompt[0]["content"]
+    assert "T2, S, TI1_lag1, T2_lag1, TI1_rolling5_mean" in first_prompt[0]["content"]
     assert "selected features: ['TI1', 'T1']" in first_prompt[0]["content"]
     assert [m["role"] for m in first_prompt[1:]] == ["user", "assistant", "user"]
     assert "reply 1: create_lag_features" in first_prompt[0]["content"]
@@ -371,6 +373,114 @@ def test_claim_check_runs_once_so_a_stubborn_model_cannot_loop(monkeypatch):
     assert [e["event"] for e in events].count("retract") == 1
     assert len(client.prompts) == 2
     assert events[-1]["event"] == "final_state"
+
+
+def _run_with_rows(monkeypatch, client, message, rows):
+    ctx = DatasetContext("v1", "raw", 10, [(c, "double", True) for c in ("x", "y")])
+    dispatched = []
+
+    async def fake_dispatch(name, args, version_id):
+        dispatched.append(name)
+        return {"title": "missing", "rows": rows}
+
+    async def fake_ctx(_vid):
+        return ctx
+
+    monkeypatch.setattr(execution_agent, "get_llm_client", lambda **_k: client)
+    monkeypatch.setattr(execution_agent, "load_dataset_context", fake_ctx)
+    monkeypatch.setattr(execution_agent, "_dispatch_tool", fake_dispatch)
+
+    async def collect():
+        return [e async for e in execution_agent.run_execution_agent(message, "v1")]
+
+    return asyncio.run(collect()), dispatched
+
+
+HEAD = (0, "c1", "inspect_data", '{"view": "head"}')
+
+
+def test_a_repeated_successful_call_is_answered_from_its_result_not_stopped(monkeypatch):
+    client = ScriptedClient([
+        [_chunk(tool=HEAD)],
+        [_chunk(tool=HEAD)],
+        [_chunk(tool=(0, "c2", "inspect_data", '{"view": "missing"}'))],
+        [_chunk("Done.")],
+    ])
+    events, dispatched = _run_with_rows(monkeypatch, client, "build a pipeline", [{"x": 1}])
+    assert dispatched == ["inspect_data", "inspect_data"]
+    assert "Done." in "".join(e["data"] for e in events if e["event"] == "token")
+    assert "not run again" in client.prompts[2][-1]["content"]
+
+
+def test_a_model_stuck_on_one_successful_call_is_stopped_after_one_nudge(monkeypatch):
+    client = ScriptedClient([[_chunk(tool=HEAD)]] * 3)
+    events, dispatched = _run_with_rows(monkeypatch, client, "build a pipeline", [{"x": 1}])
+    assert dispatched == ["inspect_data"]
+    answer = "".join(e["data"] for e in events if e["event"] == "token")
+    assert "kept repeating the same step" in answer and "failing" not in answer
+
+
+def test_big_results_are_capped_and_shortened_once_read(monkeypatch):
+    rows = [{"column": f"TAG_{i:03d}.PV", "missing": i, "missing_pct": i / 3} for i in range(400)]
+    client = ScriptedClient([
+        [_chunk(tool=(0, "c1", "inspect_data", '{"view": "missing"}'))],
+        [_chunk(tool=(0, "c2", "inspect_data", '{"view": "head"}'))],
+        [_chunk("Done.")],
+    ])
+    events, _ = _run_with_rows(monkeypatch, client, "check missing", rows)
+    first = client.prompts[1][-1]["content"]
+    assert len(first) <= execution_agent._MAX_RESULT_CHARS
+    sent = json.loads(first)
+    assert 0 < len(sent["rows"]) < 400 and sent["rows"][0] == rows[0]
+    assert f"of {len(rows)} entries" in sent["truncated"]
+    # Read in round 2, so round 3 carries a short version of it.
+    older = [m["content"] for m in client.prompts[2] if m["role"] == "tool"][0]
+    assert len(older) < execution_agent._SEEN_RESULT_CHARS + 100 and older.startswith(first[:500])
+    # The app still gets the table rows, capped only by the UI preview size.
+    assert len(events[-1]["data"]["table_preview"]) == execution_agent._MAX_TABLE_ROWS
+
+
+def test_a_too_large_request_retries_once_with_this_turns_progress_kept(monkeypatch):
+    from backend.agents.llm_client import AllProvidersFailed
+
+    too_large = AllProvidersFailed(["groq openai/gpt-oss-20b: request of ~9,800 tokens is over its 8,000-token per-request limit"])
+    client = ScriptedClient([
+        [_chunk(tool=(0, "c1", "inspect_data", '{"view": "missing"}'))],
+        too_large,
+        [_chunk("Columns x and y have no gaps.")],
+    ])
+    history = [{"role": "user", "content": "earlier question"}, {"role": "assistant", "content": "earlier answer"}]
+    ctx = DatasetContext("v1", "raw", 10, [(c, "double", True) for c in ("x", "y")])
+
+    async def fake_dispatch(name, args, version_id):
+        return {"rows": [{"column": "x", "missing": 0}] * 300}
+
+    async def fake_ctx(_vid):
+        return ctx
+
+    monkeypatch.setattr(execution_agent, "get_llm_client", lambda **_k: client)
+    monkeypatch.setattr(execution_agent, "load_dataset_context", fake_ctx)
+    monkeypatch.setattr(execution_agent, "_dispatch_tool", fake_dispatch)
+
+    async def collect():
+        return [e async for e in execution_agent.run_execution_agent("check missing", "v1", history=history)]
+
+    events = asyncio.run(collect())
+    retry = client.prompts[2]
+    assert [m["role"] for m in retry] == ["system", "user", "assistant", "tool"]
+    assert retry[1]["content"] == "check missing" and len(retry[3]["content"]) < 600
+    assert "".join(e["data"] for e in events if e["event"] == "token") == "Columns x and y have no gaps."
+
+
+def test_when_every_model_fails_the_reasons_are_listed(monkeypatch):
+    from backend.agents.llm_client import AllProvidersFailed
+
+    failed = AllProvidersFailed(["groq qwen/qwen3.8-27b: 401 invalid api key", "google gemini-flash-latest: 401 bad key"])
+    client = ScriptedClient([failed])
+    events, _ = _run_with_rows(monkeypatch, client, "build a pipeline", [])
+    answer = "".join(e["data"] for e in events if e["event"] == "token")
+    assert "- groq qwen/qwen3.8-27b: 401 invalid api key" in answer and "local model" in answer
+    assert len(client.prompts) == 1
 
 
 def test_manual_actions_render_newest_with_marks_and_clipped_args():

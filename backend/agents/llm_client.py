@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -248,6 +249,56 @@ class LocalHealth:
 local_health = LocalHealth()
 
 
+# Groq's free tier refuses (HTTP 413) any single request whose prompt plus
+# max_tokens exceeds the model's tokens-per-minute budget, however long you
+# wait. GROQ_TPM_LIMIT=0 lifts the check on a paid tier.
+_MIN_REPLY_TOKENS = 1024
+_CEILING_MARGIN = 200
+
+
+def _request_ceiling(provider: str) -> int:
+    if provider != "groq":
+        return 0
+    try:
+        return int(os.getenv("GROQ_TPM_LIMIT", "8000") or 0)
+    except ValueError:
+        return 8000
+
+
+def estimate_tokens(kwargs: dict[str, Any]) -> int:
+    """Prompt tokens of a chat call, over- rather than under-estimated (JSON runs ~3.5 chars/token)."""
+    chars = len(json.dumps(kwargs.get("messages") or [], default=str, ensure_ascii=False))
+    chars += len(json.dumps(kwargs.get("tools") or [], default=str, ensure_ascii=False))
+    return chars // 3 + 1
+
+
+def _fit_to_ceiling(kwargs: dict[str, Any], ceiling: int) -> tuple[Optional[dict[str, Any]], str]:
+    """(kwargs that fit, "") or (None, why it cannot): lowers max_tokens when that is enough."""
+    if ceiling <= 0:
+        return kwargs, ""
+    prompt = estimate_tokens(kwargs)
+    room = ceiling - prompt - _CEILING_MARGIN
+    if room < _MIN_REPLY_TOKENS:
+        return None, f"request of ~{prompt:,} tokens is over its {ceiling:,}-token per-request limit"
+    if kwargs.get("max_tokens") is None or kwargs["max_tokens"] > room:
+        return {**kwargs, "max_tokens": room}, ""
+    return kwargs, ""
+
+
+def _short_error(exc: Exception) -> str:
+    status = getattr(exc, "status_code", None)
+    text = " ".join(str(getattr(exc, "message", None) or exc).split())
+    return (f"{status} " if status else "") + (text[:160] + "…" if len(text) > 160 else text)
+
+
+class AllProvidersFailed(RuntimeError):
+    """Every model in the cascade failed or was skipped; the message lists why, per model."""
+
+    def __init__(self, failures: list[str]):
+        self.failures = failures
+        super().__init__("no model could answer — " + "; ".join(failures))
+
+
 class FallbackChatCompletions:
     def __init__(self, cascades: list[dict[str, str]]):
         self.clients: list[dict[str, Any]] = []
@@ -294,20 +345,27 @@ class FallbackChatCompletions:
                 "Set cloud API keys or configure LOCAL_LLM_BASE_URL (see hpc/README.md)."
             )
 
-        last_exception = None
+        failures: list[str] = []
         for index, config in enumerate(self.clients):
             client: AsyncOpenAI = config["client"]
             model: str = config["model"]
+            name = f"{config['provider']} {model}"
             is_local = config["provider"] == "local_vllm"
             has_fallback = index < len(self.clients) - 1
 
             if is_local and has_fallback and not await local_health.usable(model):
+                failures.append(f"{name}: unreachable")
                 continue
 
             if is_local:
                 call_kwargs = _local_call_kwargs(kwargs, think)
             else:
                 call_kwargs = _strip_reasoning(kwargs)
+            call_kwargs, too_large = _fit_to_ceiling(call_kwargs, _request_ceiling(config["provider"]))
+            if call_kwargs is None:
+                logger.info("Skipping %s: %s", name, too_large)
+                failures.append(f"{name}: {too_large}")
+                continue
             call_kwargs = {**call_kwargs, "model": model}
 
             try:
@@ -321,7 +379,7 @@ class FallbackChatCompletions:
                 logger.warning(
                     f"Provider {config['provider']} ({model}) failed: {e}. Falling back..."
                 )
-                last_exception = e
+                failures.append(f"{name}: {_short_error(e)}")
                 continue
             except Exception as e:
                 if is_local and isinstance(e, httpx.HTTPError):
@@ -329,12 +387,10 @@ class FallbackChatCompletions:
                 logger.warning(
                     f"Provider {config['provider']} ({model}) unexpected error: {e}. Falling back..."
                 )
-                last_exception = e
+                failures.append(f"{name}: {_short_error(e)}")
                 continue
 
-        if last_exception:
-            raise last_exception
-        raise RuntimeError("No LLM providers succeeded.")
+        raise AllProvidersFailed(failures)
 
 
 class FallbackChat:

@@ -116,6 +116,64 @@ def test_a_bad_request_does_not_open_the_breaker(cascade):
     assert not llm_client.local_health.down
 
 
+def _groq_then(monkeypatch, other="google"):
+    for cfg in llm_client.PROVIDERS.values():
+        monkeypatch.delenv(cfg["api_key_env"], raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "x")
+    monkeypatch.setenv("GEMINI_API_KEY", "y")
+    completions = llm_client.FallbackChatCompletions(
+        [{"provider": "groq", "model": "openai/gpt-oss-20b"}, {"provider": other, "model": "gemini-flash-latest"}]
+    )
+    fakes = []
+    for config in completions.clients:
+        fake = FakeModel(config["provider"])
+        fake.seen = []
+        original = fake.create
+
+        async def create(_fake=fake, _original=original, **kwargs):
+            _fake.seen.append(kwargs)
+            return await _original(**kwargs)
+
+        config["client"] = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        fakes.append(fake)
+    return completions, fakes
+
+
+def test_a_request_over_groqs_per_request_limit_skips_it_without_a_call(monkeypatch):
+    completions, (groq, google) = _groq_then(monkeypatch)
+    big = [{"role": "user", "content": "x" * 30_000}]
+    assert asyncio.run(completions.create(messages=big, max_tokens=4096)) == "google"
+    assert groq.calls == 0 and google.seen[0]["max_tokens"] == 4096
+
+
+def test_groq_gets_a_smaller_reply_budget_when_that_makes_the_request_fit(monkeypatch):
+    completions, (groq, _google) = _groq_then(monkeypatch)
+    small = [{"role": "user", "content": "x" * 15_000}]
+    assert asyncio.run(completions.create(messages=small, max_tokens=4096)) == "groq"
+    budget = groq.seen[0]["max_tokens"]
+    assert 1024 <= budget < 4096
+    assert llm_client.estimate_tokens({"messages": small}) + budget <= 8000
+
+
+def test_the_groq_limit_can_be_lifted_for_a_paid_tier(monkeypatch):
+    monkeypatch.setenv("GROQ_TPM_LIMIT", "0")
+    completions, (groq, _google) = _groq_then(monkeypatch)
+    assert asyncio.run(completions.create(messages=[{"role": "user", "content": "x" * 30_000}], max_tokens=4096)) == "groq"
+    assert groq.seen[0]["max_tokens"] == 4096
+
+
+def test_when_every_model_fails_each_reason_is_kept(monkeypatch):
+    completions, (_groq, google) = _groq_then(monkeypatch)
+    google.error = openai.RateLimitError(
+        "quota exceeded", response=httpx.Response(429, request=REQUEST), body=None
+    )
+    with pytest.raises(llm_client.AllProvidersFailed) as info:
+        asyncio.run(completions.create(messages=[{"role": "user", "content": "x" * 30_000}], max_tokens=4096))
+    assert info.value.failures[0].startswith("groq openai/gpt-oss-20b: request of ~10,0")
+    assert "8,000-token per-request limit" in info.value.failures[0]
+    assert info.value.failures[1] == "google gemini-flash-latest: 429 quota exceeded"
+
+
 def test_health_is_reprobed_once_stale(cascade, monkeypatch):
     async def scenario():
         await cascade.ask()

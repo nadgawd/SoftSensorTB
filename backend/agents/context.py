@@ -92,12 +92,19 @@ def render_dataset_context(ctx: Optional[DatasetContext]) -> str:
     lines = [
         f"ACTIVE DATASET VERSION: {ctx.version_id} (created by: {ctx.action}) — "
         f"{ctx.n_rows:,} rows × {len(ctx.columns)} columns",
-        "COLUMNS (authoritative — these are the only column names that exist, spelled exactly):",
+        "COLUMNS by type, in dataset order (authoritative — these are the only column names "
+        "that exist, spelled exactly):",
     ]
-    lines += [f"  - {name} ({dtype})" for name, dtype, _ in ctx.columns[:MAX_COLUMNS_LISTED]]
+    # Grouped by dtype so wide plant datasets cost one line per type, not per column.
+    groups: dict[tuple[str, bool], list[str]] = {}
+    for name, dtype, numeric in ctx.columns[:MAX_COLUMNS_LISTED]:
+        groups.setdefault((dtype, numeric), []).append(name)
+    for (dtype, numeric), names in groups.items():
+        lines.append(f"  {dtype}{', numeric' if numeric else ''} ({len(names)}): {', '.join(names)}")
     if len(ctx.columns) > MAX_COLUMNS_LISTED:
         lines.append(f"  … and {len(ctx.columns) - MAX_COLUMNS_LISTED} more")
-    lines.append(f"NUMERIC COLUMNS: {', '.join(ctx.numeric_columns) or 'none'}")
+    if not ctx.numeric_columns:
+        lines.append("NUMERIC COLUMNS: none")
 
     if ctx.models:
         lines.append("TRAINED MODELS on this lineage (newest first; plot tools use the newest when model_id is omitted):")

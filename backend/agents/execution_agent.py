@@ -53,9 +53,18 @@ _NO_TOOL_NUDGE = (
     "again, without claiming any new action. Do not mention this check, your "
     "previous reply, or that no tool was called."
 )
+_REPEAT_NOTE = (
+    "This call is identical to your previous one, so it was not run again; its result "
+    "is above. Use it and continue with the next step, or answer if you are done."
+)
 _ALL_TOOL_SCHEMAS = [*LLM_TOOL_SCHEMAS, *UI_TOOL_SCHEMAS]
 _MAX_ARGS_CHARS = 400
 _MAX_SUMMARY_CHARS = 240
+# Every round resends the whole conversation, so tool results are what grows
+# it. The user sees full tables in the app; the model gets enough to decide.
+_MAX_RESULT_CHARS = 8000
+_SEEN_RESULT_CHARS = 1200
+_TIGHT_RESULT_CHARS = 500
 
 _MUTATING_TOOLS = frozenset(
     {
@@ -201,15 +210,78 @@ def _serialize_tool_result(tool_name: str, result: Any) -> str:
         })
 
     if isinstance(result, tuple) and len(result) == 2:
-        return json.dumps(
+        return _fit_json(
             {
                 "summary_message": result[1],
                 "new_version_id": result[0],
                 "note": "A new dataset version was created from the previous one and is now active; later tools use it automatically.",
             },
-            default=str,
+            _MAX_RESULT_CHARS,
         )
-    return json.dumps(result, default=str)
+    return _fit_json(result, _MAX_RESULT_CHARS)
+
+
+def _fit_json(obj: Any, limit: int) -> str:
+    """JSON of ``obj`` within ``limit`` characters.
+
+    An oversized dict keeps whole entries of its largest list or mapping
+    (table rows, per-column statistics) and says how many were left out.
+    """
+    text = json.dumps(obj, default=str)
+    if len(text) <= limit:
+        return text
+    if isinstance(obj, dict):
+        sizes = {k: len(json.dumps(v, default=str)) for k, v in obj.items() if isinstance(v, (list, dict))}
+        if sizes:
+            key = max(sizes, key=sizes.get)
+            items = list(obj[key].items()) if isinstance(obj[key], dict) else list(obj[key])
+            rest = {k: v for k, v in obj.items() if k != key}
+            budget = limit - len(json.dumps(rest, default=str)) - 300
+            kept: list[Any] = []
+            used = 0
+            for item in items:
+                used += len(json.dumps(item, default=str)) + 2
+                if used > budget:
+                    break
+                kept.append(item)
+            note = (
+                f"{key} cut to the first {len(kept)} of {len(items)} entries to fit the model's context; "
+                "the user sees the full result in the app. Ask for fewer columns or rows if you need the rest."
+            )
+            text = json.dumps({**rest, key: dict(kept) if isinstance(obj[key], dict) else kept, "truncated": note}, default=str)
+            if len(text) <= limit:
+                return text
+    return _clip_result(text, limit)
+
+
+def _clip_result(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…[{len(text) - limit:,} more characters cut to save context]"
+
+
+def _shrink_tool_results(messages: list[dict[str, Any]], start: int, end: int, limit: int) -> None:
+    for message in messages[start:end]:
+        if message.get("role") == "tool" and isinstance(message.get("content"), str):
+            message["content"] = _clip_result(message["content"], limit)
+
+
+def _shrink_seen_results(messages: list[dict[str, Any]], start: int) -> None:
+    """Shorten tool results the model already read in an earlier round of this turn."""
+    last_call = max(
+        (i for i in range(start, len(messages)) if messages[i].get("role") == "assistant" and messages[i].get("tool_calls")),
+        default=None,
+    )
+    if last_call is not None:
+        _shrink_tool_results(messages, start, last_call, _SEEN_RESULT_CHARS)
+
+
+def _tight_messages(messages: list[dict[str, Any]], user_msg: dict[str, Any]) -> list[dict[str, Any]]:
+    """After a too-large error: drop earlier chat turns and shorten this turn's tool results, keeping its progress."""
+    turn = messages[next(i for i, m in enumerate(messages) if m is user_msg) + 1:]
+    out = [messages[0], user_msg, *({k: v for k, v in m.items() if k != "reasoning_content"} for m in turn)]
+    _shrink_tool_results(out, 2, len(out), _TIGHT_RESULT_CHARS)
+    return out
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -531,9 +603,23 @@ async def _stream_completion(
 def _is_recoverable(err: Exception) -> bool:
     text = str(err).lower()
     return any(m in text for m in (
-        "context_length", "reduce the length", "internal server error",
-        "upstream error", "500", "502", "503", "504", "529",
+        "context_length", "context length", "maximum context", "reduce the length",
+        "too large", "per-request limit", "tokens per minute", "rate limit",
+        "internal server error", "upstream error", "413", "429", "500", "502", "503", "504", "529",
     ))
+
+
+def _api_error_message(err: Exception) -> str:
+    failures = getattr(err, "failures", None)
+    if not failures:
+        return f"I encountered an API error: {str(err)[:300]}. Please try rephrasing your request."
+    lines = "\n".join(f"- {f}" for f in failures)
+    return (
+        f"No model could take this request:\n{lines}\n\n"
+        "Long multi-step runs send a lot of context each round. They work best on the local model, "
+        "which has no per-minute limit; on the free cloud tiers, try again in a minute or ask for "
+        "one step at a time."
+    )
 
 
 async def run_execution_agent(
@@ -576,9 +662,12 @@ async def run_execution_agent(
 
     final_message = ""
     previous_tool_calls_str = None
+    previous_round_failed = False
+    repeat_nudged = False
     claim_checked = False
 
     for round_no in range(MAX_TOOL_ROUNDS):
+        _shrink_seen_results(messages, next(i for i, m in enumerate(messages) if m is user_msg) + 1)
         if ctx is None or ctx.version_id != ui_state["active_dataset_version_id"]:
             ctx = await load_dataset_context(ui_state["active_dataset_version_id"])
         tools, omitted = select_schemas(
@@ -599,25 +688,20 @@ async def run_execution_agent(
             async for kind, text in _stream_completion(client, messages, 4096, sink, think, tools):
                 yield {"event": kind, "data": text}
         except Exception as api_err:  # noqa: BLE001
-            if not _is_recoverable(api_err):
-                final_message = (
-                    f"I encountered an API error: {str(api_err)[:300]}. "
-                    "Please try rephrasing your request."
-                )
+            if not _is_recoverable(api_err) or sink["content"]:
+                final_message = _api_error_message(api_err)
                 yield {"event": "token", "data": final_message}
                 break
-            # Context overflow or upstream crash: drop history, keep the current turn, retry once.
+            # Too large, rate-limited or an upstream crash: drop earlier chat turns and
+            # shorten this turn's tool results, keeping its progress, and retry once.
             yield {"event": "status", "data": "Model call failed — retrying with a shorter context"}
-            messages = [messages[0], user_msg]
+            messages = _tight_messages(messages, user_msg)
             sink = {"content": "", "reasoning": "", "tool_calls": {}}
             try:
                 async for kind, text in _stream_completion(client, messages, 2048, sink, think, tools):
                     yield {"event": kind, "data": text}
             except Exception as retry_err:  # noqa: BLE001
-                final_message = (
-                    "The conversation grew too large and I couldn't recover. "
-                    f"Please start a new question. ({retry_err})"
-                )
+                final_message = _api_error_message(retry_err)
                 yield {"event": "token", "data": final_message}
                 break
 
@@ -630,9 +714,14 @@ async def run_execution_agent(
             for tc in tool_calls
         ], sort_keys=True)
 
-        if tool_calls and current_tool_calls_str == previous_tool_calls_str:
+        repeated = bool(tool_calls) and current_tool_calls_str == previous_tool_calls_str
+        if repeated and (previous_round_failed or repeat_nudged):
             yield {"event": "thought", "data": current_content.strip()}
-            final_message = "*I stopped because I was repeating the same failing action. The tool errors are in the activity log above.*"
+            final_message = (
+                "*I stopped because I was repeating the same failing action. The tool errors are in the activity log above.*"
+                if previous_round_failed
+                else "*I stopped because I kept repeating the same step instead of moving on. The results so far are in the activity log above.*"
+            )
             yield {"event": "token", "data": final_message}
             break
 
@@ -648,6 +737,17 @@ async def run_execution_agent(
             # Qwen3.5's template replays reasoning from earlier rounds of the current turn.
             assistant_msg["reasoning_content"] = sink["reasoning"].strip()
         messages.append(assistant_msg)
+
+        if repeated:
+            # The same successful call again: answer it from the earlier result, once.
+            repeat_nudged = True
+            for i, tc in enumerate(tool_calls):
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"] or f"call_{round_no}_{i}",
+                    "content": json.dumps({"note": _REPEAT_NOTE}),
+                })
+            continue
 
         if not tool_calls:
             if (
@@ -665,6 +765,7 @@ async def run_execution_agent(
 
         yield {"event": "thought", "data": current_content.strip()}
 
+        previous_round_failed = False
         for i, tc in enumerate(tool_calls):
             name = tc["function"]["name"]
             call_id = tc["id"] or f"call_{round_no}_{i}"
@@ -697,8 +798,9 @@ async def run_execution_agent(
                     "arguments": {k: v for k, v in (arguments or {}).items() if k != "dataset_version_id"},
                 }
             except Exception as exc:  # noqa: BLE001 — surface tool errors to the LLM
-                payload = json.dumps({"error": str(exc)})
+                payload = _clip_result(json.dumps({"error": str(exc)}), _MAX_RESULT_CHARS)
                 end = {"ok": False, "summary": _truncate(str(exc), _MAX_SUMMARY_CHARS)}
+                previous_round_failed = True
             ms = int((time.perf_counter() - started) * 1000)
             yield {"event": "tool_end", "data": {"id": call_id, "name": name, "ms": ms, **end}}
 
