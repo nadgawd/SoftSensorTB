@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronRight, History, Redo2, Undo2 } from 'lucide-react'
 import { errorDetail, fetchDatasetHistory, rollbackVersion } from '../api/client'
+import { parseServerTime } from '../utils/format'
 import { isTyping, shortcutLabel } from '../utils/keys'
 import { actionLabel } from '../utils/versions'
 
@@ -90,7 +91,7 @@ export default function HistoryStrip({
                 className={`history-chip${active ? ' active' : ''}`}
                 disabled={active || busy || disabled}
                 onClick={() => goTo(v.id)}
-                title={active ? 'The active version' : `Go back to this version (${v.created_at ? new Date(v.created_at + (v.created_at.endsWith('Z') ? '' : 'Z')).toLocaleString() : ''})`}
+                title={active ? 'The active version' : `Go back to this version (${parseServerTime(v.created_at)?.toLocaleString() ?? ''})`}
               >
                 {actionLabel(v.action_performed, labels)}
               </button>

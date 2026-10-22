@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { fetchDatasetHistory, rollbackVersion } from '../api/client'
+import { parseServerTime } from '../utils/format'
 import { ancestorIds, layoutLineage } from '../utils/lineage'
 import VersionTree from './VersionTree'
 
@@ -24,8 +25,7 @@ function shortId(id) {
 }
 
 function formatTime(ts) {
-  if (!ts) return null
-  return new Date(ts + (ts.endsWith('Z') ? '' : 'Z')).toLocaleString()
+  return parseServerTime(ts)?.toLocaleString() ?? null
 }
 
 /**

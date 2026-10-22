@@ -1,3 +1,5 @@
+import { parseServerTime } from './format'
+
 /**
  * Lay out a dataset's version tree as a git-style graph.
  *
@@ -123,7 +125,5 @@ export function ancestorIds(nodes, id) {
 }
 
 function toTime(v) {
-  if (!v?.created_at) return 0
-  const iso = v.created_at.endsWith('Z') || /[+-]\d\d:\d\d$/.test(v.created_at) ? v.created_at : `${v.created_at}Z`
-  return new Date(iso).getTime() || 0
+  return parseServerTime(v?.created_at)?.getTime() || 0
 }

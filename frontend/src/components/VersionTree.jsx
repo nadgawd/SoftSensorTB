@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef } from 'react'
+import { parseServerTime } from '../utils/format'
 import { ancestorIds, layoutTree } from '../utils/lineage'
 
 const CARD_W = 176
@@ -9,10 +10,6 @@ const PAD = 8
 
 function shortId(id) {
   return id ? `${id.slice(0, 8)}…` : '—'
-}
-
-function parseTime(ts) {
-  return ts ? new Date(ts + (ts.endsWith('Z') ? '' : 'Z')) : null
 }
 
 /**
@@ -72,7 +69,7 @@ export default function VersionTree({ versionHistory, datasetVersionId, disabled
         {nodes.map((n) => {
           const isActive = n.id === datasetVersionId
           const lit = onActivePath.has(n.id)
-          const time = parseTime(n.created_at)
+          const time = parseServerTime(n.created_at)
           return (
             <button
               key={n.id}
