@@ -20,6 +20,7 @@ from backend.api.datasets import router as datasets_router
 from backend.api.deployments import router as deployments_router
 from backend.api.exports import router as exports_router
 from backend.api.project import router as project_router
+from backend.api.splits import router as splits_router
 from backend.api.tools import router as tools_router
 from backend.auth import User, auth_required, get_current_user
 from backend.database import AsyncSessionLocal, init_db
@@ -63,6 +64,7 @@ app.include_router(datasets_router)
 app.include_router(deployments_router)
 app.include_router(exports_router)
 app.include_router(project_router)
+app.include_router(splits_router)
 app.include_router(tools_router)
 
 

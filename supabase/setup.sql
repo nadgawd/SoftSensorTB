@@ -14,7 +14,7 @@ on conflict (id) do update set public = false, file_size_limit = excluded.file_s
 do $$
 declare t text;
 begin
-  foreach t in array array['datasets', 'dataset_versions', 'trained_models', 'project_state'] loop
+  foreach t in array array['datasets', 'dataset_versions', 'trained_models', 'data_splits', 'project_state'] loop
     if to_regclass('public.' || t) is not null then
       execute format('alter table public.%I enable row level security', t);
     end if;
@@ -28,4 +28,4 @@ select c.relname as table_name,
 from pg_class c
 join pg_namespace n on n.oid = c.relnamespace
 where n.nspname = 'public'
-  and c.relname in ('datasets', 'dataset_versions', 'trained_models', 'project_state');
+  and c.relname in ('datasets', 'dataset_versions', 'trained_models', 'data_splits', 'project_state');

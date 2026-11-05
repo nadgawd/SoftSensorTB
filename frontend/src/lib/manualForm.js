@@ -11,6 +11,7 @@ const COLUMN_WIDGETS = new Set(['column', 'columns'])
 
 /** `show_when` is one set of conditions that must all hold, or a list of such sets of which any may hold. */
 export function isVisible(field, values) {
+  if (field.hidden) return false
   const when = field.show_when
   if (!when) return true
   const alternatives = Array.isArray(when) ? when : [when]
@@ -35,6 +36,7 @@ export function defaultFeatures(schema, target, timeColumn) {
 }
 
 function appDefault(field, schema, app) {
+  if (field.widget === 'split') return app.splitId || ''
   if (field.widget === 'model') {
     return app.modelId && (schema?.models || []).some((m) => m.model_id === app.modelId) ? app.modelId : undefined
   }
@@ -67,6 +69,8 @@ export function fieldDefault(field, schema, app) {
     case 'columns':
     case 'text_list':
       return Array.isArray(d) ? [...d] : []
+    case 'split_ranges':
+      return Array.isArray(d) ? d.map((r) => ({ ...r })) : []
     case 'int_list':
       return Array.isArray(d) ? d.join(', ') : ''
     case 'mapping':
@@ -92,9 +96,9 @@ function pruneColumns(field, value, schema) {
 export function formValues(tool, edits, schema, app) {
   const values = {}
   for (const field of tool.fields) {
-    values[field.name] = Object.prototype.hasOwnProperty.call(edits || {}, field.name)
-      ? pruneColumns(field, edits[field.name], schema)
-      : fieldDefault(field, schema, app)
+    // The split is always the one the Split panel shows, never an older edit.
+    const edited = field.widget !== 'split' && Object.prototype.hasOwnProperty.call(edits || {}, field.name)
+    values[field.name] = edited ? pruneColumns(field, edits[field.name], schema) : fieldDefault(field, schema, app)
   }
   return values
 }
@@ -126,6 +130,11 @@ function parseIntList(raw) {
     out.push(n)
   }
   return out.length ? { value: out } : { empty: true }
+}
+
+const REQUIRED_MESSAGES = {
+  columns: 'Pick at least one column',
+  split: 'Split the data first (step 1 above)',
 }
 
 /**
@@ -174,6 +183,11 @@ export function buildArguments(tool, values) {
           : { empty: true }
         break
       }
+      case 'split_ranges': {
+        const ranges = (raw || []).filter((r) => r && r.set)
+        parsed = ranges.length ? { value: ranges.map((r) => ({ ...r })) } : { empty: true }
+        break
+      }
       default: {
         const text = String(raw ?? '').trim()
         parsed = text ? { value: text } : { empty: true }
@@ -182,7 +196,7 @@ export function buildArguments(tool, values) {
     if (parsed.error) {
       errors[field.name] = parsed.error
     } else if (parsed.empty) {
-      if (field.required) errors[field.name] = field.widget === 'columns' ? 'Pick at least one column' : 'Required'
+      if (field.required) errors[field.name] = REQUIRED_MESSAGES[field.widget] || 'Required'
     } else {
       args[field.name] = parsed.value
     }
@@ -199,6 +213,8 @@ function editValue(field, value) {
     case 'columns':
     case 'text_list':
       return (Array.isArray(value) ? value : [value]).map(String)
+    case 'split_ranges':
+      return (Array.isArray(value) ? value : []).filter((r) => r && typeof r === 'object').map((r) => ({ ...r }))
     case 'mapping':
     case 'value_mapping':
       return value && typeof value === 'object'
@@ -222,6 +238,7 @@ function editValue(field, value) {
 export function editsFromArguments(tool, args) {
   const edits = {}
   for (const field of tool.fields) {
+    if (field.widget === 'split') continue
     const value = args?.[field.name]
     if (value !== undefined && value !== null) {
       edits[field.name] = editValue(field, value)

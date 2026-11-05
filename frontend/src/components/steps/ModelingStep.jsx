@@ -31,7 +31,8 @@ function splitParts(m) {
 }
 
 /**
- * Model step › Train & test: the split, the training results and, once run, the test results.
+ * Model step › Split, train & test: the model's split, its training results, once run its test
+ * results, and its equation.
  */
 export default function ModelingStep({ modelMetrics, datasetVersionId, onToolResult, busy }) {
   if (!modelMetrics) {
@@ -39,7 +40,7 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, onToolRes
       <div style={{ textAlign: 'center', padding: '30px 20px', color: 'var(--color-mist)' }}>
         <p style={{ fontSize: '0.875rem' }}>
           {datasetVersionId
-            ? 'Pick a model, its parameters and the split above, then press Split & train. Test the model afterwards on the held-out rows. Or ask the Assistant.'
+            ? 'Save a split in step 1 above, then pick a model and its parameters and press Train. Test the model afterwards on the held-out rows. Or ask the Assistant.'
             : 'Upload a dataset first to train and test a model.'}
         </p>
       </div>
@@ -67,8 +68,54 @@ export default function ModelingStep({ modelMetrics, datasetVersionId, onToolRes
       <TrainingPanel metrics={m} />
       <TestingPanel metrics={m} datasetVersionId={datasetVersionId} onToolResult={onToolResult} busy={busy} />
 
+      <EquationPanel metrics={m} />
       {m.feature_importances && <CoefficientsPanel values={m.feature_importances} />}
     </div>
+  )
+}
+
+/** "y = 1.2 + 0.5·x1 − 3·x2", like the backend's equation_text. */
+function equationText(equation, target) {
+  const num = (v) => Number(v.toPrecision(6)).toString()
+  const terms = Object.entries(equation.coefficients || {}).map(
+    ([name, value]) => `${value < 0 ? '−' : '+'} ${num(Math.abs(value))}·${name}`,
+  )
+  return `${target || 'y'} = ${[num(equation.intercept), ...terms].join(' ')}`
+}
+
+function EquationPanel({ metrics: m }) {
+  const [copied, setCopied] = useState(false)
+  if (!m.equation) {
+    if (m.algorithm !== 'KNN') return null
+    return (
+      <section className="panel model-panel" aria-label="Governing equation">
+        <p className="model-panel-title">Governing equation</p>
+        <p className="manual-hint">k-NN averages the nearest training rows, so it has no equation.</p>
+      </section>
+    )
+  }
+  const text = equationText(m.equation, m.target_column)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <section className="panel model-panel" aria-label="Governing equation">
+      <div className="model-equation-head">
+        <p className="model-panel-title">Governing equation</p>
+        <button type="button" className="manual-link" onClick={copy}>{copied ? 'Copied' : 'Copy'}</button>
+      </div>
+      <pre className="model-equation">{text}</pre>
+      <p className="manual-hint">
+        In the units of the input columns as they are in this version (after any scaling done in the Preprocess step).
+        The full-precision coefficients are in the exported report and recipe.
+      </p>
+    </section>
   )
 }
 
@@ -102,6 +149,7 @@ function SplitPanel({ metrics, parts, datasetVersionId }) {
     <section className="panel model-panel" aria-label="Data split">
       <p className="model-panel-title">
         Data split · {metrics.split_strategy ? splitLabel(metrics.split_strategy) : '—'} · {total} complete rows
+        {metrics.split_id ? ` · split ${metrics.split_id.slice(0, 8)}` : ''}
       </p>
       <div className="split-bar" role="img" aria-label={parts.map((p) => `${p.set} ${p.rows} rows`).join(', ')}>
         {parts.map((p) => {
@@ -287,12 +335,14 @@ function TestingPanel({ metrics: m, datasetVersionId, onToolResult, busy }) {
 }
 
 function CoefficientsPanel({ values }) {
-  const maxVal = Math.max(...Object.values(values).map(Math.abs)) || 1
+  const features = Object.entries(values).filter(([name]) => name !== 'intercept')
+  if (!features.length) return null
+  const maxVal = Math.max(...features.map(([, v]) => Math.abs(v))) || 1
   return (
     <section className="panel model-panel" aria-label="Feature coefficients">
       <p className="model-panel-title">Feature coefficients / importances</p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        {Object.entries(values)
+        {features
           .sort(([, a], [, b]) => Math.abs(b) - Math.abs(a))
           .map(([name, value]) => (
             <div key={name} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>

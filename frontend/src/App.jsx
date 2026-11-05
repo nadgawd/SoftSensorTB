@@ -23,6 +23,7 @@ import { useTheme } from './hooks/useTheme'
 import { getSuggestions } from './utils/suggestions'
 import { useManualTools } from './hooks/useManualTools'
 import { useVersionProfile } from './hooks/useVersionProfile'
+import { useDataSplit } from './hooks/useDataSplit'
 import { editsFromArguments } from './lib/manualForm'
 
 const STEP_IDS = STEPS.map((s) => s.id)
@@ -86,6 +87,9 @@ export default function App() {
   const [timeColumn, setTimeColumn] = usePersisted('timeColumn', null)
   const [modelMetrics, setModelMetrics] = usePersisted('modelMetrics', null)
   const profile = useVersionProfile(datasetVersionId, { target: targetVariable, timeColumn })
+  // Bumped whenever a split is saved (Split panel or assistant), to fetch it again.
+  const [splitRevision, setSplitRevision] = useState(0)
+  const dataSplit = useDataSplit(datasetVersionId, targetVariable, splitRevision)
   // A chosen time column, else the one the profile detected.
   const effectiveTimeColumn = timeColumn || profile.data?.time_column || null
 
@@ -290,6 +294,7 @@ export default function App() {
   // ── Chat response / manual tool run → UI sync ─────────────
   const handleChatResponse = useCallback(
     async (response) => {
+      if ((response?.tool_calls_made || []).includes('split_data')) setSplitRevision((n) => n + 1)
       if (!response?.ui_update_required) return
       if (response.active_dataset_version_id) {
         setDatasetVersionId(response.active_dataset_version_id)
@@ -384,13 +389,20 @@ export default function App() {
       setDockTab('graph')
       return
     }
-    openTool(tool.steps.includes(toolStep) ? toolStep : tool.steps[0], tool.name)
+    if (tool.panel === 'split') {
+      setActiveStep('modeling')
+      setModelTab('train')
+    } else {
+      openTool(tool.steps.includes(toolStep) ? toolStep : tool.steps[0], tool.name)
+    }
     setTimeout(() => {
-      const panel = document.querySelector('.manual-panel:not(.manual-panel-fixed)')
+      const panel = document.querySelector(
+        tool.panel === 'split' ? '.split-panel' : '.manual-panel:not(.manual-panel-fixed):not(.split-panel)',
+      )
       panel?.scrollIntoView({ block: 'start', behavior: 'smooth' })
       panel?.querySelector('form input, form select, form textarea')?.focus({ preventScroll: true })
     }, 80)
-  }, [toolStep, openTool, setDockOpen, setDockTab])
+  }, [toolStep, openTool, setActiveStep, setModelTab, setDockOpen, setDockTab])
 
   useEffect(() => {
     const onKey = (e) => {
@@ -457,8 +469,8 @@ export default function App() {
     setManualToolByStep((prev) => {
       const next = { ...prev }
       for (const c of filled) {
-        const { steps } = specs.get(c.name)
-        if (steps.length) next[steps.includes(toolStep) ? toolStep : steps[0]] = c.name
+        const { steps, panel } = specs.get(c.name)
+        if (steps.length && !panel) next[steps.includes(toolStep) ? toolStep : steps[0]] = c.name
       }
       return next
     })
@@ -650,6 +662,7 @@ export default function App() {
             assistantBusy,
             onBusyChange: setToolsBusy,
             onResult: handleToolResult,
+            split: dataSplit,
           }}
           resultTable={resultTable}
           onResultTableClose={() => setResultTable(null)}
@@ -669,6 +682,14 @@ export default function App() {
           timeColumn: effectiveTimeColumn,
           activePlot: plotHistory.activePlot?.title ?? null,
           modelMetrics: modelMetrics || null,
+          dataSplit: dataSplit.split
+            ? {
+              split_id: dataSplit.split.split_id,
+              strategy: dataSplit.split.strategy,
+              target_column: dataSplit.split.target_column,
+              counts: dataSplit.split.counts,
+            }
+            : null,
           manualActions,
         })}
         onChatResponse={handleChatResponse}

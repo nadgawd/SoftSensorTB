@@ -27,13 +27,16 @@ const TOOL_LAYOUTS = {
       { title: 'Data', fields: ['target_column', 'feature_columns'] },
       {
         title: 'Train / validation / test split',
-        note: 'The rows are split before training. The model is fitted on the training rows only; the test rows stay untouched until you test it.',
-        fields: ['split_strategy', 'test_size', 'validation_size', 'stratify_column', 'n_strata', 'group_column', 'random_state'],
+        note: 'The split saved in step 1 above. The model is fitted on its training rows only; the test rows stay untouched until you test it.',
+        fields: ['split_id'],
       },
       {
         title: 'Cross-validation (optional)',
         note: 'Repeatedly re-trains on parts of the training rows to check that the score is stable.',
-        fields: ['cv_strategy', 'cv_folds', 'cv_repeats', 'cv_test_size', 'cv_window', 'n_bootstrap', 'cv_shuffle'],
+        fields: [
+          'cv_strategy', 'cv_folds', 'cv_repeats', 'cv_test_size', 'cv_window', 'n_bootstrap', 'cv_shuffle',
+          'stratify_column', 'n_strata', 'group_column', 'random_state',
+        ],
       },
     ],
     optionHelp: {
@@ -50,7 +53,7 @@ const TOOL_LAYOUTS = {
 }
 
 const RUN_LABELS = {
-  train: 'Split & train',
+  train: 'Train',
   test: 'Test',
   transform: 'Apply',
   plot: 'Plot',
@@ -60,7 +63,7 @@ const RUN_LABELS = {
 
 const KIND_NOTES = {
   transform: 'Creates a new dataset version. Use History to go back.',
-  train: 'Fits the model on the training rows only (and scores the validation rows, if set). The test rows are held out; test the model next.',
+  train: 'Fits the model on the split’s training rows only (and scores its validation rows, if any). The test rows are held out; test the model next.',
   test: 'Scores the chosen model (the newest one if left empty) on the test rows it held out at training time.',
 }
 
@@ -80,6 +83,7 @@ export default function ManualTools({
   selectedFeatures,
   timeColumn,
   modelKey,
+  split,
   tools,
   specError,
   onRetrySpec,
@@ -99,7 +103,7 @@ export default function ManualTools({
   const [status, setStatus] = useState(null)
 
   const stepTools = useMemo(
-    () => (tools || []).filter((t) => (fixedTool ? t.name === fixedTool : t.steps.includes(activeStep))),
+    () => (tools || []).filter((t) => (fixedTool ? t.name === fixedTool : t.steps.includes(activeStep) && !t.panel)),
     [tools, activeStep, fixedTool],
   )
   const tool = stepTools.find((t) => t.name === toolByStep[activeStep])
@@ -107,9 +111,10 @@ export default function ManualTools({
     || stepTools[0]
 
   const app = useMemo(
-    () => ({ targetVariable, selectedFeatures, timeColumn, modelId: modelKey }),
-    [targetVariable, selectedFeatures, timeColumn, modelKey],
+    () => ({ targetVariable, selectedFeatures, timeColumn, modelId: modelKey, splitId: split?.split?.split_id }),
+    [targetVariable, selectedFeatures, timeColumn, modelKey, split],
   )
+  const context = useMemo(() => ({ split }), [split])
   const values = useMemo(
     () => (tool ? formValues(tool, edits[tool.name], schema, app) : {}),
     [tool, edits, schema, app],
@@ -132,6 +137,7 @@ export default function ManualTools({
   // A train run switches to the test tool; its status line stays visible there.
   const toolStatus = status && (status.tool === tool.name || NEXT_TOOL[status.tool] === tool.name) ? status : null
   const isRunning = running !== null
+  const needsSplit = tool.fields.some((f) => f.widget === 'split' && !values[f.name])
   const edited = Boolean(edits[tool.name] && Object.keys(edits[tool.name]).length)
 
   function setField(name, value) {
@@ -210,13 +216,21 @@ export default function ManualTools({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
               e.preventDefault()
-              if (!isRunning && !assistantBusy && schema) run()
+              if (!isRunning && !assistantBusy && schema && !needsSplit) run()
             }
           }}
         >
-          <ToolForm tool={tool} values={values} onChange={setField} schema={schema} errors={toolErrors} layout={TOOL_LAYOUTS[tool.name]} />
+          <ToolForm
+            tool={tool}
+            values={values}
+            onChange={setField}
+            schema={schema}
+            errors={toolErrors}
+            layout={TOOL_LAYOUTS[tool.name]}
+            context={context}
+          />
           <div className="manual-actions">
-            <button type="submit" className="btn-signal" disabled={isRunning || assistantBusy || !schema}
+            <button type="submit" className="btn-signal" disabled={isRunning || assistantBusy || !schema || needsSplit}
               title={`Run (${shortcutLabel('Enter')})`}>
               {running === tool.name ? <>Running… <Elapsed /></> : RUN_LABELS[tool.kind] || 'Run'}
             </button>
@@ -227,6 +241,8 @@ export default function ManualTools({
               <span className="manual-hint">Upload a dataset in Step 1 to run tools.</span>
             ) : assistantBusy ? (
               <span className="manual-hint">The assistant is working on this dataset; wait for it to finish.</span>
+            ) : needsSplit ? (
+              <span className="manual-hint">Save a split in step 1 above first.</span>
             ) : (
               KIND_NOTES[tool.kind] && <span className="manual-hint">{KIND_NOTES[tool.kind]}</span>
             )}

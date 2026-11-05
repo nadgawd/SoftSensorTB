@@ -1,7 +1,7 @@
 """Per-user ownership checks and project lifetime.
 
-A user's project is every dataset they uploaded (with its versions and trained
-models) plus their saved UI state. It lasts until they press New project,
+A user's project is every dataset they uploaded (with its versions, saved
+splits and trained models) plus their saved UI state. It lasts until they press New project,
 which deletes all of it from the database and from storage.
 """
 
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.auth import User, auth_required
 from backend.deployment import service as deployment_service
 from backend.mcp_server.eda_tools import _validate_uuid_str
-from backend.models import Dataset, DatasetVersion, Deployment, ProjectState, TrainedModel
+from backend.models import DataSplit, Dataset, DatasetVersion, Deployment, ProjectState, TrainedModel
 from backend.storage import get_storage
 
 
@@ -59,12 +59,16 @@ async def _delete_datasets(session: AsyncSession, datasets: Sequence[Dataset]) -
         await session.execute(select(TrainedModel.id, TrainedModel.artifact_key).where(TrainedModel.dataset_id.in_(ids)))
     ).all()
     model_keys = [key for _, key in model_rows]
+    split_keys = (
+        await session.execute(select(DataSplit.artifact_key).where(DataSplit.dataset_id.in_(ids)))
+    ).scalars().all()
     # SQLite does not enforce ON DELETE CASCADE unless asked to, so children go first.
     bundle_keys = await deployment_service.delete_deployment_rows(
         session, await deployment_service.deployments_of_datasets(session, ids)
     )
     deployment_service.forget_models([str(model_id) for model_id, _ in model_rows])
     await session.execute(delete(TrainedModel).where(TrainedModel.dataset_id.in_(ids)))
+    await session.execute(delete(DataSplit).where(DataSplit.dataset_id.in_(ids)))
     await session.execute(
         DatasetVersion.__table__.update()
         .where(DatasetVersion.dataset_id.in_(ids))
@@ -73,7 +77,7 @@ async def _delete_datasets(session: AsyncSession, datasets: Sequence[Dataset]) -
     await session.execute(delete(DatasetVersion).where(DatasetVersion.dataset_id.in_(ids)))
     await session.execute(delete(Dataset).where(Dataset.id.in_(ids)))
     await session.flush()
-    get_storage().delete([*version_keys, *model_keys, *bundle_keys])
+    get_storage().delete([*version_keys, *model_keys, *split_keys, *bundle_keys])
 
 
 async def delete_project(session: AsyncSession, user: User) -> dict[str, Any]:

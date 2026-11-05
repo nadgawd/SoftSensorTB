@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { errorDetail, uploadDataset } from '../../api/client'
 import { columnChoices, isVisible } from '../../lib/manualForm'
+import { splitCountsText, splitLabel } from '../../utils/splits'
 
 const OPTION_WORDS = {
   acf: 'ACF', adasyn: 'ADASYN', adf: 'ADF', anova: 'ANOVA', ecdf: 'ECDF', f: 'F', iqr: 'IQR',
@@ -240,11 +241,37 @@ function ModelSelect({ value, onChange, models, id }) {
   )
 }
 
-function FieldControl({ field, value, onChange, schema, values, id }) {
+/** The split made in the Split panel, which training uses; read-only here. */
+function SplitField({ split, id }) {
+  const current = split?.split
+  if (current) {
+    return (
+      <p id={id} className="manual-split-field">
+        <span className="badge-mist">{splitLabel(current.strategy)}</span>
+        {' '}{splitCountsText(current.counts)} · for {current.target_column} · split {current.split_id.slice(0, 8)}
+      </p>
+    )
+  }
+  if (split?.loading) return <p id={id} className="manual-hint">Loading the split…</p>
+  if (split?.outdated) {
+    return (
+      <p id={id} className="manual-error">
+        The last split no longer fits this data: {split.outdatedReason}. Split the data again in step 1 above.
+      </p>
+    )
+  }
+  return <p id={id} className="manual-hint">No split yet: split the data in step 1 above first.</p>
+}
+
+function FieldControl({ field, value, onChange, schema, values, id, context }) {
   if (!schema && ['column', 'columns', 'mapping', 'dataset'].includes(field.widget)) {
     return <p className="manual-hint">Columns appear once a dataset is loaded.</p>
   }
   switch (field.widget) {
+    case 'split':
+      return <SplitField split={context?.split} id={id} />
+    case 'split_ranges':
+      return <p className="manual-hint">{(value || []).length} range(s); draw or type them in the Split panel.</p>
     case 'select':
       return <SelectInput field={field} value={value} onChange={onChange} id={id} />
     case 'integer':
@@ -323,9 +350,9 @@ function SyntaxHelp({ help, onUse }) {
   )
 }
 
-function Field({ tool, field, value, values, onChange, schema, error, optionHelp }) {
+function Field({ tool, field, value, values, onChange, schema, error, optionHelp, context }) {
   const id = `manual-${tool.name}-${field.name}`
-  const wide = ['columns', 'mapping', 'value_mapping', 'code'].includes(field.widget)
+  const wide = ['columns', 'mapping', 'value_mapping', 'code', 'split'].includes(field.widget)
   const hint = rangeHint(field)
   const note = optionHelp?.[field.name]?.[value]
   return (
@@ -337,10 +364,10 @@ function Field({ tool, field, value, values, onChange, schema, error, optionHelp
           {hint && <span className="manual-range">{hint}</span>}
         </label>
       )}
-      <FieldControl field={field} value={value} onChange={onChange} schema={schema} values={values} id={id} />
+      <FieldControl field={field} value={value} onChange={onChange} schema={schema} values={values} id={id} context={context} />
       {note && <p className="manual-option-help">{note}</p>}
       {field.help && <SyntaxHelp help={field.help} onUse={onChange} />}
-      {!note && !field.help && field.description && (
+      {!note && !field.help && field.description && field.widget !== 'split' && (
         <p className="manual-hint manual-desc" title={field.description}>{field.description}</p>
       )}
       {error && <p className="manual-error">{error}</p>}
@@ -351,8 +378,9 @@ function Field({ tool, field, value, values, onChange, schema, error, optionHelp
 /**
  * The controls for one tool's parameters; hidden fields depend on the options chosen.
  * With `layout.sections`, fields are grouped under titled sections and none are collapsed.
+ * `context` is workbench state some widgets show (the saved split).
  */
-export default function ToolForm({ tool, values, onChange, schema, errors, layout }) {
+export default function ToolForm({ tool, values, onChange, schema, errors, layout, context }) {
   const visible = tool.fields.filter((f) => isVisible(f, values))
   const basic = visible.filter((f) => !f.advanced)
   const advanced = visible.filter((f) => f.advanced)
@@ -369,6 +397,7 @@ export default function ToolForm({ tool, values, onChange, schema, errors, layou
       schema={schema}
       error={errors[field.name]}
       optionHelp={layout?.optionHelp}
+      context={context}
     />
   )
 

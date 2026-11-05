@@ -11,6 +11,7 @@ import ExportStep from './steps/ExportStep'
 import DeploymentStep from './steps/DeploymentStep'
 import VersionHistory from './VersionHistory'
 import ManualTools from './manual/ManualTools'
+import SplitPanel from './manual/SplitPanel'
 import ResultTable from './manual/ResultTable'
 import DataDock from './DataDock'
 import { usePersisted } from '../hooks/usePersisted'
@@ -231,6 +232,16 @@ export default function StepContent({
         )}
         {PANEL_FIRST.has(activeStep) && (
           <div style={{ marginBottom: '16px' }}>{renderStepPanel()}</div>
+        )}
+        {toolStep === 'modeling' && (
+          <SplitPanel
+            datasetVersionId={datasetVersionId}
+            targetVariable={targetVariable}
+            selectedFeatures={selectedFeatures}
+            timeColumn={timeColumn}
+            modelKey={modelMetrics?.model_id}
+            {...manualTools}
+          />
         )}
         <ManualTools
           activeStep={toolStep}

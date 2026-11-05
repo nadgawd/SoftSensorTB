@@ -36,6 +36,10 @@ def model_key(owner_id: str, dataset_id: object, model_id: object) -> str:
     return f"{owner_id}/{dataset_id}/models/{model_id}.pkl"
 
 
+def split_key(owner_id: str, dataset_id: object, split_id: object) -> str:
+    return f"{owner_id}/{dataset_id}/splits/{split_id}.npy"
+
+
 def deployment_key(owner_id: str, dataset_id: object, deployment_id: object) -> str:
     return f"{owner_id}/{dataset_id}/deployments/{deployment_id}.pkl"
 

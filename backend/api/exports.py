@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -20,12 +21,14 @@ from backend.auth import User, get_current_user
 from backend.database import AsyncSessionLocal
 from backend.mcp_server.eda_tools import _load_dataframe, _resolve_storage_path
 from backend.mcp_server.model_registry import lineage_ids, lineage_models
+from backend.mcp_server.modeling_tools import _load_model_artifact, artifact_equation, equation_text
 from backend.models import Dataset, DatasetVersion, TrainedModel
 from backend.services.profile import cached_profile
 from backend.services.projects import owned_version
 from backend.storage import get_storage
 
 router = APIRouter(tags=["exports"])
+logger = logging.getLogger(__name__)
 
 _CSV_BATCH_ROWS = 50_000
 RECIPE_FORMAT = 1
@@ -100,9 +103,42 @@ async def download_model(model_id: str, user: User = Depends(get_current_user)) 
     return FileResponse(path, media_type="application/octet-stream", filename=f"{label}_{model_id[:8]}.joblib")
 
 
-async def _recipe(session: AsyncSession, version: DatasetVersion) -> dict[str, Any]:
+async def _stored_equation(session: AsyncSession, model_id: str) -> Optional[dict[str, Any]]:
+    """The equation of a model saved before it was recorded, worked out from its file and then recorded."""
+    try:
+        row = await session.get(TrainedModel, uuid.UUID(model_id))
+    except ValueError:
+        return None
+    if row is None:
+        return None
+    try:
+        artifact = await run_in_threadpool(_load_model_artifact, row.artifact_key)
+        equation = artifact_equation(artifact)
+    except Exception:  # noqa: BLE001 — a missing or unreadable file leaves the equation out
+        logger.warning("Could not read model %s for its equation", model_id, exc_info=True)
+        return None
+    row.meta = {**(row.meta or {}), "equation": equation}
+    await session.commit()
+    return equation
+
+
+async def _models_with_equations(session: AsyncSession, version: DatasetVersion) -> list[dict[str, Any]]:
+    out = []
+    for meta in await lineage_models(session, str(version.id)):
+        model = dict(meta)
+        if "equation" not in model:
+            model["equation"] = await _stored_equation(session, str(model["model_id"]))
+        if model.get("equation"):
+            model["equation_text"] = equation_text(model["equation"], str(model.get("target_column") or "y"))
+        out.append(model)
+    return out
+
+
+async def _recipe(session: AsyncSession, version: DatasetVersion, model_id: Optional[str] = None) -> dict[str, Any]:
     dataset = await session.get(Dataset, version.dataset_id)
     chain = await _versions_root_first(session, version)
+    models = await _models_with_equations(session, version)
+    final = next((m for m in models if m["model_id"] == model_id), models[0] if models else None)
     return {
         "recipe_format": RECIPE_FORMAT,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -118,16 +154,26 @@ async def _recipe(session: AsyncSession, version: DatasetVersion) -> dict[str, A
             }
             for i, v in enumerate(chain)
         ],
-        "models": await lineage_models(session, str(version.id)),
+        # The model chosen for export (the newest when none was chosen) and its equation.
+        "final_model_id": final["model_id"] if final else None,
+        "final_equation": (
+            {"target": final.get("target_column"), **final["equation"], "text": final.get("equation_text")}
+            if final and final.get("equation") else None
+        ),
+        "models": models,
     }
 
 
 @router.get("/datasets/versions/{dataset_version_id}/recipe")
-async def download_recipe(dataset_version_id: str, user: User = Depends(get_current_user)) -> Response:
+async def download_recipe(
+    dataset_version_id: str,
+    model_id: Optional[str] = Query(None, description="The final model; the newest one when omitted."),
+    user: User = Depends(get_current_user),
+) -> Response:
     """Every step from the upload to this version, with its parameters, and the models trained along the way."""
     async with AsyncSessionLocal() as session:
         version = await owned_version(session, dataset_version_id, user)
-        recipe = await _recipe(session, version)
+        recipe = await _recipe(session, version, model_id)
         dataset = await session.get(Dataset, version.dataset_id)
     body = json.dumps(recipe, indent=2, default=str)
     return Response(body, media_type="application/json", headers=_attachment(f"{_stem(dataset, version)}_recipe.json"))
@@ -144,6 +190,36 @@ def _fmt(value: Any, digits: int = 4) -> str:
 def _params(parameters: dict[str, Any]) -> str:
     shown = {k: v for k, v in parameters.items() if k not in ("dataset_version_id",)}
     return html.escape(json.dumps(shown, default=str)) if shown else ""
+
+
+def _final_model_html(model: Optional[dict[str, Any]]) -> str:
+    e = html.escape
+    if model is None:
+        return "<p class='muted'>No model trained on this data yet.</p>"
+    head = (
+        f"<p><code>{e(model['model_id'])}</code> · {e(str(model.get('algorithm')))} → {e(str(model.get('target_column')))}"
+        f" · {len(model.get('feature_columns') or [])} inputs · test R² {_fmt(model.get('r2_score'))}"
+        f" · test RMSE {_fmt(model.get('rmse'))}</p>"
+    )
+    equation = model.get("equation")
+    if not equation:
+        reason = (
+            "k-NN has no equation: it predicts the average target of the most similar training rows."
+            if str(model.get("algorithm")).upper() == "KNN" else "The equation of this model could not be read."
+        )
+        return head + f"<p class='muted'>{reason}</p>"
+    terms = [["intercept", f"<code>{equation['intercept']:.10g}</code>"]] + [
+        [e(name), f"<code>{value:.10g}</code>"] for name, value in equation["coefficients"].items()
+    ]
+    body = "".join(f"<tr><td>{a}</td><td>{b}</td></tr>" for a, b in terms)
+    return (
+        head
+        + f"<pre>{e(model.get('equation_text') or '')}</pre>"
+        + "<p class='muted'>In the units of the model's input columns as they are after the pipeline steps above "
+          "(a scaled or transformed column enters the equation scaled or transformed). It reproduces the "
+          "model's predictions exactly.</p>"
+        + f"<table><thead><tr><th>Term</th><th>Coefficient</th></tr></thead><tbody>{body}</tbody></table>"
+    )
 
 
 def _report_html(recipe: dict[str, Any], profile: dict[str, Any]) -> str:
@@ -187,6 +263,17 @@ def _report_html(recipe: dict[str, Any], profile: dict[str, Any]) -> str:
     ]
     issues = [[e(c["name"]), e(c["kind"]), e(c["status"]), e("; ".join(c["issues"]))] for c in flagged]
     summary = "".join(f"<tr><th>{k}</th><td>{v}</td></tr>" for k, v in rows)
+    final = next((m for m in recipe["models"] if m["model_id"] == recipe.get("final_model_id")), None)
+    others = [m for m in recipe["models"] if m is not final and m.get("equation_text")]
+    other_equations = (
+        "<details><summary>Equations of the other models</summary>"
+        + "".join(
+            f"<p><code>{e(m['model_id'][:8])}</code> {e(str(m.get('algorithm')))}</p><pre>{e(m['equation_text'])}</pre>"
+            for m in others
+        )
+        + "</details>"
+        if others else ""
+    )
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Soft sensor report · {e(recipe.get('source_file') or '')}</title>
 <style>
@@ -194,12 +281,15 @@ body{{font:14px/1.5 system-ui,sans-serif;color:#1d2433;max-width:980px;margin:32
 h1{{font-size:22px;margin:0 0 4px}}h2{{font-size:16px;margin:28px 0 8px;border-bottom:1px solid #dde2ea;padding-bottom:4px}}
 table{{border-collapse:collapse;width:100%;font-size:13px}}th,td{{text-align:left;padding:5px 8px;border-bottom:1px solid #eef1f5;vertical-align:top}}
 thead th{{background:#f4f6f9;font-weight:600}}code{{font:12px ui-monospace,monospace;word-break:break-all}}.muted{{color:#6b7385}}
+pre{{font:13px/1.6 ui-monospace,monospace;background:#f4f6f9;border:1px solid #dde2ea;border-radius:6px;padding:10px 12px;white-space:pre-wrap;word-break:break-word}}
+details{{margin-top:12px}}summary{{cursor:pointer;color:#3b4a63}}
 </style></head><body>
 <h1>Soft sensor report</h1>
 <p class="muted">Generated {e(recipe['generated_at'][:19].replace('T', ' '))} UTC</p>
 <h2>Data</h2><table><tbody>{summary}</tbody></table>
 <h2>Pipeline ({len(steps)} steps)</h2>{table(['#', 'Action', 'Parameters', 'When'], steps)}
 <h2>Models</h2>{table(['Model', 'Algorithm', 'Target', 'Features', 'CV R²', 'Test R²', 'Test RMSE', 'Trained'], models)}
+<h2>Final model · governing equation</h2>{_final_model_html(final)}{other_equations}
 <h2>Data quality findings</h2>{table(['Column', 'Type', 'Status', 'Findings'], issues)}
 </body></html>"""
 
@@ -209,12 +299,13 @@ async def download_report(
     dataset_version_id: str,
     target: Optional[str] = Query(None),
     time_column: Optional[str] = Query(None),
+    model_id: Optional[str] = Query(None, description="The final model; the newest one when omitted."),
     user: User = Depends(get_current_user),
 ) -> Response:
-    """A self-contained HTML report: data summary, pipeline steps, models and quality findings."""
+    """A self-contained HTML report: data summary, pipeline steps, models, the final model's equation and quality findings."""
     async with AsyncSessionLocal() as session:
         version = await owned_version(session, dataset_version_id, user)
-        recipe = await _recipe(session, version)
+        recipe = await _recipe(session, version, model_id)
         dataset = await session.get(Dataset, version.dataset_id)
     try:
         profile = await run_in_threadpool(

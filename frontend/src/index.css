@@ -1605,6 +1605,72 @@ td.deploy-note { min-width: 200px; }
 .split-tab.active { border-color: var(--color-signal); background: color-mix(in srgb, var(--color-signal) 12%, transparent); }
 .split-rows { display: flex; flex-direction: column; gap: 6px; }
 .split-rows .manual-hint { margin: 0; }
+.split-dot.split-none { background: var(--color-mist); }
+.split-tab:disabled { opacity: 0.45; cursor: not-allowed; }
+.split-tab:disabled:hover { border-color: var(--color-line-2); }
+
+/* ── Split panel (Model step, step 1) ─────────────────────── */
+.split-current { display: flex; flex-direction: column; gap: 6px; }
+.split-methods { display: flex; gap: 8px; flex-wrap: wrap; }
+.split-method-note { margin-top: -4px; }
+.split-plot-bar { display: flex; align-items: center; gap: 8px 10px; flex-wrap: wrap; }
+.split-plot-bar .manual-input { width: auto; min-width: 120px; max-width: 260px; }
+.split-axis { display: flex; gap: 6px; }
+.split-paint-group { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.split-paint { font-weight: 600; }
+.split-paint-train { border-color: var(--color-signal); color: var(--color-signal); }
+.split-paint-validation { border-color: var(--color-ember); color: var(--color-ember); }
+.split-paint-test { border-color: var(--color-alert); color: var(--color-alert); }
+.split-paint-none { border-color: var(--color-mist); color: var(--color-mist); }
+.split-plot {
+  border: 1px solid var(--color-line);
+  border-radius: 10px;
+  padding: 6px 8px 8px;
+  min-height: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.split-plot > .manual-hint, .split-plot > .manual-error { padding: 8px 4px; }
+.split-plot-note { padding: 0 4px; }
+.split-custom { display: flex; flex-direction: column; gap: 8px; }
+.split-typed { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.split-typed .manual-input { flex: 0 1 190px; min-width: 120px; }
+.split-ranges { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--color-foam); }
+.split-range { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.split-range span:not(.split-dot) { font-family: var(--font-mono); font-size: 11.5px; overflow-wrap: anywhere; }
+.split-rest {
+  display: flex;
+  align-items: center;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--color-line-2);
+  font-size: 12.5px;
+  color: var(--color-foam);
+}
+.split-rest .btn-signal, .split-rest .btn-ghost { padding: 6px 14px; font-size: 12.5px; }
+.split-preview { display: flex; flex-direction: column; gap: 6px; }
+.split-counts { margin: 0; display: flex; gap: 6px 16px; flex-wrap: wrap; align-items: center; font-size: 12.5px; color: var(--color-foam); }
+.split-count strong { font-family: var(--font-mono); font-weight: 600; }
+.manual-split-field { margin: 0; font-size: 12.5px; color: var(--color-foam); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.manual-split-field .badge-mist { padding: 2px 8px; border-radius: 99px; font-size: 11px; }
+
+.model-equation-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.model-equation {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-line);
+  background: color-mix(in srgb, var(--color-signal) 5%, transparent);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--color-foam);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* ── Bottom dock: data preview + graph ─────────────────────── */
 .dock { position: relative; flex-shrink: 0; display: flex; flex-direction: column; border-top: 1px solid var(--color-line); }

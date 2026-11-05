@@ -117,18 +117,28 @@ export default function ExportStep({ datasetVersionId, modelMetrics, profile, ta
         <div className="export-row">
           <div>
             <p className="export-name">Pipeline recipe</p>
-            <p className="export-desc">Every step from the upload to this version with its exact parameters, and the models trained along the way.</p>
+            <p className="export-desc">
+              Every step from the upload to this version with its exact parameters, the models trained along the way
+              and their equations, with the model chosen above as the final one.
+            </p>
           </div>
-          <div className="export-actions">{button('recipe', 'JSON', `${base}/recipe`)}</div>
+          <div className="export-actions">{button('recipe', 'JSON', `${base}/recipe`, { model_id: modelId || undefined })}</div>
         </div>
 
         <div className="export-row">
           <div>
             <p className="export-name">Report</p>
-            <p className="export-desc">One HTML page with the data summary, pipeline steps, model scores and quality findings.</p>
+            <p className="export-desc">
+              One HTML page with the data summary, pipeline steps, model scores, quality findings and the governing
+              equation (intercept and every coefficient) of the model chosen above.
+            </p>
           </div>
           <div className="export-actions">
-            {button('report', 'HTML', `${base}/report`, { target: targetVariable || undefined, time_column: timeColumn || undefined })}
+            {button('report', 'HTML', `${base}/report`, {
+              target: targetVariable || undefined,
+              time_column: timeColumn || undefined,
+              model_id: modelId || undefined,
+            })}
           </div>
         </div>
       </div>

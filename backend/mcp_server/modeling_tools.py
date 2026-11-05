@@ -18,7 +18,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.linear_model import LinearRegression, Ridge, Lasso
 from sklearn.decomposition import PCA
@@ -49,6 +49,20 @@ from backend.mcp_server.eda_tools import (
     _openai_tool_schema,
     _persist_new_version,
     _validate_uuid_str,
+)
+from backend.mcp_server.data_splits import (
+    SET_CODES,
+    SplitRange,
+    check_labels,
+    custom_labels,
+    label_counts,
+    public as public_split,
+    range_mask,
+    resolve_split,
+    row_key,
+    save_split,
+    subset_summary,
+    time_axis,
 )
 from backend.mcp_server.model_registry import (
     lineage_models,
@@ -189,6 +203,15 @@ class TrainSoftSensorArgs(BaseModel):
         default=5,
         description="Number of neighbors for k-NN.",
         ge=1,
+    )
+    split_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "A saved split from split_data to train on: its split_id, or 'latest' for the newest split "
+            "of this target that still fits the data. The model is fitted on that split's training rows "
+            "and tested later on its test rows, so models trained on one split compare fairly. When set, "
+            "split_strategy, test_size and validation_size are ignored. Omit to split here instead."
+        ),
     )
     split_strategy: str = Field(
         default="random",
@@ -336,10 +359,13 @@ class TrainSoftSensorArgs(BaseModel):
 
     @field_validator("split_strategy")
     @classmethod
-    def _valid_split_strategy(cls, v: str) -> str:
+    def _valid_split_strategy(cls, v: str, info: ValidationInfo) -> str:
         key = v.strip().lower().replace("-", "_").replace(" ", "_")
         key = _SPLIT_ALIASES.get(key, key)
         if key not in _SPLIT_STRATEGIES:
+            if info.data.get("split_id"):
+                # Ignored with a saved split (which may be a custom one).
+                return "random"
             raise ValueError(f"split_strategy must be one of {list(_SPLIT_STRATEGIES)}")
         return key
 
@@ -352,18 +378,20 @@ class TrainSoftSensorArgs(BaseModel):
             raise ValueError(f"cv_strategy must be one of {list(_CV_STRATEGIES)}")
         return key
 
-    @field_validator("stratify_column", "group_column", mode="before")
+    @field_validator("stratify_column", "group_column", "split_id", mode="before")
     @classmethod
     def _blank_stratify(cls, v: Any) -> Any:
         return v.strip() or None if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def _consistent(self) -> "TrainSoftSensorArgs":
-        if self.test_size + self.validation_size > 0.8 + 1e-9:
+        own_split = self.split_id is None
+        if own_split and self.test_size + self.validation_size > 0.8 + 1e-9:
             raise ValueError("test_size + validation_size can be at most 0.8, so some rows are left to train on")
-        needs_groups = self.split_strategy == "group" or self.cv_strategy in _GROUPED_CV
+        group_split = own_split and self.split_strategy == "group"
+        needs_groups = group_split or self.cv_strategy in _GROUPED_CV
         if needs_groups and not self.group_column:
-            raise ValueError(f"{'the group split' if self.split_strategy == 'group' else self.cv_strategy} needs group_column")
+            raise ValueError(f"{'the group split' if group_split else self.cv_strategy} needs group_column")
         if self.group_column and self.group_column == self.target_column:
             raise ValueError("group_column cannot be the target")
         return self
@@ -510,6 +538,121 @@ class ListTrainedModelsArgs(BaseModel):
         return _validate_uuid_str(value)
 
 
+_SPLIT_DATA_STRATEGIES = (*_SPLIT_STRATEGIES, "custom")
+
+
+class SplitDataArgs(BaseModel):
+    """Split the rows into train / validation / test sets and save the split for training."""
+
+    dataset_version_id: str = Field(..., description="UUID of the dataset version to split.", min_length=36, max_length=36)
+    target_column: str = Field(
+        ...,
+        description="The target (y). Rows where it is missing go to no set; the stratified split balances it.",
+        min_length=1,
+    )
+    split_strategy: str = Field(
+        default="random",
+        description=(
+            "'random' (shuffled), 'stratified' (shuffled, each stratum keeps its share in every set; strata "
+            "are stratify_column, or the target binned into n_strata quantile bins), 'sequential' "
+            "(chronological: the last test_size of the rows is the test set and the validation rows come "
+            "just before it; in time order when time_column is set, else in row order), 'group' (whole "
+            "groups of group_column go to one set) or 'custom' (the sets are the row or time ranges in "
+            "ranges, with rest for the rows no range covers)."
+        ),
+        json_schema_extra={"enum": list(_SPLIT_DATA_STRATEGIES)},
+    )
+    test_size: float = Field(default=_TEST_SIZE, description="Share of the rows in the test set (not for custom).", ge=0.05, le=0.5)
+    validation_size: float = Field(
+        default=0.0,
+        description="Share of the rows in a separate validation set, 0 for none (not for custom). test_size + validation_size can be at most 0.8.",
+        ge=0,
+        le=0.4,
+    )
+    random_state: int = Field(default=_RANDOM_STATE, description="Seed of the random, stratified and group splits.")
+    stratify_column: Optional[str] = Field(
+        default=None,
+        description="For the stratified split: the column whose groups keep their share in every set. Omit to stratify on the target.",
+    )
+    n_strata: int = Field(default=5, description="Quantile bins used to stratify a continuous target or column.", ge=2, le=20)
+    group_column: Optional[str] = Field(
+        default=None, description="For the group split: column of group ids (batch, campaign, unit…); a group never spans two sets.",
+    )
+    time_column: Optional[str] = Field(
+        default=None,
+        description=(
+            "The time column of the data, if it has one: it orders the sequential split, is what custom "
+            "ranges by time refer to, and lets the split notice when rows were reordered later."
+        ),
+    )
+    ranges: list[SplitRange] = Field(
+        default_factory=list,
+        description=(
+            "For custom: the ranges of rows, applied in order (a later range wins where two overlap), e.g. "
+            "[{\"set\": \"train\", \"by\": \"time\", \"start\": \"2024-01-01\", \"end\": \"2024-06-30\"}, "
+            "{\"set\": \"test\", \"by\": \"index\", \"start\": 5000}]."
+        ),
+    )
+    rest: Optional[str] = Field(
+        default=None,
+        description="For custom: the set for the rows no range covers ('train', 'validation' or 'test'); omit to leave them out.",
+        json_schema_extra={"enum": ["train", "validation", "test"]},
+    )
+
+    @field_validator("dataset_version_id")
+    @classmethod
+    def _valid_uuid(cls, value: str) -> str:
+        return _validate_uuid_str(value)
+
+    @field_validator("target_column")
+    @classmethod
+    def _strip_target(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("target_column must not be empty")
+        return cleaned
+
+    @field_validator("split_strategy")
+    @classmethod
+    def _valid_strategy(cls, v: str) -> str:
+        key = v.strip().lower().replace("-", "_").replace(" ", "_")
+        key = {"manual": "custom", "ranges": "custom", **_SPLIT_ALIASES}.get(key, key)
+        if key not in _SPLIT_DATA_STRATEGIES:
+            raise ValueError(f"split_strategy must be one of {list(_SPLIT_DATA_STRATEGIES)}")
+        return key
+
+    @field_validator("stratify_column", "group_column", "time_column", "rest", mode="before")
+    @classmethod
+    def _blank(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            v = v.strip()
+            return None if not v or v.lower() == "none" else v
+        return v
+
+    @field_validator("rest")
+    @classmethod
+    def _valid_rest(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in ("train", "validation", "test"):
+            raise ValueError("rest must be 'train', 'validation' or 'test'")
+        return v
+
+    @model_validator(mode="after")
+    def _consistent(self) -> "SplitDataArgs":
+        if self.split_strategy == "custom":
+            if not self.ranges:
+                raise ValueError("A custom split needs ranges")
+            if any(r.by == "time" for r in self.ranges) and not self.time_column:
+                raise ValueError("Ranges by time need time_column")
+            return self
+        if self.test_size + self.validation_size > 0.8 + 1e-9:
+            raise ValueError("test_size + validation_size can be at most 0.8, so some rows are left to train on")
+        if self.split_strategy == "group" and not self.group_column:
+            raise ValueError("The group split needs group_column")
+        if self.group_column and self.group_column == self.target_column:
+            raise ValueError("group_column cannot be the target")
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Artifact helpers
 # ---------------------------------------------------------------------------
@@ -602,37 +745,50 @@ def _fit_estimator(
         return model
 
 
-def _extract_coefficients(
-    model: Any,
-    *,
-    algorithm: SoftSensorAlgorithm,
-    feature_columns: list[str],
-) -> dict[str, float]:
-    """Return per-feature regression coefficients / importances."""
-    if algorithm == SoftSensorAlgorithm.KNN:
-        return {} # Non-parametric, no coefficients
-        
-    if algorithm == SoftSensorAlgorithm.PCR:
-        pca = model.named_steps['pca']
-        ols = model.named_steps['linearregression']
-        raw = np.dot(pca.components_.T, ols.coef_).reshape(-1)
-    else:
-        raw = np.asarray(model.coef_, dtype=float).reshape(-1)
-        
-    if raw.size != len(feature_columns):
-        # PLS may expose (n_targets, n_features); flatten safely.
-        raw = raw.reshape(-1)[: len(feature_columns)]
-    coeffs = {
-        name: float(value)
-        for name, value in zip(feature_columns, raw, strict=False)
+_EQUATION_TOLERANCE = 1e-6
+
+
+def linear_equation(model: Any, *, algorithm: str, feature_columns: list[str]) -> Optional[dict[str, Any]]:
+    """The fitted model as ``target = intercept + Σ coefficient · feature``, in the units of the input columns.
+
+    Read off the model's own predictions (at zero, and at one for each input in
+    turn), so it holds for every linear algorithm whatever scaling or
+    projection it does inside (PLS scales, PCR centres and projects), and is
+    then checked against predictions at random points. None for k-NN, which
+    has no equation.
+    """
+    if str(algorithm).upper() == SoftSensorAlgorithm.KNN.value or not feature_columns:
+        return None
+    n = len(feature_columns)
+    probe = pd.DataFrame(np.vstack([np.zeros(n), np.eye(n)]), columns=feature_columns)
+    try:
+        at = _predict(model, probe)
+    except Exception:  # noqa: BLE001 — an estimator that cannot predict here has no equation to report
+        return None
+    intercept = float(at[0])
+    coefficients = at[1:] - intercept
+    # Rounding noise of the subtraction, e.g. where Lasso set a coefficient to zero.
+    coefficients[np.abs(coefficients) < 1e-12 * (1.0 + abs(intercept))] = 0.0
+    rng = np.random.default_rng(0)
+    check = pd.DataFrame(rng.normal(size=(8, n)), columns=feature_columns)
+    expected = _predict(model, check)
+    got = intercept + check.to_numpy() @ coefficients
+    scale = 1.0 + float(np.max(np.abs(expected)))
+    if not np.all(np.isfinite(got)) or float(np.max(np.abs(got - expected))) > _EQUATION_TOLERANCE * scale:
+        return None
+    return {
+        "intercept": intercept,
+        "coefficients": {name: float(value) for name, value in zip(feature_columns, coefficients)},
     }
-    
-    if algorithm in (SoftSensorAlgorithm.OLS, SoftSensorAlgorithm.RIDGE, SoftSensorAlgorithm.LASSO) and hasattr(model, "intercept_"):
-        coeffs["intercept"] = float(np.asarray(model.intercept_).reshape(-1)[0])
-    elif algorithm == SoftSensorAlgorithm.PCR:
-        coeffs["intercept"] = float(np.asarray(model.named_steps['linearregression'].intercept_).reshape(-1)[0])
-        
-    return coeffs
+
+
+def equation_text(equation: dict[str, Any], target: str, digits: int = 6) -> str:
+    """``target = b0 + b1·x1 − b2·x2 …``"""
+    parts = [f"{equation['intercept']:.{digits}g}"]
+    for name, value in equation["coefficients"].items():
+        sign = "−" if value < 0 else "+"
+        parts.append(f"{sign} {abs(value):.{digits}g}·{name}")
+    return f"{target} = " + " ".join(parts)
 
 
 def _predict(model: Any, X: pd.DataFrame) -> np.ndarray:
@@ -777,6 +933,19 @@ def _split_summary(subsets: list[tuple[str, pd.Series]]) -> list[dict[str, Any]]
     return out
 
 
+def artifact_equation(artifact: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """The model's equation; worked out from the estimator for models saved before it was recorded."""
+    if "equation" in artifact:
+        return artifact["equation"]
+    if artifact.get("model") is None:
+        return None
+    return linear_equation(
+        artifact["model"],
+        algorithm=str(artifact.get("algorithm") or ""),
+        feature_columns=list(artifact.get("feature_columns") or []),
+    )
+
+
 def _model_report(artifact: dict[str, Any]) -> dict[str, Any]:
     """What the UI shows about a model: training, validation, CV and (once run) test results."""
     hyperparameters = dict(artifact.get("hyperparameters") or {})
@@ -796,6 +965,8 @@ def _model_report(artifact: dict[str, Any]) -> dict[str, Any]:
         "test": test,
         "feature_importances": artifact.get("coefficients"),
         "coefficients": artifact.get("coefficients"),
+        "equation": artifact_equation(artifact),
+        "split_id": artifact.get("split_id") or hyperparameters.get("split_id"),
         "split_strategy": hyperparameters.get("split_strategy"),
         "test_size": hyperparameters.get("test_size"),
         "hyperparameters": hyperparameters,
@@ -956,18 +1127,33 @@ _ALGORITHM_HYPERPARAMETERS: dict[SoftSensorAlgorithm, tuple[str, ...]] = {
 }
 
 
-def _hyperparameters(args: TrainSoftSensorArgs) -> dict[str, Any]:
-    """The settings that shaped this model, for lineage and the model registry."""
-    out: dict[str, Any] = {"split_strategy": args.split_strategy, "test_size": args.test_size}
-    if args.validation_size > 0:
-        out["validation_size"] = args.validation_size
+def _hyperparameters(args: TrainSoftSensorArgs, saved_split: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    """The settings that shaped this model, for lineage and the model registry.
+
+    ``saved_split`` (split_id, strategy, test and validation shares) when the
+    rows came from split_data; the split's own settings stay with the split.
+    """
+    if saved_split is not None:
+        out: dict[str, Any] = {
+            "split_id": saved_split["split_id"],
+            "split_strategy": saved_split["strategy"],
+            "test_size": saved_split["test_share"],
+        }
+        if saved_split["validation_share"] > 0:
+            out["validation_size"] = saved_split["validation_share"]
+        strategy = None
+    else:
+        out = {"split_strategy": args.split_strategy, "test_size": args.test_size}
+        if args.validation_size > 0:
+            out["validation_size"] = args.validation_size
+        strategy = args.split_strategy
     shuffled_cv = (args.cv_strategy in _SHUFFLED_CV and args.cv_shuffle) or args.cv_strategy in _RANDOM_CV
-    if args.split_strategy in ("random", "stratified", "group") or shuffled_cv:
+    if strategy in ("random", "stratified", "group") or shuffled_cv:
         out["random_state"] = args.random_state
-    if args.split_strategy == "stratified" or args.cv_strategy in _STRATIFIED_CV:
+    if strategy == "stratified" or args.cv_strategy in _STRATIFIED_CV:
         out["stratify_column"] = args.stratify_column or args.target_column
         out["n_strata"] = args.n_strata
-    if args.split_strategy == "group" or args.cv_strategy in _GROUPED_CV:
+    if strategy == "group" or args.cv_strategy in _GROUPED_CV:
         out["group_column"] = args.group_column
     if args.cv_strategy != "none":
         out["cv_strategy"] = args.cv_strategy
@@ -993,23 +1179,220 @@ def _training_rows(
 ) -> tuple[pd.DataFrame, pd.Series, Optional[pd.Series], Optional[pd.Series]]:
     """Complete rows (X, y) with the strata and group labels the split and CV need."""
     X, y = _prepare_xy(df, feature_columns=args.feature_columns, target_column=args.target_column)
+    own_split = args.split_id is None
     strata = None
-    if args.split_strategy == "stratified" or args.cv_strategy in _STRATIFIED_CV:
+    if (own_split and args.split_strategy == "stratified") or args.cv_strategy in _STRATIFIED_CV:
         if args.stratify_column and args.stratify_column not in df.columns:
             raise ValueError(f"stratify_column {args.stratify_column!r} is not a column of this dataset")
         source = df.loc[X.index, args.stratify_column] if args.stratify_column else y
         strata = _strata(source, args.n_strata)
     groups = None
-    if args.split_strategy == "group" or args.cv_strategy in _GROUPED_CV:
+    if (own_split and args.split_strategy == "group") or args.cv_strategy in _GROUPED_CV:
         if args.group_column not in df.columns:
             raise ValueError(f"group_column {args.group_column!r} is not a column of this dataset")
         groups = _group_labels(df.loc[X.index, args.group_column])
     return X, y, strata, groups
 
 
+def _split_labels(df: pd.DataFrame, args: SplitDataArgs) -> np.ndarray:
+    """One label per row of ``df`` (see data_splits.SET_CODES); rows without a target get none."""
+    if args.target_column not in df.columns:
+        raise ValueError(f"target_column {args.target_column!r} is not a column of this dataset")
+    for name in ("stratify_column", "group_column", "time_column"):
+        column = getattr(args, name)
+        if column and column not in df.columns:
+            raise ValueError(f"{name} {column!r} is not a column of this dataset")
+    eligible = df[args.target_column].notna().to_numpy()
+    if not eligible.any():
+        raise ValueError(f"The target {args.target_column!r} has no values")
+    if args.split_strategy == "custom":
+        return custom_labels(df, eligible, args.ranges, args.rest, args.time_column)
+
+    positions = np.flatnonzero(eligible)
+    y = pd.Series(df[args.target_column].to_numpy()[positions], index=positions)
+    if args.split_strategy == "sequential" and args.time_column:
+        _kind, times = time_axis(df[args.time_column])
+        y = y.iloc[np.argsort(times[positions], kind="stable")]
+    strata = None
+    if args.split_strategy == "stratified":
+        source = (
+            pd.Series(df[args.stratify_column].to_numpy()[positions], index=positions)
+            if args.stratify_column else y
+        )
+        strata = _strata(source, args.n_strata)
+    groups = None
+    if args.split_strategy == "group":
+        groups = _group_labels(pd.Series(df[args.group_column].to_numpy()[positions], index=positions))
+    X = y.to_frame("target")
+    X_train, X_val, X_test, *_ = _holdout(X, y, args, strata, groups)  # type: ignore[arg-type]
+    labels = np.zeros(len(df), dtype=np.int8)
+    labels[X_train.index.to_numpy()] = SET_CODES["train"]
+    if X_val is not None:
+        labels[X_val.index.to_numpy()] = SET_CODES["validation"]
+    labels[X_test.index.to_numpy()] = SET_CODES["test"]
+    return labels
+
+
+def _split_settings(args: SplitDataArgs) -> dict[str, Any]:
+    """The settings that made the split, as recorded with it."""
+    if args.split_strategy == "custom":
+        return {
+            "ranges": [r.model_dump() for r in args.ranges],
+            **({"rest": args.rest} if args.rest else {}),
+        }
+    out: dict[str, Any] = {"test_size": args.test_size}
+    if args.validation_size > 0:
+        out["validation_size"] = args.validation_size
+    if args.split_strategy in ("random", "stratified", "group"):
+        out["random_state"] = args.random_state
+    if args.split_strategy == "stratified":
+        out["stratify_column"] = args.stratify_column or args.target_column
+        out["n_strata"] = args.n_strata
+    if args.split_strategy == "group":
+        out["group_column"] = args.group_column
+    return out
+
+
+def _saved_split_rows(
+    X: pd.DataFrame, labels: np.ndarray
+) -> tuple[pd.Index, pd.Index, pd.Index]:
+    """(train, validation, test) row labels of the complete rows ``X`` in a saved split."""
+    codes = pd.Series(labels, index=pd.RangeIndex(len(labels))).reindex(X.index).to_numpy()
+    train = X.index[codes == SET_CODES["train"]]
+    validation = X.index[codes == SET_CODES["validation"]]
+    test = X.index[codes == SET_CODES["test"]]
+    if len(train) < 5:
+        raise ValueError(
+            f"Only {len(train)} training row(s) of the split have the target and every feature filled in; "
+            "the model needs at least 5. Fill in the missing values, pick other features or split again"
+        )
+    if len(test) < 1:
+        raise ValueError("None of the split's test rows has the target and every feature filled in")
+    if len(validation) == 1:
+        raise ValueError("Only 1 validation row of the split has every feature filled in; it needs at least 2")
+    return train, validation, test
+
+
 # ---------------------------------------------------------------------------
 # Tool implementations
 # ---------------------------------------------------------------------------
+
+
+_STRATEGY_NAMES = {
+    "random": "random",
+    "stratified": "stratified",
+    "sequential": "chronological",
+    "group": "group",
+    "custom": "custom",
+}
+
+
+def split_message(split: dict[str, Any]) -> str:
+    """One line about a saved split, for the chat and the Tools panel."""
+    counts = split.get("counts") or {}
+    parts = [f"train {counts.get('train', 0)}"]
+    if counts.get("validation"):
+        parts.append(f"validation {counts['validation']}")
+    parts.append(f"test {counts.get('test', 0)}")
+    unused = f"; {counts['unused']} not used" if counts.get("unused") else ""
+    return (
+        f"Saved a {_STRATEGY_NAMES.get(split.get('strategy'), split.get('strategy'))} split "
+        f"{str(split.get('split_id', ''))[:8]} of the rows for {split.get('target_column')}: "
+        f"{' · '.join(parts)} rows{unused}. Train models on it next."
+    )
+
+
+def preview_split(df: pd.DataFrame, args: SplitDataArgs) -> dict[str, Any]:
+    """The sets a split would make, without saving it: row counts and the per-set summary."""
+    labels = _split_labels(df, args)
+    problem = None
+    try:
+        check_labels(labels)
+    except ValueError as exc:
+        problem = str(exc)
+    eligible = df[args.target_column].notna().to_numpy()
+    out: dict[str, Any] = {
+        "counts": label_counts(labels),
+        "summary": subset_summary(labels, df[args.target_column]),
+        "problem": problem,
+        "no_target": int((~eligible).sum()),
+    }
+    if args.split_strategy == "custom":
+        covered = np.zeros(len(df), dtype=bool)
+        for split_range in args.ranges:
+            covered |= range_mask(df, split_range, args.time_column)
+        out["uncovered"] = int((eligible & ~covered).sum())
+    return out
+
+
+async def split_data(
+    dataset_version_id: str,
+    target_column: str,
+    split_strategy: str = "random",
+    test_size: float = _TEST_SIZE,
+    validation_size: float = 0.0,
+    random_state: int = _RANDOM_STATE,
+    stratify_column: Optional[str] = None,
+    n_strata: int = 5,
+    group_column: Optional[str] = None,
+    time_column: Optional[str] = None,
+    ranges: Optional[list[dict[str, Any]]] = None,
+    rest: Optional[str] = None,
+    *,
+    session: Optional[AsyncSession] = None,
+) -> dict[str, Any]:
+    """Split the rows into train / (validation) / test sets and save the split.
+
+    Training is a separate step: ``train_soft_sensor(split_id=...)`` fits on the
+    training rows of the saved split, and ``evaluate_on_test_set`` scores its
+    test rows.
+    """
+    args = SplitDataArgs(
+        dataset_version_id=dataset_version_id,
+        target_column=target_column,
+        split_strategy=split_strategy,
+        test_size=test_size,
+        validation_size=validation_size,
+        random_state=random_state,
+        stratify_column=stratify_column,
+        n_strata=n_strata,
+        group_column=group_column,
+        time_column=time_column,
+        ranges=ranges or [],  # type: ignore[arg-type]
+        rest=rest,
+    )
+
+    async def _run(db: AsyncSession) -> dict[str, Any]:
+        version = await _get_version(db, args.dataset_version_id)
+        df = _load_dataframe(version)
+        labels = _split_labels(df, args)
+        check_labels(labels)
+        time_column = args.time_column
+        if time_column:
+            # Splits that order or select rows by time failed above already; for the others the
+            # column only guards against reordered rows, so one that holds no times is left out.
+            try:
+                time_axis(df[time_column])
+            except ValueError:
+                time_column = None
+        meta = {
+            "strategy": args.split_strategy,
+            "target_column": args.target_column,
+            "time_column": time_column,
+            "settings": _split_settings(args),
+            "row_key": row_key(df, args.target_column, time_column),
+            "n_rows": int(len(df)),
+            "counts": label_counts(labels),
+            "summary": subset_summary(labels, df[args.target_column]),
+        }
+        row = await save_split(db, version=version, labels=labels, meta=meta)
+        split = public_split(row)
+        return {**split, "message": split_message(split)}
+
+    if session is not None:
+        return await _run(session)
+    async with AsyncSessionLocal() as db:
+        return await _run(db)
 
 
 async def train_soft_sensor(
@@ -1038,17 +1421,20 @@ async def train_soft_sensor(
     cv_test_size: float = 0.2,
     cv_window: Optional[int] = None,
     n_bootstrap: int = 50,
+    split_id: Optional[str] = None,
     *,
     session: Optional[AsyncSession] = None,
 ) -> dict[str, Any]:
     """
-    Split the rows into train / (validation) / test (``test_size`` held out, 0.2 by
-    default) and fit a soft sensor on the training rows, optionally cross-validated
-    on them. The test rows are only recorded, not scored: ``evaluate_on_test_set``
-    tests the model on them afterwards.
+    Fit a soft sensor on the training rows of a saved split (``split_id``, from
+    ``split_data``), or of a split made here (``test_size`` held out, 0.2 by
+    default), optionally cross-validated on them. The test rows are only
+    recorded, not scored: ``evaluate_on_test_set`` tests the model on them
+    afterwards.
 
     Persists the ``.pkl`` artifact through storage and returns the training (and
-    validation / CV) metrics, the split and the feature coefficients.
+    validation / CV) metrics, the split, the feature coefficients and the
+    model's equation.
     """
     args = TrainSoftSensorArgs(
         dataset_version_id=dataset_version_id,
@@ -1076,20 +1462,36 @@ async def train_soft_sensor(
         cv_test_size=cv_test_size,
         cv_window=cv_window,
         n_bootstrap=n_bootstrap,
+        split_id=split_id,
     )
 
     async def _run(db: AsyncSession) -> dict[str, Any]:
         version = await _get_version(db, args.dataset_version_id)
         df = _load_dataframe(version)
         X, y, strata, groups = _training_rows(df, args)
-        X_train, X_val, X_test, y_train, y_val, y_test = _holdout(X, y, args, strata, groups)
+        saved_split = None
+        if args.split_id is not None:
+            split_row, labels = await resolve_split(db, version, df, args.split_id, args.target_column)
+            train_rows, validation_rows, test_rows = _saved_split_rows(X, labels)
+            X_train, y_train = X.loc[train_rows], y.loc[train_rows]
+            X_val, y_val = (X.loc[validation_rows], y.loc[validation_rows]) if len(validation_rows) else (None, None)
+            X_test, y_test = X.loc[test_rows], y.loc[test_rows]
+            used = len(train_rows) + len(validation_rows) + len(test_rows)
+            saved_split = {
+                "split_id": str(split_row.id),
+                "strategy": (split_row.meta or {}).get("strategy"),
+                "test_share": round(len(test_rows) / used, 4),
+                "validation_share": round(len(validation_rows) / used, 4),
+            }
+        else:
+            X_train, X_val, X_test, y_train, y_val, y_test = _holdout(X, y, args, strata, groups)
         cv = _cross_validate(
             args, X_train, y_train,
             strata.loc[X_train.index] if strata is not None else None,
             groups.loc[X_train.index] if groups is not None else None,
         )
         model = _fit(args, X_train, y_train)
-        hyperparameters = _hyperparameters(args)
+        hyperparameters = _hyperparameters(args, saved_split)
         train_pred = _predict(model, X_train)
         train = {
             "n_rows": int(len(X_train)),
@@ -1104,11 +1506,8 @@ async def train_soft_sensor(
                 "r2": _finite(r2_score(y_val, val_pred)),
                 "rmse": _finite(np.sqrt(mean_squared_error(y_val, val_pred))),
             }
-        coefficients = _extract_coefficients(
-            model,
-            algorithm=args.algorithm,
-            feature_columns=args.feature_columns,
-        )
+        equation = linear_equation(model, algorithm=args.algorithm.value, feature_columns=args.feature_columns)
+        coefficients = {**equation["coefficients"], "intercept": equation["intercept"]} if equation else {}
 
         model_id = uuid.uuid4()
         
@@ -1152,6 +1551,8 @@ async def train_soft_sensor(
             "train": train,
             "validation": validation,
             "coefficients": coefficients,
+            "equation": equation,
+            "split_id": saved_split["split_id"] if saved_split else None,
             "split": _split_summary(subsets),
             "train_size": int(len(X_train)),
             "train_index": X_train.index.tolist(),
@@ -1461,6 +1862,9 @@ def _artifact_args(artifact: dict[str, Any]) -> TrainSoftSensorArgs:
     """The training arguments of a saved model, from its recorded hyperparameters."""
     recorded = dict(artifact.get("hyperparameters") or {})
     fixed = {"dataset_version_id", "algorithm", "target_column", "feature_columns"}
+    if recorded.get("split_id"):
+        # The rows came from a saved split (its shares may be outside the inline limits).
+        fixed |= {"split_strategy", "test_size", "validation_size"}
     allowed = set(TrainSoftSensorArgs.model_fields) - fixed
     return TrainSoftSensorArgs(
         dataset_version_id=str(artifact["dataset_version_id"]),
@@ -1793,13 +2197,27 @@ async def list_trained_models(
 
 LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
     _openai_tool_schema(
+        name="split_data",
+        description=(
+            "Split the rows into train / validation / test sets and save the split, before training. "
+            "split_strategy: random, stratified, sequential (chronological / time-series), group, or "
+            "custom (ranges of row numbers or times, e.g. train up to June, test after; rest assigns "
+            "the rows no range covers). test_size and validation_size are the shares of the rows. "
+            "Returns split_id and the size and target statistics of each set. Then call "
+            "train_soft_sensor with split_id (or split_id='latest'): every model trained on the same "
+            "split is tested on the same rows, so their scores compare."
+        ),
+        args_model=SplitDataArgs,
+    ),
+    _openai_tool_schema(
         name="train_soft_sensor",
         description=(
             "Train a soft-sensor regression model (linear regression / OLS, PLS, "
-            "Ridge, Lasso, PCR or k-NN) on a dataset version. test_size sets the held-out "
-            "fraction (default 0.2, i.e. an 80/20 train/test split); validation_size adds a "
-            "separate validation set (holdout train/validation/test). split_strategy picks a "
-            "random, stratified, sequential (chronological / time-series) or group split. cv_strategy "
+            "Ridge, Lasso, PCR or k-NN) on a dataset version. Split first with split_data and "
+            "pass split_id (or 'latest'); without split_id it splits by itself: test_size sets "
+            "the held-out fraction (default 0.2, i.e. an 80/20 train/test split), validation_size "
+            "adds a separate validation set (holdout train/validation/test) and split_strategy picks "
+            "a random, stratified, sequential (chronological / time-series) or group split. cv_strategy "
             "adds cross-validation on the training rows: kfold, stratified_kfold, leave_one_out "
             "(LOOCV), time_series, group_kfold, leave_one_group_out, repeated_kfold, "
             "repeated_stratified_kfold, shuffle_split, stratified_shuffle_split, walk_forward or "
@@ -1807,7 +2225,8 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "Fits on the training rows only and reports training (plus validation and CV) R² "
             "and RMSE and the split; the test rows are held out and NOT scored here: call "
             "evaluate_on_test_set next to test the model. Saves a .pkl artifact and returns "
-            "model_id, metrics, the split and feature coefficients/importances."
+            "model_id, metrics, the split, feature coefficients/importances and, for linear "
+            "models, the equation (intercept and coefficients in the units of the inputs)."
         ),
         args_model=TrainSoftSensorArgs,
     ),
@@ -1909,6 +2328,7 @@ LLM_TOOL_SCHEMAS: list[dict[str, Any]] = [
 
 TOOL_FUNCTIONS: dict[str, Callable[..., Any]] = {
     "list_trained_models": list_trained_models,
+    "split_data": split_data,
     "train_soft_sensor": train_soft_sensor,
     "evaluate_on_test_set": evaluate_on_test_set,
     "view_data_split": view_data_split,
@@ -1934,9 +2354,16 @@ __all__ = [
     "list_trained_models",
     "LLM_TOOL_SCHEMAS",
     "SoftSensorAlgorithm",
+    "SplitDataArgs",
     "TOOL_FUNCTIONS",
     "TrainSoftSensorArgs",
+    "artifact_equation",
     "build_model_path",
+    "equation_text",
+    "linear_equation",
+    "preview_split",
+    "split_data",
+    "split_message",
     "generate_parity_plot",
     "generate_residuals_plot",
     "generate_importance_plot",

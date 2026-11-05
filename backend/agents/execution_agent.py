@@ -174,11 +174,14 @@ Rules:
 - Training: when the user does not name the target or features, use the UI
   STATE target and selected features; if none are selected, use every numeric
   column except the target and any Predicted_* column.
-- Training and testing are separate: train_soft_sensor fits on the training
-  rows and reports training scores only; evaluate_on_test_set then scores the
-  held-out test rows. When the user asks how well a model performs, or to
-  "train and test", call evaluate_on_test_set after training. view_data_split
-  shows the train / validation / test rows.
+- Splitting, training and testing are separate: split_data saves the train /
+  validation / test split; train_soft_sensor with split_id (the id split_data
+  returned, or 'latest') fits on its training rows and reports training scores
+  only; evaluate_on_test_set then scores the held-out test rows. Split once and
+  train every model on that split, so their test scores compare. When the
+  user asks how well a model performs, or to "train and test", call
+  evaluate_on_test_set after training. view_data_split shows the train /
+  validation / test rows of a model.
 - To change the target or the selected features in the Feature Selection step,
   call set_model_features (it accepts wildcards such as '*_lag*'). For "only
   these" / "select the new ones and unselect the old ones", pass the complete
@@ -325,6 +328,8 @@ def _summarize_tool_result(tool_name: str, result: Any) -> str:
                 f"{result.get('algorithm')} · {r2} · RMSE {test.get('rmse') or 0:.3g} · MAE {test.get('mae') or 0:.3g} "
                 f"on {test.get('n_rows')} held-out test rows · model {str(result.get('model_id'))[:8]}"
             )
+        if tool_name == "split_data" and result.get("message"):
+            return _truncate(str(result["message"]), _MAX_SUMMARY_CHARS)
         if tool_name == SET_MODEL_FEATURES:
             feats = result.get("selected_features") or []
             return _truncate(f"target {result.get('target_column') or '—'} · {len(feats)} features: {', '.join(feats)}", _MAX_SUMMARY_CHARS)
@@ -436,7 +441,9 @@ def _update_ui_state(
             "target_column": result.get("target_column"),
             "feature_columns": result.get("feature_columns"),
             "split_strategy": result.get("split_strategy"),
+            "split_id": result.get("split_id"),
             "test_size": result.get("test_size"),
+            "equation": result.get("equation"),
             "hyperparameters": result.get("hyperparameters"),
             "cv": result.get("cv"),
             "train": result.get("train"),

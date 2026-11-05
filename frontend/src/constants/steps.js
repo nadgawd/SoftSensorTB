@@ -17,7 +17,7 @@ export const STEP_BY_ID = Object.fromEntries(STEPS.map((s, i) => [s.id, { ...s, 
 
 /** The Model step's tabs; `toolStep` is the step the backend files their tools under. */
 export const MODEL_TABS = [
-  { id: 'train', label: 'Train & test', toolStep: 'modeling' },
+  { id: 'train', label: 'Split, train & test', toolStep: 'modeling' },
   { id: 'diagnostics', label: 'Diagnostics', toolStep: 'validation' },
   { id: 'compare', label: 'Compare models', toolStep: null },
 ]

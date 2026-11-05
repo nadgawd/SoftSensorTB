@@ -165,6 +165,18 @@ def render_ui_state(ui: dict[str, Any]) -> str:
                 f"  its validation set ({validation.get('n_rows')} rows): "
                 f"R² {_fmt_metric(validation.get('r2'))}, RMSE {_fmt_metric(validation.get('rmse'))}"
             )
+    split = ui.get("dataSplit") if isinstance(ui.get("dataSplit"), dict) else None
+    if split and split.get("split_id"):
+        counts = split.get("counts") if isinstance(split.get("counts"), dict) else {}
+        sizes = ", ".join(f"{name} {counts[name]}" for name in ("train", "validation", "test") if counts.get(name))
+        lines.append(
+            _clip(
+                f"  saved split: {split['split_id']} ({split.get('strategy')} split for "
+                f"{split.get('target_column')}: {sizes or 'sizes unknown'} rows); train_soft_sensor uses it with "
+                f"split_id='{split['split_id']}'",
+                400,
+            )
+        )
     if ui.get("activePlot"):
         lines.append(f"  plot on canvas: {ui['activePlot']}")
     manual = render_manual_actions(ui.get("manualActions"))

@@ -80,11 +80,11 @@ def test_form_overrides_name_real_fields_and_options(name):
     ui = MANUAL_TOOLS[name]
     fields = {f["name"]: f for f in _SPECS[name]["fields"]}
     assert list(fields) == list(_SCHEMAS[name].get("properties", {}))
-    for key in ("numeric", "advanced"):
+    for key in ("numeric", "advanced", "hidden", "required"):
         assert set(ui.get(key, ())) <= set(fields), (name, key)
     for key in ("defaults", "app_defaults", "show_when"):
         assert set(ui.get(key, {})) <= set(fields), (name, key)
-    assert set(ui.get("app_defaults", {}).values()) <= {"target", "features", "time", "target_time"}, name
+    assert set(ui.get("app_defaults", {}).values()) <= {"target", "features", "time", "target_time", "split"}, name
     for field, when in ui.get("show_when", {}).items():
         for conditions in _alternatives(when):
             for controller, values in conditions.items():

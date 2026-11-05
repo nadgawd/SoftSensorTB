@@ -121,6 +121,31 @@ class TrainedModel(Base):
     )
 
 
+class DataSplit(Base):
+    """A saved train / validation / test split: which set every row of a dataset version is in."""
+
+    __tablename__ = "data_splits"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    dataset_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("datasets.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    dataset_version_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    # strategy and its settings, target / time column, row key, per-set summary.
+    meta: Mapped[dict[str, Any]] = mapped_column(JSONType, nullable=False, default=dict)
+    # One label per row (0 not used, 1 train, 2 validation, 3 test).
+    artifact_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
 class Deployment(Base):
     """A trained model serving predictions on live rows sent by a plant connector."""
 

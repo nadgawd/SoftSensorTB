@@ -126,7 +126,7 @@ export default function CompareModelsTab({ datasetVersionId, modelMetrics, busy,
                       <span className="compare-active-badge"><CircleCheck size={12} aria-hidden="true" /> Active</span>
                     ) : (
                       <button type="button" className="compare-btn" disabled={disabled}
-                        title="Show this model on Train & test and use it in the diagnostic and export tools"
+                        title="Show this model on Split, train & test and use it in the diagnostic and export tools"
                         onClick={() => act(`use-${m.model_id}`, () => onActivate(m.model_id))}>
                         {working === `use-${m.model_id}` ? 'Loading…' : 'Make active'}
                       </button>

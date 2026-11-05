@@ -48,7 +48,13 @@ SINGLE_COLUMN_FIELDS = frozenset({
 CODE_FIELDS = frozenset({"sql_query", "formula", "query"})
 # Widgets a JSON schema cannot express: another of the user's datasets, and a
 # value → value table whose keys are typed rather than picked from the columns.
-SPECIAL_WIDGETS = {"other_dataset": "dataset", "value_mapping": "value_mapping"}
+SPECIAL_WIDGETS = {
+    "other_dataset": "dataset",
+    "value_mapping": "value_mapping",
+    # The Split panel's drawn / typed ranges, and the split it saved.
+    "ranges": "split_ranges",
+    "split_id": "split",
+}
 
 _LABELS = {
     "sql_query": "SQL query",
@@ -71,6 +77,8 @@ _LABELS = {
     "max_points": "Max points",
     "test_size": "Test fraction",
     "split_strategy": "Train/test split",
+    "split_id": "Data split",
+    "rest": "Rows no range covers",
     "fit_intercept": "Fit intercept",
     "pls_scale": "Scale inside PLS",
     "knn_weights": "Neighbour weights",
@@ -160,7 +168,6 @@ _LABELS = {
 }
 
 _STRATIFIED_CV = ["stratified_kfold", "repeated_stratified_kfold", "stratified_shuffle_split"]
-_STRATIFIED = [{"split_strategy": ["stratified"]}, {"cv_strategy": _STRATIFIED_CV}]
 _RANDOM_CV = ["repeated_kfold", "repeated_stratified_kfold", "shuffle_split", "stratified_shuffle_split", "bootstrap"]
 
 _NAMES_RULE = "Refer to a column by its name. Names with spaces or symbols go in backticks or square brackets: `Feed temp` or [Feed temp]."
@@ -230,13 +237,11 @@ _TRAIN_SHOW_WHEN = {
     "fit_intercept": {"algorithm": ["OLS", "RIDGE", "LASSO"]},
     "n_neighbors": {"algorithm": ["KNN"]},
     "knn_weights": {"algorithm": ["KNN"]},
-    "random_state": [
-        {"split_strategy": ["random", "stratified", "group"]},
-        {"cv_strategy": ["kfold", "stratified_kfold", *_RANDOM_CV]},
-    ],
-    "stratify_column": _STRATIFIED,
-    "n_strata": _STRATIFIED,
-    "group_column": [{"split_strategy": ["group"]}, {"cv_strategy": ["group_kfold", "leave_one_group_out"]}],
+    # The form trains on the split made in the Split panel; these only steer cross-validation.
+    "random_state": {"cv_strategy": ["kfold", "stratified_kfold", *_RANDOM_CV]},
+    "stratify_column": {"cv_strategy": _STRATIFIED_CV},
+    "n_strata": {"cv_strategy": _STRATIFIED_CV},
+    "group_column": {"cv_strategy": ["group_kfold", "leave_one_group_out"]},
     "cv_folds": {"cv_strategy": [
         "kfold", "stratified_kfold", "time_series", "group_kfold", "repeated_kfold",
         "repeated_stratified_kfold", "shuffle_split", "stratified_shuffle_split", "walk_forward",
@@ -289,13 +294,19 @@ _COLUMN_FUNCTIONS = [
 
 _DIAGNOSTIC = {"steps": ("validation",), "kind": "plot"}
 
+_SPLIT_BY_SHARE = {"split_strategy": ["random", "stratified", "sequential", "group"]}
+
 # label, steps (the pipeline steps whose Tools list shows the tool, normally
-# one; empty for a tool with its own panel, named by "panel"), and optional: numeric (column pickers limited to numeric
+# one; empty for a tool shown only in its own panel), panel (a panel of its own
+# instead of the step's Tools list: "graph", or "split" above the Model step's
+# training form), and optional: numeric (column pickers limited to numeric
 # columns), show_when ({field: {other_field: [values]}}, all of which must
 # hold, or a list of such dicts of which any may hold), defaults (form
 # defaults for required fields), app_defaults (fill from the workbench's
 # column roles: "target", "features", "time" or "target_time" for both target
-# and time), advanced (fields folded under "Advanced").
+# and time; "split" for the split made in the Split panel), advanced (fields
+# folded under "Advanced"), hidden (fields the form leaves to the tool's
+# default), required (fields the form needs although the assistant may omit them).
 MANUAL_TOOLS: dict[str, dict[str, Any]] = {
     "inspect_data": {
         "label": "Inspect data (head, info, describe…)",
@@ -619,16 +630,35 @@ MANUAL_TOOLS: dict[str, dict[str, Any]] = {
         },
         "advanced": ("n_estimators", "alpha", "random_state"),
     },
+    "split_data": {
+        "label": "1 · Split the data into train / validation / test",
+        "steps": ("modeling",),
+        "panel": "split",
+        "defaults": {"split_strategy": "random"},
+        "app_defaults": {"target_column": "target", "time_column": "time"},
+        "show_when": {
+            "test_size": _SPLIT_BY_SHARE,
+            "validation_size": _SPLIT_BY_SHARE,
+            "random_state": {"split_strategy": ["random", "stratified", "group"]},
+            "stratify_column": {"split_strategy": ["stratified"]},
+            "n_strata": {"split_strategy": ["stratified"]},
+            "group_column": {"split_strategy": ["group"]},
+            "ranges": {"split_strategy": ["custom"]},
+            "rest": {"split_strategy": ["custom"]},
+        },
+    },
     "train_soft_sensor": {
-        "label": "1 · Split & train a model",
+        "label": "2 · Train a model on the split",
         "steps": ("modeling",),
         "numeric": ("target_column", "feature_columns"),
         "defaults": {"algorithm": "PLS"},
-        "app_defaults": {"target_column": "target", "feature_columns": "features"},
+        "app_defaults": {"target_column": "target", "feature_columns": "features", "split_id": "split"},
         "show_when": _TRAIN_SHOW_WHEN,
+        "hidden": ("split_strategy", "test_size", "validation_size"),
+        "required": ("split_id",),
     },
     "evaluate_on_test_set": {
-        "label": "2 · Test the model on the held-out test rows",
+        "label": "3 · Test the model on the held-out test rows",
         "steps": ("modeling",),
     },
     "view_data_split": {
@@ -689,7 +719,8 @@ TOOL_SUMMARIES: dict[str, str] = {
     "drop_collinear_features": "Drop one tag of each pair that moves almost identically.",
     "reduce_dimensions": "Compress many tags into a few components (PCA and others), or drop near-constant ones.",
     "select_features_model": "Rank inputs by how much a model relies on them, and keep the most useful.",
-    "train_soft_sensor": "Split the rows into training and test sets and fit a model on the training rows.",
+    "split_data": "Divide the rows into training, validation and test sets: by share, in time order, by group, or by ranges you draw on a plot.",
+    "train_soft_sensor": "Fit a model on the training rows of the saved split.",
     "evaluate_on_test_set": "Score the trained model on the test rows it has never seen.",
     "view_data_split": "See which rows went into training, validation and test.",
     "list_trained_models": "Every model trained on this dataset, with its scores.",
@@ -793,10 +824,12 @@ def _field_spec(tool: str, name: str, raw: dict[str, Any], required: bool, defs:
         "label": _label(name),
         "widget": _widget(name, node),
         "description": _form_description(name, node.get("description", "")),
-        "required": required,
+        "required": required or name in ui.get("required", ()),
         "nullable": nullable,
         "advanced": name in ui.get("advanced", ()),
     }
+    if name in ui.get("hidden", ()):
+        spec["hidden"] = True
     if name in ui.get("help", {}):
         spec["help"] = ui["help"][name]
     if "enum" in node:

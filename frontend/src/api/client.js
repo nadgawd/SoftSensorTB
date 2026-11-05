@@ -191,6 +191,37 @@ export async function runManualTool(toolName, datasetVersionId, args) {
   return data
 }
 
+/** `{ split, outdated, outdated_reason }`: the newest saved split that fits this version, and the newest one when it no longer does. */
+export async function fetchDataSplit(datasetVersionId, { target } = {}) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/split`, {
+    params: { target: target || undefined },
+    timeout: 30_000,
+  })
+  return data
+}
+
+/** `{ counts, summary, problem }` of the split `args` (split_data arguments) would make, without saving it. */
+export async function previewDataSplit(datasetVersionId, args, { signal } = {}) {
+  const { data } = await api.post(`/datasets/versions/${datasetVersionId}/split/preview`, { arguments: args }, { signal, timeout: 30_000 })
+  return data
+}
+
+/** One column against time (or the row number): `{ x_kind, row, x, y, set?, has_target?, sampled, n_values }`. */
+export async function fetchSeries(datasetVersionId, { column, timeColumn, splitId, target, maxPoints = 4000 }, { signal } = {}) {
+  const { data } = await api.get(`/datasets/versions/${datasetVersionId}/series`, {
+    params: {
+      column,
+      time_column: timeColumn || undefined,
+      split_id: splitId || undefined,
+      target: target || undefined,
+      max_points: maxPoints,
+    },
+    signal,
+    timeout: 30_000,
+  })
+  return data
+}
+
 /** `{ columns: [{ name, dtype, numeric }], row_count, models }` of a dataset version. */
 export async function fetchVersionSchema(datasetVersionId) {
   const { data } = await api.get(`/datasets/versions/${datasetVersionId}/schema`, { timeout: 30_000 })
